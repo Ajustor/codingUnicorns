@@ -729,6 +729,14 @@ impl Editor {
                     }
                 }
 
+                // Grab keyboard focus for the editor before processing events.
+                // This must happen BEFORE the input loop so arrow keys work.
+                if !self.show_find && !self.show_goto_line && !self.autocomplete.visible {
+                    if response.clicked() || ui.memory(|m| m.focused().is_none()) {
+                        ui.memory_mut(|m| m.request_focus(response.id));
+                    }
+                }
+
                 if response.has_focus() || ui.memory(|m| m.focused().is_none()) {
                     ui.input(|i| {
                         let mut text_typed = false;
@@ -1834,7 +1842,7 @@ impl Editor {
                 if self.highlighter.needs_update(self.content_version) {
                     let source = self.buffer.to_string();
                     self.highlighter
-                        .highlight_document(&source, self.content_version);
+                        .highlight_document(&source, self.content_version, Some(plugin_manager));
                 }
 
                 // Fold regions: recompute if dirty (on every content change)
@@ -1902,7 +1910,7 @@ impl Editor {
                         // Draw the first (header) line normally, then "⋯" placeholder
                         let preview: String = line.chars().take(60).collect();
                         let folded_count = fold_end - line_idx;
-                        let tokens = self.highlighter.tokens_for_line(line_idx, &preview);
+                        let tokens = self.highlighter.tokens_for_line(line_idx, &preview, Some(plugin_manager));
                         let mut job = egui::text::LayoutJob::default();
                         for tok in &tokens {
                             job.append(
@@ -2373,7 +2381,7 @@ impl Editor {
                     }
 
                     // Syntax-highlighted text
-                    let tokens = self.highlighter.tokens_for_line(line_idx, &line);
+                    let tokens = self.highlighter.tokens_for_line(line_idx, &line, Some(plugin_manager));
                     let mut job = egui::text::LayoutJob::default();
                     for tok in &tokens {
                         job.append(
@@ -2533,16 +2541,81 @@ impl Editor {
                     }
                 }
 
-                // Only grab keyboard focus for the editor when no overlay/popup is open.
-                // If show_find, show_goto_line or autocomplete is active, those widgets
-                // manage their own focus and we must not steal it every frame.
-                if !self.show_find && !self.show_goto_line && !self.autocomplete.visible {
-                    ui.memory_mut(|m| {
-                        // Only grab focus if nothing else currently has it.
-                        if m.focused().is_none() {
-                            m.request_focus(response.id);
+                // ── Vertical scrollbar ────────────────────────────────────────
+                {
+                    let scrollbar_w = 8.0_f32;
+                    let num_lines = self.buffer.num_lines() as f32;
+                    let content_h = num_lines * line_height;
+                    let view_h = rect.height();
+
+                    if content_h > view_h {
+                        let track_x = rect.max.x - scrollbar_w;
+                        let track_h = view_h;
+
+                        let thumb_ratio = (view_h / content_h).min(1.0);
+                        let thumb_h = (track_h * thumb_ratio).max(20.0);
+                        let scroll_range = content_h - view_h;
+                        let scroll_ratio = if scroll_range > 0.0 {
+                            self.scroll_offset.y / scroll_range
+                        } else {
+                            0.0
+                        };
+                        let thumb_y = rect.min.y + scroll_ratio * (track_h - thumb_h);
+
+                        // Track background
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(track_x, rect.min.y),
+                                egui::vec2(scrollbar_w, track_h),
+                            ),
+                            0.0,
+                            egui::Color32::from_rgba_premultiplied(0, 0, 0, 60),
+                        );
+                        // Thumb
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(track_x + 1.0, thumb_y),
+                                egui::vec2(scrollbar_w - 2.0, thumb_h),
+                            ),
+                            3.0,
+                            egui::Color32::from_rgba_premultiplied(150, 150, 150, 120),
+                        );
+                        // Drag scrollbar thumb
+                        let thumb_rect = egui::Rect::from_min_size(
+                            egui::pos2(track_x, thumb_y),
+                            egui::vec2(scrollbar_w, thumb_h),
+                        );
+                        let sb_resp = ui.interact(
+                            thumb_rect,
+                            response.id.with("vscroll"),
+                            egui::Sense::drag(),
+                        );
+                        if sb_resp.dragged() {
+                            let delta = sb_resp.drag_delta().y;
+                            self.scroll_offset.y = (self.scroll_offset.y
+                                + delta * scroll_range / (track_h - thumb_h))
+                                .clamp(0.0, scroll_range);
                         }
-                    });
+                        // Click on track to jump
+                        let track_rect = egui::Rect::from_min_size(
+                            egui::pos2(track_x, rect.min.y),
+                            egui::vec2(scrollbar_w, track_h),
+                        );
+                        let track_resp = ui.interact(
+                            track_rect,
+                            response.id.with("vscroll_track"),
+                            egui::Sense::click(),
+                        );
+                        if track_resp.clicked() {
+                            if let Some(pos) = track_resp.interact_pointer_pos() {
+                                let click_ratio = (pos.y - rect.min.y) / track_h;
+                                self.scroll_offset.y =
+                                    (click_ratio * content_h - view_h / 2.0).clamp(0.0, scroll_range);
+                            }
+                        }
+                    } else {
+                        self.scroll_offset.y = 0.0;
+                    }
                 }
 
                 // ── VSCode-style hover popup ──────────────────────────────────────

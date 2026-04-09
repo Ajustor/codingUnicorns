@@ -17,6 +17,7 @@ pub enum PaletteCommand {
     OpenSettings,
     Find,
     FindReplace,
+    RestartLsp,
 }
 
 impl PaletteCommand {
@@ -31,6 +32,7 @@ impl PaletteCommand {
             PaletteCommand::OpenSettings,
             PaletteCommand::Find,
             PaletteCommand::FindReplace,
+            PaletteCommand::RestartLsp,
         ]
     }
 
@@ -45,6 +47,7 @@ impl PaletteCommand {
             Self::OpenSettings => "Open Settings",
             Self::Find => "Find in File",
             Self::FindReplace => "Find & Replace",
+            Self::RestartLsp => "Restart LSP Server",
         }
     }
 
@@ -59,6 +62,7 @@ impl PaletteCommand {
             Self::OpenSettings => "Ctrl+,",
             Self::Find => "Ctrl+F",
             Self::FindReplace => "Ctrl+H",
+            Self::RestartLsp => "",
         }
     }
 }
@@ -96,6 +100,17 @@ impl CommandPalette {
         self.open = !self.open;
         if self.open {
             self.query.clear();
+            self.entries.clear();
+            self.selected_idx = 0;
+            self.cached_files.clear();
+        }
+    }
+
+    /// Open the palette in commands mode (prefixed with '>').
+    pub fn toggle_commands(&mut self) {
+        self.open = !self.open;
+        if self.open {
+            self.query = ">".to_string();
             self.entries.clear();
             self.selected_idx = 0;
             self.cached_files.clear();

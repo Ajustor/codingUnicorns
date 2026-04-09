@@ -233,9 +233,9 @@ fn workspace_install_inner(
             });
             continue;
         }
-        if let Err(e) = std::fs::copy(
+        if let Err(e) = copy_lib_safe(
             &lib_path,
-            dest_dir.join(lib_path.file_name().unwrap_or_default()),
+            &dest_dir.join(lib_path.file_name().unwrap_or_default()),
         ) {
             let _ = tx.send(WorkspaceStatus::ModuleFailed {
                 name: member.clone(),
@@ -346,9 +346,9 @@ fn single_git_install_inner(
     }
     let release_dir = dir.join("target").join("release");
     if let Some(lib_file) = find_lib_file(&release_dir) {
-        if let Err(e) = std::fs::copy(
+        if let Err(e) = copy_lib_safe(
             &lib_file,
-            dest.join(lib_file.file_name().unwrap_or_default()),
+            &dest.join(lib_file.file_name().unwrap_or_default()),
         ) {
             let _ = tx.send(WorkspaceStatus::Failed(format!("Copy lib: {e}")));
             return;
@@ -509,7 +509,7 @@ impl InstallJob {
             let release_dir = tmp_dir.join("target").join("release");
             if let Some(lib_file) = find_lib_file(&release_dir) {
                 let dest_lib = dest.join(lib_file.file_name().unwrap_or_default());
-                if let Err(e) = std::fs::copy(&lib_file, &dest_lib) {
+                if let Err(e) = copy_lib_safe(&lib_file, &dest_lib) {
                     let _ = tx.send(InstallStatus::Failed(format!("Copy lib failed: {e}")));
                     return;
                 }
@@ -621,7 +621,7 @@ pub fn install_from_folder(
         }
 
         let dest_lib = dest_dir.join(lib_path.file_name().unwrap_or_default());
-        if let Err(e) = std::fs::copy(&lib_path, &dest_lib) {
+        if let Err(e) = copy_lib_safe(&lib_path, &dest_lib) {
             let _ = tx.send(InstallStatus::Failed(format!("Cannot copy library: {e}")));
             return;
         }
@@ -802,6 +802,28 @@ fn install_deps(
     }
 
     errors
+}
+
+/// Copy a library file to the destination, handling the case where the destination
+/// is locked by a running process (common on Windows when a DLL is loaded).
+/// Strategy: rename the old file out of the way first, then copy the new one.
+fn copy_lib_safe(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    if dest.exists() {
+        // Try renaming the old file to .old — Windows allows renaming loaded DLLs
+        let old_path = dest.with_extension("old");
+        // Remove any previous .old file
+        let _ = std::fs::remove_file(&old_path);
+        // Rename current DLL to .old (works even if loaded on Windows)
+        if let Err(_) = std::fs::rename(dest, &old_path) {
+            // If rename fails too, try removing directly (will fail if locked)
+            let _ = std::fs::remove_file(dest);
+        }
+    }
+    std::fs::copy(src, dest)?;
+    // Clean up the .old file if possible
+    let old_path = dest.with_extension("old");
+    let _ = std::fs::remove_file(&old_path);
+    Ok(())
 }
 
 fn find_lib_file(release_dir: &std::path::Path) -> Option<PathBuf> {

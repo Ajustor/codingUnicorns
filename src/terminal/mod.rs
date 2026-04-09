@@ -60,6 +60,31 @@ impl Terminal {
             .unwrap_or("shell")
             .to_string();
 
+        // Try spawning the resolved shell; on failure, fall back to cmd.exe (Windows)
+        if let Some(result) = Self::try_spawn(&shell_path, &shell_args) {
+            return (Some(result.0), Some(result.1), Some(result.2), shell_name);
+        }
+
+        // Fallback: try cmd.exe on Windows
+        #[cfg(windows)]
+        {
+            if let Some(result) = Self::try_spawn("cmd.exe", &[]) {
+                return (Some(result.0), Some(result.1), Some(result.2), "cmd".to_string());
+            }
+        }
+
+        (None, None, None, shell_name)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn try_spawn(
+        shell_path: &str,
+        shell_args: &[String],
+    ) -> Option<(
+        Receiver<Vec<u8>>,
+        Box<dyn Write + Send>,
+        Box<dyn portable_pty::Child + Send + Sync>,
+    )> {
         let pty_system = native_pty_system();
         let size = PtySize {
             rows: 50,
@@ -68,30 +93,17 @@ impl Terminal {
             pixel_height: 0,
         };
 
-        let pair = match pty_system.openpty(size) {
-            Ok(p) => p,
-            Err(_) => return (None, None, None, shell_name),
-        };
+        let pair = pty_system.openpty(size).ok()?;
 
-        let mut cmd = CommandBuilder::new(&shell_path);
-        for arg in shell_args.iter().skip(1) {
+        let mut cmd = CommandBuilder::new(shell_path);
+        for arg in shell_args {
             cmd.arg(arg);
         }
         cmd.env("TERM", "xterm-256color");
 
-        let child = match pair.slave.spawn_command(cmd) {
-            Ok(c) => c,
-            Err(_) => return (None, None, None, shell_name),
-        };
-
-        let reader = match pair.master.try_clone_reader() {
-            Ok(r) => r,
-            Err(_) => return (None, None, None, shell_name),
-        };
-        let writer = match pair.master.take_writer() {
-            Ok(w) => w,
-            Err(_) => return (None, None, None, shell_name),
-        };
+        let child = pair.slave.spawn_command(cmd).ok()?;
+        let reader = pair.master.try_clone_reader().ok()?;
+        let writer = pair.master.take_writer().ok()?;
 
         let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = unbounded();
         std::thread::spawn(move || {
@@ -109,7 +121,7 @@ impl Terminal {
             }
         });
 
-        (Some(rx), Some(writer), Some(child), shell_name)
+        Some((rx, writer, child))
     }
 
     fn update(&mut self) {

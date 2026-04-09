@@ -192,84 +192,81 @@ impl SettingsPanel {
             // === KEYBINDINGS section ===
             ui.collapsing("⌨ Keybindings", |ui| {
                 let rebinding = &mut self.rebinding;
-                keybinding_row(
-                    ui,
-                    "New File",
-                    &mut config.keybindings.new_file,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Open Folder",
-                    &mut config.keybindings.open_folder,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Open File",
-                    &mut config.keybindings.open_file,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Save",
-                    &mut config.keybindings.save,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Command Palette",
-                    &mut config.keybindings.command_palette,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Toggle Sidebar",
-                    &mut config.keybindings.toggle_sidebar,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Toggle Terminal",
-                    &mut config.keybindings.toggle_terminal,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Shortcuts Help",
-                    &mut config.keybindings.shortcuts_help,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Settings",
-                    &mut config.keybindings.settings,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Find in File",
-                    &mut config.keybindings.find,
-                    rebinding,
-                    &mut changed,
-                );
-                keybinding_row(
-                    ui,
-                    "Close Tab",
-                    &mut config.keybindings.close_tab,
-                    rebinding,
-                    &mut changed,
-                );
+                let kb = &mut config.keybindings;
 
+                // ── General ──
+                ui.label(egui::RichText::new("General").strong().size(12.0));
+                keybinding_row(ui, "New File", &mut kb.new_file, rebinding, &mut changed);
+                keybinding_row(ui, "Open Folder", &mut kb.open_folder, rebinding, &mut changed);
+                keybinding_row(ui, "Open File", &mut kb.open_file, rebinding, &mut changed);
+                keybinding_row(ui, "Save", &mut kb.save, rebinding, &mut changed);
+                keybinding_row(ui, "Close Tab", &mut kb.close_tab, rebinding, &mut changed);
+                keybinding_row(ui, "Command Palette", &mut kb.command_palette, rebinding, &mut changed);
+                keybinding_row(ui, "Settings", &mut kb.settings, rebinding, &mut changed);
+                keybinding_row(ui, "Shortcuts Help", &mut kb.shortcuts_help, rebinding, &mut changed);
+                keybinding_row(ui, "Toggle Sidebar", &mut kb.toggle_sidebar, rebinding, &mut changed);
+                keybinding_row(ui, "Toggle Terminal", &mut kb.toggle_terminal, rebinding, &mut changed);
+                keybinding_row(ui, "Toggle Split", &mut kb.toggle_split, rebinding, &mut changed);
+
+                ui.add_space(8.0);
+
+                // ── Editor ──
+                ui.label(egui::RichText::new("Editor").strong().size(12.0));
+                keybinding_row(ui, "Find in File", &mut kb.find, rebinding, &mut changed);
+                keybinding_row(ui, "Find & Replace", &mut kb.find_replace, rebinding, &mut changed);
+                keybinding_row(ui, "Go to Line", &mut kb.go_to_line, rebinding, &mut changed);
+                keybinding_row(ui, "Undo", &mut kb.undo, rebinding, &mut changed);
+                keybinding_row(ui, "Redo", &mut kb.redo, rebinding, &mut changed);
+                keybinding_row(ui, "Select All", &mut kb.select_all, rebinding, &mut changed);
+                keybinding_row(ui, "Indent", &mut kb.indent, rebinding, &mut changed);
+                keybinding_row(ui, "Unindent", &mut kb.unindent, rebinding, &mut changed);
+                keybinding_row(ui, "Toggle Comment", &mut kb.toggle_comment, rebinding, &mut changed);
+                keybinding_row(ui, "Delete Line", &mut kb.delete_line, rebinding, &mut changed);
+                keybinding_row(ui, "Duplicate Line", &mut kb.duplicate_line, rebinding, &mut changed);
+                keybinding_row(ui, "Insert Line Below", &mut kb.insert_line_below, rebinding, &mut changed);
+                keybinding_row(ui, "Insert Line Above", &mut kb.insert_line_above, rebinding, &mut changed);
+                keybinding_row(ui, "Move Line Up", &mut kb.move_line_up, rebinding, &mut changed);
+                keybinding_row(ui, "Move Line Down", &mut kb.move_line_down, rebinding, &mut changed);
+
+                ui.add_space(8.0);
+
+                // ── Multi-cursor ──
+                ui.label(egui::RichText::new("Multi-cursor").strong().size(12.0));
+                keybinding_row(ui, "Select Next Occurrence", &mut kb.select_next_occurrence, rebinding, &mut changed);
+                keybinding_row(ui, "Select All Occurrences", &mut kb.select_all_occurrences, rebinding, &mut changed);
+                keybinding_row(ui, "Add Cursor Above", &mut kb.add_cursor_above, rebinding, &mut changed);
+                keybinding_row(ui, "Add Cursor Below", &mut kb.add_cursor_below, rebinding, &mut changed);
+
+                ui.add_space(8.0);
+
+                // ── Navigation ──
+                ui.label(egui::RichText::new("Navigation").strong().size(12.0));
+                keybinding_row(ui, "Go to Definition", &mut kb.goto_definition, rebinding, &mut changed);
+                keybinding_row(ui, "Navigate Back", &mut kb.navigate_back, rebinding, &mut changed);
+                keybinding_row(ui, "Navigate Forward", &mut kb.navigate_forward, rebinding, &mut changed);
+
+                ui.add_space(8.0);
+
+                // ── Code Actions ──
+                ui.label(egui::RichText::new("Code Actions").strong().size(12.0));
+                keybinding_row(ui, "Trigger Completion", &mut kb.trigger_completion, rebinding, &mut changed);
+                keybinding_row(ui, "Find References", &mut kb.find_references, rebinding, &mut changed);
+                keybinding_row(ui, "Rename Symbol", &mut kb.rename_symbol, rebinding, &mut changed);
+                keybinding_row(ui, "Code Actions", &mut kb.code_actions, rebinding, &mut changed);
+                keybinding_row(ui, "Format Document", &mut kb.format_document, rebinding, &mut changed);
+                keybinding_row(ui, "Toggle Blame", &mut kb.toggle_blame, rebinding, &mut changed);
+
+                ui.add_space(8.0);
+
+                // ── Debug ──
+                ui.label(egui::RichText::new("Debug").strong().size(12.0));
+                keybinding_row(ui, "Start / Continue", &mut kb.debug_start, rebinding, &mut changed);
+                keybinding_row(ui, "Toggle Breakpoint", &mut kb.debug_toggle_breakpoint, rebinding, &mut changed);
+                keybinding_row(ui, "Step Over", &mut kb.debug_step_over, rebinding, &mut changed);
+                keybinding_row(ui, "Step Into", &mut kb.debug_step_into, rebinding, &mut changed);
+                keybinding_row(ui, "Step Out", &mut kb.debug_step_out, rebinding, &mut changed);
+
+                ui.add_space(8.0);
                 if ui.button("Reset to defaults").clicked() {
                     config.keybindings = crate::config::KeyBindings::default();
                     changed = true;

@@ -1,10 +1,49 @@
 use std::path::PathBuf;
 
-use super::WritingUnicorns;
+use super::{ImageData, WritingUnicorns};
 
+/// Returns true if the path has an image file extension we can display.
+pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .as_deref()
+    {
+        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "ico") => true,
+        _ => false,
+    }
+}
 
 impl WritingUnicorns {
     pub fn open_file(&mut self, path: PathBuf) {
+        // Always clear any previous image state when opening a new file.
+        self.pending_image = None;
+        self.image_texture = None;
+
+        // Handle image files separately — load pixel data now, create texture during render.
+        if is_image_file(&path) {
+            // Guard against huge images.
+            const MAX_DIM: u32 = 8192;
+            if let Ok(img) = image::open(&path) {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                if w <= MAX_DIM && h <= MAX_DIM {
+                    self.pending_image = Some(ImageData {
+                        pixels: rgba.into_raw(),
+                        width: w,
+                        height: h,
+                    });
+                }
+            }
+            // Open a tab for the image (empty content — we won't edit it).
+            self.tab_manager.open(path.clone(), String::new());
+            self.editor.set_content(String::new(), Some(path.clone()));
+            self.config.last_file = Some(path.to_string_lossy().to_string());
+            self.config.save();
+            return;
+        }
+
         if let Ok(content) = std::fs::read_to_string(&path) {
             self.tab_manager.open(path.clone(), content.clone());
             self.editor.set_content(content.clone(), Some(path.clone()));
@@ -67,13 +106,14 @@ impl WritingUnicorns {
         if let Some(id) = self.tab_manager.active_tab {
             if let Some(tab) = self.tab_manager.tabs.iter().find(|t| t.id == id) {
                 let path = tab.path.clone();
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    self.editor.set_content(content, Some(path));
-                }
+                // Delegate to open_file so image state is handled correctly.
+                self.open_file(path);
+                return;
             }
-        } else {
-            self.editor.set_content(String::new(), None);
         }
+        self.pending_image = None;
+        self.image_texture = None;
+        self.editor.set_content(String::new(), None);
     }
 
     pub fn trigger_open_folder(&mut self) -> std::sync::mpsc::Receiver<PathBuf> {

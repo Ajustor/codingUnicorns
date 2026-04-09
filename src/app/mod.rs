@@ -23,7 +23,7 @@ use crate::ui::shortcuts::ShortcutsHelp;
 use crate::ui::statusbar::StatusBar;
 
 mod debug_ops;
-mod file_ops;
+pub mod file_ops;
 mod lsp_ops;
 mod navigation;
 mod workspace_search;
@@ -119,6 +119,18 @@ pub struct WritingUnicorns {
     pub active_pane: usize,
     /// Split ratio (0.0 - 1.0), default 0.5.
     pub split_ratio: f32,
+    // ── Image viewer ─────────────────────────────────────────────────────────
+    /// Raw image data waiting to be turned into a texture during the next frame.
+    pub pending_image: Option<ImageData>,
+    /// Cached egui texture + original pixel size for the currently-displayed image.
+    pub image_texture: Option<(egui::TextureHandle, egui::Vec2)>,
+}
+
+/// Raw RGBA pixel data for an image file opened in the editor.
+pub struct ImageData {
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl WritingUnicorns {
@@ -126,24 +138,6 @@ impl WritingUnicorns {
         let config = Config::load();
         let mut plugin_manager = PluginManager::new();
         plugin_manager.register(Box::new(WordCountPlugin::new()));
-        plugin_manager.register(Box::new(
-            crate::extension::builtin::rust_lang::RustLangExtension,
-        ));
-        plugin_manager.register(Box::new(
-            crate::extension::builtin::web_lang::WebLangExtension,
-        ));
-        plugin_manager.register(Box::new(
-            crate::extension::builtin::python_lang::PythonLangExtension,
-        ));
-        plugin_manager.register(Box::new(
-            crate::extension::builtin::data_lang::DataLangExtension,
-        ));
-        plugin_manager.register(Box::new(
-            crate::extension::builtin::shell_lang::ShellLangExtension,
-        ));
-        plugin_manager.register(Box::new(
-            crate::extension::builtin::docker_lang::DockerLangExtension,
-        ));
         let mut extension_registry = crate::extension::registry::ExtensionRegistry::new();
         extension_registry.load_installed();
         // Load installed FFI language modules into the plugin manager.
@@ -227,6 +221,8 @@ impl WritingUnicorns {
             tab_manager2: None,
             active_pane: 0,
             split_ratio: 0.5,
+            pending_image: None,
+            image_texture: None,
         };
 
         if let Some(path) = initial_path {
@@ -342,6 +338,7 @@ impl eframe::App for WritingUnicorns {
             want_open_file,
             want_new,
             want_palette,
+            want_palette_commands,
             want_terminal,
             want_sidebar,
             want_help,
@@ -364,32 +361,33 @@ impl eframe::App for WritingUnicorns {
                 self.config.keybindings.open_file.matches(i),
                 self.config.keybindings.new_file.matches(i),
                 self.config.keybindings.command_palette.matches(i),
+                i.key_pressed(egui::Key::P) && i.modifiers.ctrl && i.modifiers.shift,
                 self.config.keybindings.toggle_terminal.matches(i),
                 self.config.keybindings.toggle_sidebar.matches(i),
                 self.config.keybindings.shortcuts_help.matches(i),
                 self.config.keybindings.settings.matches(i),
-                i.key_pressed(egui::Key::F) && i.modifiers.ctrl && i.modifiers.shift,
+                self.config.keybindings.format_document.matches(i),
                 self.config.keybindings.close_tab.matches(i),
                 // F5 without shift = run (existing) or debug continue
-                i.key_pressed(egui::Key::F5) && !i.modifiers.shift,
+                self.config.keybindings.debug_start.matches(i) && !i.modifiers.shift,
                 // F5 = debug start/continue
-                i.key_pressed(egui::Key::F5),
+                self.config.keybindings.debug_start.matches(i),
                 // F9 = toggle breakpoint
-                i.key_pressed(egui::Key::F9),
+                self.config.keybindings.debug_toggle_breakpoint.matches(i),
                 // F10 = step over
-                i.key_pressed(egui::Key::F10),
+                self.config.keybindings.debug_step_over.matches(i),
                 // F11 = step in
-                i.key_pressed(egui::Key::F11) && !i.modifiers.shift,
+                self.config.keybindings.debug_step_into.matches(i),
                 // Shift+F11 = step out
-                i.key_pressed(egui::Key::F11) && i.modifiers.shift,
+                self.config.keybindings.debug_step_out.matches(i),
                 // F12 = go to definition
-                i.key_pressed(egui::Key::F12),
+                self.config.keybindings.goto_definition.matches(i),
                 // Alt+Left = navigate back
-                i.key_pressed(egui::Key::ArrowLeft) && i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift,
+                self.config.keybindings.navigate_back.matches(i),
                 // Alt+Right = navigate forward
-                i.key_pressed(egui::Key::ArrowRight) && i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift,
+                self.config.keybindings.navigate_forward.matches(i),
                 // Ctrl+\ = toggle split editor
-                i.key_pressed(egui::Key::Backslash) && i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt,
+                self.config.keybindings.toggle_split.matches(i),
             )
         });
 
@@ -402,7 +400,9 @@ impl eframe::App for WritingUnicorns {
         if want_new {
             self.open_new_file();
         }
-        if want_palette {
+        if want_palette_commands {
+            self.command_palette.toggle_commands();
+        } else if want_palette {
             self.command_palette.toggle();
         }
         if want_terminal {
@@ -763,10 +763,10 @@ impl eframe::App for WritingUnicorns {
         // Global shortcuts for new features.
         let (want_find_refs, want_rename, want_code_actions, want_blame) = ctx.input(|i| {
             (
-                i.key_pressed(egui::Key::F12) && i.modifiers.shift,
-                i.key_pressed(egui::Key::F2),
-                i.key_pressed(egui::Key::Period) && i.modifiers.ctrl,
-                i.key_pressed(egui::Key::B) && i.modifiers.ctrl && i.modifiers.alt,
+                self.config.keybindings.find_references.matches(i),
+                self.config.keybindings.rename_symbol.matches(i),
+                self.config.keybindings.code_actions.matches(i),
+                self.config.keybindings.toggle_blame.matches(i),
             )
         });
         if want_find_refs {
@@ -935,6 +935,13 @@ impl eframe::App for WritingUnicorns {
                     PaletteCommand::FindReplace => {
                         self.editor.show_find = true;
                         self.editor.show_replace = true;
+                    }
+                    PaletteCommand::RestartLsp => {
+                        self.lsp.restart_all();
+                        // Re-start LSP for the current file if an extension provides one
+                        if let Some(path) = self.editor.current_path.clone() {
+                            self.ensure_lsp_for_file(&path);
+                        }
                     }
                 }
             }

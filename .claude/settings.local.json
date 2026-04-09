@@ -19,7 +19,14 @@
       "Read(//tmp/**)",
       "Bash(cat)",
       "Bash(python3 /tmp/parse_methods.py src/editor/mod.rs)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(rtk ls:*)",
+      "Bash(rtk grep:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(cargo test:*)",
+      "Bash(mkdir -p \"C:\\\\Users\\\\alexa\\\\dev\\\\perso\\\\writing-unicorns-modules\\\\toml-lang\\\\src\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\alexa\\\\dev\\\\perso\\\\writing-unicorns-modules\\\\xml-lang\\\\src\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\alexa\\\\dev\\\\perso\\\\writing-unicorns-modules\\\\html-lang\\\\src\")"
     ]
   }
 }

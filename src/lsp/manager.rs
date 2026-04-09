@@ -17,21 +17,10 @@ impl LspManager {
         }
     }
 
-    /// Ensure an LSP server is running for the given file extension.
-    /// Uses `cmd`/`args` if provided; falls back to built-in defaults.
-    /// Silently does nothing if the server binary is not found.
-    pub fn ensure_started(&mut self, ext: &str, workspace: &Path) {
-        let (cmd, args): (&str, &[&str]) = match ext {
-            "rs" => ("rust-analyzer", &[]),
-            "ts" | "tsx" => ("typescript-language-server", &["--stdio"]),
-            "js" | "jsx" | "mjs" => ("typescript-language-server", &["--stdio"]),
-            "py" | "pyw" => ("pylsp", &[]),
-            "go" => ("gopls", &[]),
-            "vue" => ("vue-language-server", &["--stdio"]),
-            "svelte" => ("svelte-language-server", &["--stdio"]),
-            _ => return,
-        };
-        self.start_client(ext, cmd, args, workspace);
+    /// No-op: LSP servers are only started when an extension provides a command
+    /// via `ensure_started_with_cmd()`.
+    pub fn ensure_started(&mut self, _ext: &str, _workspace: &Path) {
+        // Language support comes exclusively from installable extensions.
     }
 
     /// Ensure an LSP server is running using an explicit command from the plugin system.
@@ -57,6 +46,12 @@ impl LspManager {
         if client.start(cmd, args, workspace).is_ok() {
             self.clients.insert(ext.to_string(), client);
         }
+    }
+
+    /// Stop and remove all LSP clients. They will be restarted on the next
+    /// file interaction if an extension provides the command.
+    pub fn restart_all(&mut self) {
+        self.clients.clear();
     }
 
     pub fn get_mut(&mut self, ext: &str) -> Option<&mut LspClient> {

@@ -1,3 +1,4 @@
+use crate::app::file_ops::is_image_file;
 use crate::app::WritingUnicorns;
 use crate::config::Config;
 use crate::terminal::Terminal;
@@ -1111,6 +1112,65 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                 if active_is_settings {
                     if app.settings_panel.show_inline(ui, &mut app.config) {
                         app.config.save();
+                    }
+                } else if app
+                    .editor
+                    .current_path
+                    .as_ref()
+                    .map(|p| is_image_file(p))
+                    .unwrap_or(false)
+                {
+                    // ── Image viewer ─────────────────────────────────────────────
+                    // Create the egui texture from raw pixel data on the first frame.
+                    if app.image_texture.is_none() {
+                        if let Some(ref img_data) = app.pending_image {
+                            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                                [img_data.width as usize, img_data.height as usize],
+                                &img_data.pixels,
+                            );
+                            let texture = ui.ctx().load_texture(
+                                "image_preview",
+                                color_image,
+                                egui::TextureOptions::LINEAR,
+                            );
+                            let size =
+                                egui::vec2(img_data.width as f32, img_data.height as f32);
+                            app.image_texture = Some((texture, size));
+                        }
+                    }
+
+                    if let Some((ref texture, original_size)) = app.image_texture {
+                        let available = ui.available_size();
+                        let scale = (available.x / original_size.x)
+                            .min(available.y / original_size.y)
+                            .min(1.0);
+                        let display_size =
+                            egui::vec2(original_size.x * scale, original_size.y * scale);
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(((available.y - display_size.y) / 2.0).max(0.0));
+                            ui.image(egui::load::SizedTexture::new(
+                                texture.id(),
+                                display_size,
+                            ));
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}×{}",
+                                    original_size.x as u32,
+                                    original_size.y as u32
+                                ))
+                                .small()
+                                .color(egui::Color32::GRAY),
+                            );
+                        });
+                    } else {
+                        // Image failed to load — show a placeholder.
+                        ui.centered_and_justified(|ui| {
+                            ui.label(
+                                egui::RichText::new("Unable to load image")
+                                    .color(egui::Color32::GRAY),
+                            );
+                        });
                     }
                 } else if app.editor.current_path.is_some() || !app.editor.buffer.to_string().is_empty()
                 {
