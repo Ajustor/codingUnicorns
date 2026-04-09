@@ -8,6 +8,10 @@ pub struct GitPanel {
     pub rename_branch_name: String,
     pub rename_branch_old: String,
     pub show_rename_dialog: bool,
+    /// Cached conflict file paths to avoid reading files every frame.
+    cached_conflict_files: Vec<String>,
+    /// Number of files when cache was last computed.
+    conflict_cache_file_count: usize,
 }
 
 impl GitPanel {
@@ -20,6 +24,8 @@ impl GitPanel {
             rename_branch_name: String::new(),
             rename_branch_old: String::new(),
             show_rename_dialog: false,
+            cached_conflict_files: vec![],
+            conflict_cache_file_count: 0,
         }
     }
 
@@ -496,13 +502,18 @@ impl GitPanel {
         ui: &mut egui::Ui,
         git: &mut GitStatus,
     ) -> Option<String> {
-        // Collect files that have conflict markers on disk
-        let conflict_files: Vec<String> = git
-            .files
-            .iter()
-            .filter(|f| Self::has_conflict_markers(git.repo_path.as_ref(), &f.path))
-            .map(|f| f.path.clone())
-            .collect();
+        // Only rescan for conflict markers when the file list changes
+        let file_count = git.files.len();
+        if file_count != self.conflict_cache_file_count {
+            self.conflict_cache_file_count = file_count;
+            self.cached_conflict_files = git
+                .files
+                .iter()
+                .filter(|f| Self::has_conflict_markers(git.repo_path.as_ref(), &f.path))
+                .map(|f| f.path.clone())
+                .collect();
+        }
+        let conflict_files = &self.cached_conflict_files;
 
         if conflict_files.is_empty() {
             return None;
@@ -519,7 +530,7 @@ impl GitPanel {
         });
 
         let mut open_path: Option<String> = None;
-        for path in &conflict_files {
+        for path in conflict_files {
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new("!")

@@ -13,7 +13,13 @@
       "WebFetch(domain:github.com)",
       "Bash(rtk git:*)",
       "Bash(cargo build:*)",
-      "Bash(cargo run:*)"
+      "Bash(cargo run:*)",
+      "Bash(git:*)",
+      "Bash(git -C \"C:/Users/alexa/dev/perso/writingUnicorns\" diff f1993d5..HEAD -- \"*.rs\")",
+      "Read(//tmp/**)",
+      "Bash(cat)",
+      "Bash(python3 /tmp/parse_methods.py src/editor/mod.rs)",
+      "Bash(python3:*)"
     ]
   }
 }

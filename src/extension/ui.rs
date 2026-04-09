@@ -157,14 +157,17 @@ impl ExtensionsPanel {
             }
         }
 
-        ui.vertical(|ui| {
+        let max_w = ui.available_width();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.set_max_width(max_w);
+
             // Search bar
             ui.horizontal(|ui| {
                 ui.label("🔍");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search_query)
                         .hint_text("Search extensions…")
-                        .desired_width(ui.available_width()),
+                        .desired_width(ui.available_width() - 30.0),
                 );
             });
             ui.add_space(6.0);
@@ -637,18 +640,20 @@ impl ExtensionsPanel {
 
                 ui.horizontal(|ui| {
                     ui.label("Name:");
+                    let w = (ui.available_width() - 10.0).max(40.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.generate_name)
                             .hint_text("my-extension")
-                            .desired_width(ui.available_width()),
+                            .desired_width(w),
                     );
                 });
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     ui.label("Path:");
+                    let w = (ui.available_width() - 10.0).max(40.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.generate_path)
-                            .desired_width(ui.available_width()),
+                            .desired_width(w),
                     );
                 });
                 ui.add_space(4.0);
