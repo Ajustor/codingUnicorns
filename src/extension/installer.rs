@@ -682,6 +682,19 @@ fn tempdir_for_clone(repo_url: &str) -> anyhow::Result<PathBuf> {
 /// Install all external dependencies declared in a module's manifest.
 /// Calls `progress(step_description)` before each command.
 /// Returns a list of error strings (non-fatal — the caller decides what to do).
+/// Create a Command that works on both Unix and Windows.
+/// On Windows, scripts like `npm`, `pip3`, `go` are batch files (.cmd/.bat)
+/// and need to be invoked through `cmd /C`.
+fn shell_command(program: &str) -> std::process::Command {
+    if cfg!(target_os = "windows") {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", program]);
+        cmd
+    } else {
+        std::process::Command::new(program)
+    }
+}
+
 fn install_deps(
     deps: &super::manifest::Dependencies,
     mut progress: impl FnMut(String),
@@ -692,7 +705,7 @@ fn install_deps(
     if !deps.npm.is_empty() {
         let step = format!("npm install -g {}", deps.npm.join(" "));
         progress(step.clone());
-        let mut cmd = std::process::Command::new("npm");
+        let mut cmd = shell_command("npm");
         cmd.arg("install").arg("-g");
         for pkg in &deps.npm {
             cmd.arg(pkg);
@@ -717,7 +730,7 @@ fn install_deps(
         for pkg in &deps.pip {
             let step = format!("pip3 install {pkg}");
             progress(step.clone());
-            match std::process::Command::new("pip3")
+            match shell_command("pip3")
                 .args(["install", pkg])
                 .output()
             {
@@ -739,7 +752,7 @@ fn install_deps(
         for pkg in &deps.cargo {
             let step = format!("cargo install {pkg}");
             progress(step.clone());
-            match std::process::Command::new("cargo")
+            match shell_command("cargo")
                 .args(["install", pkg])
                 .output()
             {
@@ -761,7 +774,7 @@ fn install_deps(
         for pkg in &deps.go {
             let step = format!("go install {pkg}");
             progress(step.clone());
-            match std::process::Command::new("go")
+            match shell_command("go")
                 .args(["install", pkg])
                 .env("GOPATH", {
                     // Prefer $GOPATH, fall back to ~/go

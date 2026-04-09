@@ -1,3 +1,4 @@
+pub mod auto_close;
 pub mod autocomplete;
 pub mod bracket_match;
 pub mod buffer;
@@ -128,6 +129,13 @@ pub struct Editor {
     // ── Cursor blink ────────────────────────────────────────────────────────
     /// Epoch-ms of the last cursor movement / keypress, used to reset blink.
     cursor_blink_epoch: std::time::Instant,
+    // ── Selection word highlighting ─────────────────────────────────────
+    /// Visible occurrences of the word under cursor: (row, col_start, col_end).
+    word_occurrences: Vec<(usize, usize, usize)>,
+    /// Content version when word_occurrences was last computed.
+    word_occurrences_version: i32,
+    /// The word that was highlighted (to avoid recomputing when cursor moves within same word).
+    word_occurrences_word: String,
 }
 
 impl Editor {
@@ -192,6 +200,9 @@ impl Editor {
             format_request_pending: false,
             wrap_col: 0,
             cursor_blink_epoch: std::time::Instant::now(),
+            word_occurrences: vec![],
+            word_occurrences_version: -1,
+            word_occurrences_word: String::new(),
         }
     }
 
@@ -374,8 +385,42 @@ impl Editor {
         None
     }
 
-    pub fn insert_char(&mut self, ch: char) {
+    pub fn insert_char(&mut self, ch: char, auto_close_enabled: bool) {
         self.buffer.checkpoint();
+
+        // Skip-close: if typing a closing char that's already under the cursor, just move right.
+        if auto_close_enabled && auto_close::is_closing(ch) {
+            let (row, col) = self.cursor.position();
+            let line = self.buffer.line(row);
+            let chars: Vec<char> = line.chars().collect();
+            if col < chars.len() && chars[col] == ch {
+                self.cursor.move_right(&self.buffer);
+                self.cursor.clear_selection();
+                self.cursor_blink_epoch = std::time::Instant::now();
+                return;
+            }
+        }
+
+        // Surround: if there's a selection and typing an opening char, wrap the selection.
+        if auto_close_enabled && self.cursor.has_selection() {
+            if let Some(close) = auto_close::closing_pair(ch) {
+                if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
+                    self.buffer.insert_char(er, ec, close);
+                    self.buffer.insert_char(sr, sc, ch);
+                    if sr == er {
+                        self.cursor.set_position(er, ec + 2);
+                    } else {
+                        self.cursor.set_position(er, ec + 1);
+                    }
+                    self.cursor.clear_selection();
+                    self.is_modified = true;
+                    self.content_version = self.content_version.wrapping_add(1);
+                    self.cursor_blink_epoch = std::time::Instant::now();
+                    return;
+                }
+            }
+        }
+
         if self.cursor.has_selection() {
             self.delete_selection();
         }
@@ -383,6 +428,27 @@ impl Editor {
         self.buffer.insert_char(row, col, ch);
         self.cursor.move_right(&self.buffer);
         self.cursor.clear_selection();
+
+        // Auto-insert closing bracket/quote if appropriate.
+        if auto_close_enabled {
+            if let Some(close) = auto_close::closing_pair(ch) {
+                let line = self.buffer.line(row);
+                let chars: Vec<char> = line.chars().collect();
+                let cursor_col = col + 1; // cursor moved right already
+                let next_char = chars.get(cursor_col).copied();
+                let prev_char = if col > 0 {
+                    chars.get(col.saturating_sub(1)).copied()
+                } else {
+                    None
+                };
+                if !auto_close::should_skip_quote_auto_close(ch, prev_char)
+                    && auto_close::should_auto_close(ch, next_char)
+                {
+                    let (cur_row, cur_col) = self.cursor.position();
+                    self.buffer.insert_char(cur_row, cur_col, close);
+                }
+            }
+        }
 
         // Adjust extra cursors on the same row that are after the insertion point.
         for ec in &mut self.extra_cursors {
@@ -466,6 +532,25 @@ impl Editor {
             return;
         }
         let (row, col) = self.cursor.position();
+
+        // Pair-delete: if the char before cursor and the char under cursor form a pair, delete both.
+        if col > 0 {
+            let line = self.buffer.line(row);
+            let chars: Vec<char> = line.chars().collect();
+            let prev = chars[col - 1];
+            if let Some(expected_close) = auto_close::closing_pair(prev) {
+                if col < chars.len() && chars[col] == expected_close {
+                    self.buffer.delete_char(row, col);
+                    self.buffer.delete_char(row, col - 1);
+                    self.cursor.move_left(&self.buffer);
+                    self.is_modified = true;
+                    self.content_version = self.content_version.wrapping_add(1);
+                    self.cursor_blink_epoch = std::time::Instant::now();
+                    return;
+                }
+            }
+        }
+
         if col > 0 {
             self.buffer.delete_char(row, col - 1);
             self.cursor.move_left(&self.buffer);
@@ -728,6 +813,70 @@ impl Editor {
             self.scroll_to_cursor = true;
         } else {
             self.find_current = 0;
+        }
+    }
+
+    /// Recompute visible word occurrences if the word under cursor changed.
+    /// Only highlights when there is an active selection (not just cursor on a word).
+    fn update_word_occurrences(&mut self, first_visible_line: usize, last_visible_line: usize) {
+        let (row, col) = self.cursor.position();
+
+        // Only highlight when there is an active selection of a single word
+        let word = if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
+            if sr == er && ec > sc {
+                let line = self.buffer.line(sr);
+                let selected: String = line.chars().skip(sc).take(ec - sc).collect();
+                if selected.len() >= 3 && selected.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    selected
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            // No selection = no highlighting
+            String::new()
+        };
+
+        if word == self.word_occurrences_word && self.content_version == self.word_occurrences_version {
+            return;
+        }
+
+        self.word_occurrences.clear();
+        self.word_occurrences_version = self.content_version;
+        self.word_occurrences_word = word.clone();
+
+        if word.len() < 3 {
+            return;
+        }
+
+        let word_chars: Vec<char> = word.chars().collect();
+        let word_len = word_chars.len();
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
+        for line_idx in first_visible_line..=last_visible_line.min(self.buffer.num_lines().saturating_sub(1)) {
+            let line = self.buffer.line(line_idx);
+            let chars: Vec<char> = line.chars().collect();
+            if chars.len() < word_len {
+                continue;
+            }
+            let mut col_pos = 0;
+            while col_pos + word_len <= chars.len() {
+                if chars[col_pos..col_pos + word_len] == word_chars[..] {
+                    let before_ok = col_pos == 0 || !is_word_char(chars[col_pos - 1]);
+                    let after_ok = col_pos + word_len >= chars.len() || !is_word_char(chars[col_pos + word_len]);
+                    if before_ok && after_ok {
+                        let is_cursor_pos = line_idx == row && col_pos <= col && col <= col_pos + word_len;
+                        if !is_cursor_pos {
+                            self.word_occurrences.push((line_idx, col_pos, col_pos + word_len));
+                        }
+                    }
+                    col_pos += word_len;
+                } else {
+                    col_pos += 1;
+                }
+            }
         }
     }
 
@@ -1398,33 +1547,9 @@ impl Editor {
                                 egui::Event::Text(text) => {
                                     // Don't insert text when Ctrl is held (shortcuts)
                                     if !i.modifiers.ctrl && !i.modifiers.command {
+                                        let auto_close = config.editor.auto_close_brackets;
                                         for ch in text.chars() {
-                                            // Auto-close pairs: insert closing char and move cursor between
-                                            let close_char: Option<char> = match ch {
-                                                '{' => Some('}'),
-                                                '(' => Some(')'),
-                                                '[' => Some(']'),
-                                                '"' => Some('"'),
-                                                '\'' => Some('\''),
-                                                '`' => Some('`'),
-                                                _ => None,
-                                            };
-                                            if let Some(close) = close_char {
-                                                // Don't double-close if next char is already the close char
-                                                let (row, col) = self.cursor.position();
-                                                let next_ch =
-                                                    self.buffer.line(row).chars().nth(col);
-                                                if next_ch == Some(close) && ch == close {
-                                                    // Just skip over — move cursor right
-                                                    self.cursor.move_right(&self.buffer);
-                                                } else {
-                                                    self.insert_char(ch);
-                                                    self.insert_char(close);
-                                                    self.cursor.move_left(&self.buffer);
-                                                }
-                                            } else {
-                                                self.insert_char(ch);
-                                            }
+                                            self.insert_char(ch, auto_close);
                                             // Signature help: trigger on '(' or ','
                                             if ch == '(' || ch == ',' {
                                                 let (row, col) = self.cursor.position();
@@ -1448,11 +1573,53 @@ impl Editor {
                                     }
                                 }
                                 egui::Event::Paste(text) => {
-                                    for ch in text.chars() {
-                                        if ch == '\n' {
-                                            self.insert_newline();
-                                        } else {
-                                            self.insert_char(ch);
+                                    let cursor_count = 1 + self.extra_cursors.len();
+                                    let lines: Vec<&str> = text.lines().collect();
+
+                                    if cursor_count > 1 && lines.len() == cursor_count {
+                                        // Collect all cursor positions sorted top-to-bottom
+                                        let mut positions: Vec<(usize, usize, bool)> = vec![];
+                                        let (mr, mc) = self.cursor.position();
+                                        positions.push((mr, mc, true));
+                                        for ec in &self.extra_cursors {
+                                            let (er, ec_col) = ec.position();
+                                            positions.push((er, ec_col, false));
+                                        }
+                                        positions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+                                        self.buffer.checkpoint();
+                                        // Insert in reverse order to preserve positions
+                                        for (sorted_idx, &(row, col, _)) in positions.iter().enumerate().rev() {
+                                            let line_text = lines[sorted_idx];
+                                            for (j, ch) in line_text.chars().enumerate() {
+                                                self.buffer.insert_char(row, col + j, ch);
+                                            }
+                                        }
+                                        // Update cursor positions (forward order)
+                                        for (sorted_idx, &(row, col, is_main)) in positions.iter().enumerate() {
+                                            let new_col = col + lines[sorted_idx].chars().count();
+                                            if is_main {
+                                                self.cursor.set_position(row, new_col);
+                                            } else {
+                                                for ec in &mut self.extra_cursors {
+                                                    let (er, ec_col) = ec.position();
+                                                    if er == row && ec_col == col {
+                                                        ec.set_position(row, new_col);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        self.is_modified = true;
+                                        self.content_version = self.content_version.wrapping_add(1);
+                                    } else {
+                                        // Default: paste full text at each cursor
+                                        for ch in text.chars() {
+                                            if ch == '\n' {
+                                                self.insert_newline();
+                                            } else {
+                                                self.insert_char(ch, false);
+                                            }
                                         }
                                     }
                                     text_typed = true;
@@ -1816,10 +1983,10 @@ impl Editor {
                                             } else if !modifiers.shift {
                                                 if self.detected_indent_spaces {
                                                     for _ in 0..self.detected_indent_size {
-                                                        self.insert_char(' ');
+                                                        self.insert_char(' ', false);
                                                     }
                                                 } else {
-                                                    self.insert_char('\t');
+                                                    self.insert_char('\t', false);
                                                 }
                                                 text_typed = true;
                                             }
@@ -2190,11 +2357,54 @@ impl Editor {
                         });
 
                     if do_copy {
-                        let text = self.selected_text().unwrap_or_else(|| {
-                            let (row, _) = self.cursor.position();
-                            self.buffer.line(row) + "\n"
-                        });
-                        ui.ctx().copy_text(text);
+                        if !self.extra_cursors.is_empty() {
+                            let mut parts: Vec<String> = vec![];
+                            // Main cursor
+                            if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
+                                if sr == er {
+                                    let line = self.buffer.line(sr);
+                                    parts.push(line.chars().skip(sc).take(ec - sc).collect());
+                                } else {
+                                    // Multi-line selection: collect all lines
+                                    let mut text = String::new();
+                                    for r in sr..=er {
+                                        let l = self.buffer.line(r);
+                                        if r == sr {
+                                            text.push_str(&l.chars().skip(sc).collect::<String>());
+                                        } else if r == er {
+                                            text.push('\n');
+                                            text.push_str(&l.chars().take(ec).collect::<String>());
+                                        } else {
+                                            text.push('\n');
+                                            text.push_str(&l);
+                                        }
+                                    }
+                                    parts.push(text);
+                                }
+                            } else {
+                                parts.push(self.buffer.line(self.cursor.row).to_string());
+                            }
+                            // Extra cursors
+                            for extra in &self.extra_cursors {
+                                if let Some(((sr, sc), (er, ec))) = extra.selection_range() {
+                                    if sr == er {
+                                        let line = self.buffer.line(sr);
+                                        parts.push(line.chars().skip(sc).take(ec - sc).collect());
+                                    } else {
+                                        parts.push(self.buffer.line(sr).to_string());
+                                    }
+                                } else {
+                                    parts.push(self.buffer.line(extra.row).to_string());
+                                }
+                            }
+                            ui.ctx().copy_text(parts.join("\n"));
+                        } else {
+                            let text = self.selected_text().unwrap_or_else(|| {
+                                let (row, _) = self.cursor.position();
+                                self.buffer.line(row) + "\n"
+                            });
+                            ui.ctx().copy_text(text);
+                        }
                     }
                     if do_cut {
                         if let Some(text) = self.selected_text() {
@@ -2468,6 +2678,10 @@ impl Editor {
                 // Determine selection range for highlight
                 let sel_range = self.cursor.selection_range();
 
+                // Update word occurrence highlights
+                let last_visible = first_visible + visible_count;
+                self.update_word_occurrences(first_visible, last_visible);
+
                 // Iterate visible lines, skipping folded content
                 let mut line_idx = first_visible;
                 while line_idx < total_lines
@@ -2709,6 +2923,41 @@ impl Editor {
                                     }
                                     search_pos = abs_end.max(abs_start + 1);
                                 }
+                            }
+                        }
+                    }
+
+                    // Word occurrence highlighting
+                    for &(occ_row, occ_start, occ_end) in &self.word_occurrences {
+                        if occ_row == line_idx {
+                            let occ_sx = x_start
+                                + ui.fonts(|f| {
+                                    let text: String = line.chars().take(occ_start).collect();
+                                    f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
+                                        .size()
+                                        .x
+                                });
+                            let occ_ex = x_start
+                                + ui.fonts(|f| {
+                                    let text: String = line.chars().take(occ_end).collect();
+                                    f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
+                                        .size()
+                                        .x
+                                });
+                            if occ_ex > occ_sx {
+                                painter.rect_filled(
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(occ_sx - self.scroll_offset.x, y),
+                                        egui::pos2(occ_ex - self.scroll_offset.x, y + line_height),
+                                    ),
+                                    2.0,
+                                    egui::Color32::from_rgba_premultiplied(
+                                        accent_color.r(),
+                                        accent_color.g(),
+                                        accent_color.b(),
+                                        15,
+                                    ),
+                                );
                             }
                         }
                     }

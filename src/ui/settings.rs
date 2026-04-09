@@ -81,6 +81,12 @@ impl SettingsPanel {
                 changed = true;
             }
 
+            let old = config.editor.auto_close_brackets;
+            ui.checkbox(&mut config.editor.auto_close_brackets, "Auto-close brackets");
+            if config.editor.auto_close_brackets != old {
+                changed = true;
+            }
+
             ui.add_space(12.0);
 
             // === THEME section ===

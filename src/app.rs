@@ -6,6 +6,7 @@ use crate::editor::Editor;
 use crate::filetree::FileTree;
 use crate::git::GitStatus;
 use crate::lsp::{LspClient, LspManager};
+use crate::nav_history::NavigationHistory;
 use crate::plugin::builtin::word_count::WordCountPlugin;
 use crate::plugin::manager::PluginManager;
 use crate::plugin::PluginContext;
@@ -27,6 +28,7 @@ pub struct WritingUnicorns {
     pub editor: Editor,
     pub file_tree: FileTree,
     pub git_status: GitStatus,
+    pub git_panel: crate::ui::git_panel::GitPanel,
     pub lsp: LspManager,
     pub pending_hover_id: Option<u64>,
     pub lsp_hover_result: Option<String>,
@@ -99,6 +101,18 @@ pub struct WritingUnicorns {
     // ── DAP Debugger ─────────────────────────────────────────────────────────
     pub dap: DapManager,
     pub debugger_panel: DebuggerPanel,
+    // ── Navigation History ────────────────────────────────────────────────────
+    pub nav_history: NavigationHistory,
+    // ── Merge tool ───────────────────────────────────────────────────────────
+    pub merge_view: Option<crate::ui::merge_panel::MergeView>,
+    // ── Split Editor ─────────────────────────────────────────────────────────
+    /// Second editor pane (None = no split).
+    pub editor2: Option<Editor>,
+    pub tab_manager2: Option<TabManager>,
+    /// Which pane is active: 0 = left/main, 1 = right/split.
+    pub active_pane: usize,
+    /// Split ratio (0.0 - 1.0), default 0.5.
+    pub split_ratio: f32,
 }
 
 impl WritingUnicorns {
@@ -149,6 +163,7 @@ impl WritingUnicorns {
             editor: Editor::new(),
             file_tree: FileTree::new(),
             git_status: GitStatus::new(),
+            git_panel: crate::ui::git_panel::GitPanel::new(),
             lsp: LspManager::new(),
             pending_hover_id: None,
             lsp_hover_result: None,
@@ -200,6 +215,12 @@ impl WritingUnicorns {
             last_edit_instant: None,
             dap: DapManager::new(),
             debugger_panel: DebuggerPanel::new(),
+            nav_history: NavigationHistory::new(),
+            merge_view: None,
+            editor2: None,
+            tab_manager2: None,
+            active_pane: 0,
+            split_ratio: 0.5,
         };
 
         if let Some(path) = initial_path {
@@ -260,6 +281,14 @@ impl WritingUnicorns {
         let max = self.editor.buffer.num_lines().saturating_sub(1);
         self.editor.cursor.set_position(line.min(max), 0);
         self.editor.scroll_to_cursor = true;
+    }
+
+    pub fn push_nav_and_goto(&mut self, target_path: PathBuf, target_line: usize) {
+        if let Some(current_path) = self.editor.current_path.clone() {
+            let (row, col) = self.editor.cursor.position();
+            self.nav_history.push(current_path, row, col);
+        }
+        self.open_file_at_line(target_path, target_line);
     }
 
     pub fn open_folder(&mut self, path: PathBuf) {
@@ -410,6 +439,41 @@ impl WritingUnicorns {
         }
     }
 
+    /// Toggle the split editor (Ctrl+\).
+    pub fn toggle_split(&mut self) {
+        if self.editor2.is_some() {
+            // Close split
+            self.editor2 = None;
+            self.tab_manager2 = None;
+            self.active_pane = 0;
+        } else {
+            // Open split with current file
+            let mut editor2 = Editor::new();
+            let mut tab_manager2 = TabManager::new();
+            if let Some(ref path) = self.editor.current_path.clone() {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    editor2.set_content(content.clone(), Some(path.clone()));
+                    tab_manager2.open(path.clone(), content);
+                }
+            }
+            self.editor2 = Some(editor2);
+            self.tab_manager2 = Some(tab_manager2);
+            self.active_pane = 1;
+        }
+    }
+
+    /// Open a file in the right (split) editor pane.
+    pub fn open_file_in_pane2(&mut self, path: PathBuf) {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Some(ref mut tm2) = self.tab_manager2 {
+                tm2.open(path.clone(), content.clone());
+            }
+            if let Some(ref mut e2) = self.editor2 {
+                e2.set_content(content, Some(path));
+            }
+        }
+    }
+
     /// Navigate to the definition of `word` via LSP (async), then file-path lookup, then workspace search.
     pub fn handle_go_to_definition(&mut self, word: &str) {
         // Strategy 0: try LSP definition (async — will navigate when the response arrives).
@@ -438,6 +502,10 @@ impl WritingUnicorns {
         // Strategy 0: search current file first (fastest, most likely match).
         let current_content = self.editor.buffer.to_string();
         if let Some((_, line)) = find_definition_in_buffer(&current_content, word) {
+            if let Some(current_path) = self.editor.current_path.clone() {
+                let (row, col) = self.editor.cursor.position();
+                self.nav_history.push(current_path, row, col);
+            }
             let max = self.editor.buffer.num_lines().saturating_sub(1);
             self.editor.cursor.set_position(line.min(max), 0);
             self.editor.scroll_to_cursor = true;
@@ -504,13 +572,13 @@ impl WritingUnicorns {
                 .and_then(|p| p.parent().map(|p| p.to_path_buf()));
             if let Some(dir) = current_dir {
                 if let Some((path, line)) = search_workspace_for_symbol(&dir, &patterns, 200, 3) {
-                    self.open_file_at_line(path, line);
+                    self.push_nav_and_goto(path, line);
                     return;
                 }
             }
             // Fall back to full workspace search with higher limits.
             if let Some((path, line)) = search_workspace_for_symbol(&ws, &patterns, 2000, 10) {
-                self.open_file_at_line(path, line);
+                self.push_nav_and_goto(path, line);
             }
         }
     }
@@ -922,6 +990,10 @@ impl eframe::App for WritingUnicorns {
             want_step_over_f10,
             want_step_in_f11,
             want_step_out_shift_f11,
+            want_goto_def,
+            want_nav_back,
+            want_nav_forward,
+            want_split,
         ) = ctx.input(|i| {
             (
                 self.config.keybindings.open_folder.matches(i),
@@ -946,6 +1018,14 @@ impl eframe::App for WritingUnicorns {
                 i.key_pressed(egui::Key::F11) && !i.modifiers.shift,
                 // Shift+F11 = step out
                 i.key_pressed(egui::Key::F11) && i.modifiers.shift,
+                // F12 = go to definition
+                i.key_pressed(egui::Key::F12),
+                // Alt+Left = navigate back
+                i.key_pressed(egui::Key::ArrowLeft) && i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift,
+                // Alt+Right = navigate forward
+                i.key_pressed(egui::Key::ArrowRight) && i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift,
+                // Ctrl+\ = toggle split editor
+                i.key_pressed(egui::Key::Backslash) && i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt,
             )
         });
 
@@ -1016,6 +1096,28 @@ impl eframe::App for WritingUnicorns {
                 }
             }
         }
+        // F12 = go to definition
+        if want_goto_def {
+            if let Some(word) = self.editor.current_word_full_pub() {
+                self.handle_go_to_definition(&word);
+            }
+        }
+        // Alt+Left = navigate back
+        if want_nav_back {
+            if let Some(entry) = self.nav_history.go_back() {
+                self.open_file_at_line(entry.path, entry.row);
+            }
+        }
+        // Alt+Right = navigate forward
+        if want_nav_forward {
+            if let Some(entry) = self.nav_history.go_forward() {
+                self.open_file_at_line(entry.path, entry.row);
+            }
+        }
+        // Ctrl+\ = toggle split editor
+        if want_split {
+            self.toggle_split();
+        }
         // Poll the DAP session every frame.
         self.dap.poll();
         if want_close_tab && self.close_tab_id_pending.is_none() {
@@ -1063,6 +1165,10 @@ impl eframe::App for WritingUnicorns {
                     self.pending_hover_id = None;
                 } else if Some(id) == self.pending_definition_id {
                     if let Some((path, line)) = LspClient::parse_definition(&response) {
+                        if let Some(current_path) = self.editor.current_path.clone() {
+                            let (row, col) = self.editor.cursor.position();
+                            self.nav_history.push(current_path, row, col);
+                        }
                         self.open_file_at_line(path, line as usize);
                         self.pending_definition_id = None;
                     }

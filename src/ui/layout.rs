@@ -528,7 +528,11 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                     SidebarTab::Explorer => {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             if let Some(path) = app.file_tree.show(ui) {
-                                app.open_file(path);
+                                if app.active_pane == 1 && app.editor2.is_some() {
+                                    app.open_file_in_pane2(path);
+                                } else {
+                                    app.open_file(path);
+                                }
                             }
                         });
                         // Handle context menu actions from the file tree
@@ -600,11 +604,17 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                         if let Some((path, line)) =
                             app.workspace_search.show(ui, app.workspace_path.as_ref())
                         {
-                            app.open_file_at_line(path, line);
+                            app.push_nav_and_goto(path, line);
                         }
                     }
                     SidebarTab::Git => {
-                        app.git_status.show(ui);
+                        let merge_file = app.git_panel.show(ui, &mut app.git_status);
+                        if let Some(file_path) = merge_file {
+                            if let Some(ws) = &app.workspace_path {
+                                let full_path = ws.join(&file_path);
+                                app.merge_view = crate::ui::merge_panel::MergeView::open(full_path);
+                            }
+                        }
                     }
                     SidebarTab::Extensions => {
                         app.extensions_panel.show(ui, &mut app.extension_registry);
@@ -671,7 +681,7 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                             }
                         }
                         if let Some((path, line)) = action.navigate_to {
-                            app.open_file_at_line(path, line);
+                            app.push_nav_and_goto(path, line);
                         }
                     }
                     SidebarTab::Outline => {
@@ -701,7 +711,7 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                                     }
                                 }
                                 if let Some((path, line)) = nav_to {
-                                    app.open_file_at_line(path, line);
+                                    app.push_nav_and_goto(path, line);
                                 }
                             });
                         }
@@ -743,7 +753,7 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                         }
                     }
                     if let Some((path, line)) = nav_to {
-                        app.open_file_at_line(path, line);
+                        app.push_nav_and_goto(path, line);
                     }
                 });
             });
@@ -764,140 +774,437 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
             // Remove default item spacing to avoid gaps between tab bar and editor
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
 
-            if !app.tab_manager.tabs.is_empty() {
-                // Draw the tab bar background explicitly to fill the full allocated height
-                let (tab_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 32.0),
-                    egui::Sense::hover(),
-                );
-                ui.painter().rect_filled(
-                    tab_rect,
-                    0.0,
-                    egui::Color32::from_rgb(
-                        app.config.theme.background[0].saturating_add(7),
-                        app.config.theme.background[1].saturating_add(7),
-                        app.config.theme.background[2].saturating_add(7),
-                    ),
-                );
-                let mut tab_ui = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(tab_rect)
-                        .layout(*ui.layout()),
-                );
-                tab_ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
-                if let Some(path) = app.tab_manager.show(&mut tab_ui) {
-                    app.open_file(path);
-                } else if app.tab_manager.tabs.is_empty() && app.editor.current_path.is_some() {
-                    // Last tab was closed via × — clear the editor so the welcome screen appears.
-                    app.load_active_tab();
+            // ── Merge tool takes over the editor area ───────────────────────
+            if let Some(ref mut merge_view) = app.merge_view {
+                let action = merge_view.show(ui);
+                match action {
+                    crate::ui::merge_panel::MergeAction::SaveAndResolve => {
+                        let path = merge_view.file_path.clone();
+                        let content = merge_view.result_text.clone();
+                        let _ = std::fs::write(&path, &content);
+                        // Stage the resolved file
+                        if let Some(rel_path) = app.workspace_path.as_ref()
+                            .and_then(|ws| path.strip_prefix(ws).ok())
+                            .map(|p| p.to_string_lossy().to_string())
+                        {
+                            app.git_status.stage_file(&rel_path);
+                        }
+                        app.merge_view = None;
+                    }
+                    crate::ui::merge_panel::MergeAction::Cancel => {
+                        app.merge_view = None;
+                    }
+                    crate::ui::merge_panel::MergeAction::None => {}
                 }
-                // Keep settings_panel.open in sync with whether a settings tab exists
-                app.settings_panel.open = app.tab_manager.tabs.iter().any(|t| t.is_settings);
+                return; // Don't render normal editor when merge tool is active
             }
 
-            let active_is_settings = app
-                .tab_manager
-                .active_tab
-                .and_then(|id| app.tab_manager.tabs.iter().find(|t| t.id == id))
-                .map(|t| t.is_settings)
-                .unwrap_or(false);
+            let is_split = app.editor2.is_some();
 
-            if active_is_settings {
-                if app.settings_panel.show_inline(ui, &mut app.config) {
-                    app.config.save();
+            if is_split {
+                // ── Split mode: left pane (full) + right pane (simplified) ──
+                let available = ui.available_rect_before_wrap();
+                let split_ratio = app.split_ratio;
+                let left_width = (available.width() * split_ratio - 1.0).max(80.0);
+                let right_width = (available.width() - left_width - 2.0).max(80.0);
+
+                // Left pane rect
+                let left_rect = egui::Rect::from_min_size(
+                    available.min,
+                    egui::vec2(left_width, available.height()),
+                );
+                // Separator rect (1px)
+                let sep_rect = egui::Rect::from_min_size(
+                    egui::pos2(available.min.x + left_width, available.min.y),
+                    egui::vec2(2.0, available.height()),
+                );
+                // Right pane rect
+                let right_rect = egui::Rect::from_min_size(
+                    egui::pos2(available.min.x + left_width + 2.0, available.min.y),
+                    egui::vec2(right_width, available.height()),
+                );
+
+                // Draw separator
+                ui.painter().rect_filled(
+                    sep_rect,
+                    0.0,
+                    egui::Color32::from_rgb(
+                        app.config.theme.background[0].saturating_add(30),
+                        app.config.theme.background[1].saturating_add(30),
+                        app.config.theme.background[2].saturating_add(30),
+                    ),
+                );
+
+                // Active pane highlight border
+                let active_pane = app.active_pane;
+                let accent_color = egui::Color32::from_rgb(
+                    app.config.theme.accent[0],
+                    app.config.theme.accent[1],
+                    app.config.theme.accent[2],
+                );
+                if active_pane == 0 {
+                    ui.painter().rect_stroke(
+                        left_rect,
+                        0.0,
+                        egui::Stroke::new(1.0, accent_color),
+                        egui::StrokeKind::Inside,
+                    );
+                } else {
+                    ui.painter().rect_stroke(
+                        right_rect,
+                        0.0,
+                        egui::Stroke::new(1.0, accent_color),
+                        egui::StrokeKind::Inside,
+                    );
                 }
-            } else if app.editor.current_path.is_some() || !app.editor.buffer.to_string().is_empty()
-            {
-                // ── Breadcrumbs bar ───────────────────────────────────────────
-                if let Some(ref path) = app.editor.current_path.clone() {
-                    let crumb_height = 22.0;
-                    let (crumb_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), crumb_height),
+
+                // ── Left pane ──────────────────────────────────────────────
+                let mut left_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(left_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                left_ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+
+                // Click to focus left pane
+                let left_sense = left_ui.interact(
+                    left_rect,
+                    left_ui.id().with("left_focus"),
+                    egui::Sense::click(),
+                );
+                if left_sense.clicked() {
+                    app.active_pane = 0;
+                }
+
+                if !app.tab_manager.tabs.is_empty() {
+                    let (tab_rect, _) = left_ui.allocate_exact_size(
+                        egui::vec2(left_ui.available_width(), 32.0),
                         egui::Sense::hover(),
                     );
-                    let crumb_bg = egui::Color32::from_rgb(
-                        app.config.theme.background[0].saturating_add(12),
-                        app.config.theme.background[1].saturating_add(12),
-                        app.config.theme.background[2].saturating_add(12),
+                    left_ui.painter().rect_filled(
+                        tab_rect,
+                        0.0,
+                        egui::Color32::from_rgb(
+                            app.config.theme.background[0].saturating_add(7),
+                            app.config.theme.background[1].saturating_add(7),
+                            app.config.theme.background[2].saturating_add(7),
+                        ),
                     );
-                    ui.painter().rect_filled(crumb_rect, 0.0, crumb_bg);
-                    let mut crumb_ui = ui.new_child(
+                    let mut tab_ui = left_ui.new_child(
                         egui::UiBuilder::new()
-                            .max_rect(crumb_rect)
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            .max_rect(tab_rect)
+                            .layout(*left_ui.layout()),
                     );
-                    crumb_ui.add_space(8.0);
-                    // Show up to last 3 path components
-                    let components: Vec<String> = path
-                        .components()
-                        .map(|c| c.as_os_str().to_string_lossy().to_string())
-                        .filter(|s| !s.is_empty() && s != "/")
-                        .collect();
-                    let shown: Vec<&str> = components
-                        .iter()
-                        .rev()
-                        .take(3)
-                        .rev()
-                        .map(|s| s.as_str())
-                        .collect();
-                    for (i, part) in shown.iter().enumerate() {
-                        if i > 0 {
+                    tab_ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                    if let Some(path) = app.tab_manager.show(&mut tab_ui) {
+                        app.active_pane = 0;
+                        app.open_file(path);
+                    } else if app.tab_manager.tabs.is_empty() && app.editor.current_path.is_some() {
+                        app.load_active_tab();
+                    }
+                    app.settings_panel.open = app.tab_manager.tabs.iter().any(|t| t.is_settings);
+                }
+
+                let active_is_settings = app
+                    .tab_manager
+                    .active_tab
+                    .and_then(|id| app.tab_manager.tabs.iter().find(|t| t.id == id))
+                    .map(|t| t.is_settings)
+                    .unwrap_or(false);
+
+                if active_is_settings {
+                    if app.settings_panel.show_inline(&mut left_ui, &mut app.config) {
+                        app.config.save();
+                    }
+                } else if app.editor.current_path.is_some() || !app.editor.buffer.to_string().is_empty() {
+                    // Breadcrumbs
+                    if let Some(ref path) = app.editor.current_path.clone() {
+                        let crumb_height = 22.0;
+                        let (crumb_rect, _) = left_ui.allocate_exact_size(
+                            egui::vec2(left_ui.available_width(), crumb_height),
+                            egui::Sense::hover(),
+                        );
+                        let crumb_bg = egui::Color32::from_rgb(
+                            app.config.theme.background[0].saturating_add(12),
+                            app.config.theme.background[1].saturating_add(12),
+                            app.config.theme.background[2].saturating_add(12),
+                        );
+                        left_ui.painter().rect_filled(crumb_rect, 0.0, crumb_bg);
+                        let mut crumb_ui = left_ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(crumb_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        crumb_ui.add_space(8.0);
+                        let components: Vec<String> = path
+                            .components()
+                            .map(|c| c.as_os_str().to_string_lossy().to_string())
+                            .filter(|s| !s.is_empty() && s != "/")
+                            .collect();
+                        let shown: Vec<&str> = components
+                            .iter()
+                            .rev()
+                            .take(3)
+                            .rev()
+                            .map(|s| s.as_str())
+                            .collect();
+                        for (i, part) in shown.iter().enumerate() {
+                            if i > 0 {
+                                crumb_ui.label(
+                                    egui::RichText::new(" › ")
+                                        .color(egui::Color32::from_gray(90))
+                                        .size(11.0),
+                                );
+                            }
+                            crumb_ui.label(
+                                egui::RichText::new(*part)
+                                    .color(egui::Color32::from_gray(160))
+                                    .size(11.0),
+                            );
+                        }
+                        if let Some(ref sym) = app.editor.current_symbol.clone() {
                             crumb_ui.label(
                                 egui::RichText::new(" › ")
                                     .color(egui::Color32::from_gray(90))
                                     .size(11.0),
                             );
+                            crumb_ui.label(
+                                egui::RichText::new(sym.as_str())
+                                    .color(egui::Color32::from_rgb(180, 200, 255))
+                                    .size(11.0),
+                            );
                         }
-                        crumb_ui.label(
-                            egui::RichText::new(*part)
-                                .color(egui::Color32::from_gray(160))
-                                .size(11.0),
-                        );
                     }
-                    // Current symbol
-                    if let Some(ref sym) = app.editor.current_symbol.clone() {
-                        crumb_ui.label(
-                            egui::RichText::new(" › ")
-                                .color(egui::Color32::from_gray(90))
-                                .size(11.0),
-                        );
-                        crumb_ui.label(
-                            egui::RichText::new(sym.as_str())
-                                .color(egui::Color32::from_rgb(180, 200, 255))
-                                .size(11.0),
-                        );
-                    }
-                }
-
-                // Update current symbol from outline
-                {
-                    let (cur_row, _) = app.editor.cursor.position();
-                    app.editor.current_symbol = app
-                        .outline_symbols
-                        .iter()
-                        .rfind(|s| s.line as usize <= cur_row)
-                        .map(|s| s.name.clone());
-                }
-
-                app.editor.workspace_path = app.workspace_path.clone();
-                let lsp_hover = app.lsp_hover_result.take();
-                // Compute breakpoint lines for the current file (1-based from DAP, 0-based for gutter).
-                let bp_lines: std::collections::HashSet<usize> = app
-                    .editor
-                    .current_path
-                    .as_ref()
-                    .map(|p| {
-                        app.dap
-                            .breakpoint_lines_for(p)
+                    {
+                        let (cur_row, _) = app.editor.cursor.position();
+                        app.editor.current_symbol = app
+                            .outline_symbols
                             .iter()
-                            .map(|l| l.saturating_sub(1)) // convert 1-based → 0-based
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                app.editor
-                    .show(ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines);
+                            .rfind(|s| s.line as usize <= cur_row)
+                            .map(|s| s.name.clone());
+                    }
+                    app.editor.workspace_path = app.workspace_path.clone();
+                    let lsp_hover = app.lsp_hover_result.take();
+                    let bp_lines: std::collections::HashSet<usize> = app
+                        .editor
+                        .current_path
+                        .as_ref()
+                        .map(|p| {
+                            app.dap
+                                .breakpoint_lines_for(p)
+                                .iter()
+                                .map(|l| l.saturating_sub(1))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    app.editor
+                        .show(&mut left_ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines);
+                } else {
+                    welcome_screen(&mut left_ui);
+                }
+
+                // ── Right pane ─────────────────────────────────────────────
+                let mut right_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(right_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                right_ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+
+                // Click to focus right pane
+                let right_sense = right_ui.interact(
+                    right_rect,
+                    right_ui.id().with("right_focus"),
+                    egui::Sense::click(),
+                );
+                if right_sense.clicked() {
+                    app.active_pane = 1;
+                }
+
+                // Tab bar for right pane
+                let mut open_path_pane2: Option<std::path::PathBuf> = None;
+                if let Some(ref mut tm2) = app.tab_manager2 {
+                    if !tm2.tabs.is_empty() {
+                        let (tab_rect2, _) = right_ui.allocate_exact_size(
+                            egui::vec2(right_ui.available_width(), 32.0),
+                            egui::Sense::hover(),
+                        );
+                        right_ui.painter().rect_filled(
+                            tab_rect2,
+                            0.0,
+                            egui::Color32::from_rgb(
+                                app.config.theme.background[0].saturating_add(7),
+                                app.config.theme.background[1].saturating_add(7),
+                                app.config.theme.background[2].saturating_add(7),
+                            ),
+                        );
+                        let mut tab_ui2 = right_ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(tab_rect2)
+                                .layout(*right_ui.layout()),
+                        );
+                        tab_ui2.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                        if let Some(path) = tm2.show(&mut tab_ui2) {
+                            app.active_pane = 1;
+                            open_path_pane2 = Some(path);
+                        }
+                    }
+                }
+                // Load file into right editor if tab was clicked
+                if let Some(path) = open_path_pane2 {
+                    app.open_file_in_pane2(path);
+                }
+                // Close split if right pane has no tabs
+                let pane2_empty = app.tab_manager2.as_ref().map(|tm| tm.tabs.is_empty()).unwrap_or(true);
+                if pane2_empty {
+                    app.editor2 = None;
+                    app.tab_manager2 = None;
+                    app.active_pane = 0;
+                } else {
+                    // Render right editor
+                    let no_bp: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                    if let Some(ref mut e2) = app.editor2 {
+                        e2.show(&mut right_ui, &app.config, &app.plugin_manager, None, &no_bp);
+                    }
+                }
+
             } else {
-                welcome_screen(ui);
+                // ── Single pane (existing behavior) ────────────────────────
+                if !app.tab_manager.tabs.is_empty() {
+                    // Draw the tab bar background explicitly to fill the full allocated height
+                    let (tab_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 32.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(
+                        tab_rect,
+                        0.0,
+                        egui::Color32::from_rgb(
+                            app.config.theme.background[0].saturating_add(7),
+                            app.config.theme.background[1].saturating_add(7),
+                            app.config.theme.background[2].saturating_add(7),
+                        ),
+                    );
+                    let mut tab_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(tab_rect)
+                            .layout(*ui.layout()),
+                    );
+                    tab_ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                    if let Some(path) = app.tab_manager.show(&mut tab_ui) {
+                        app.open_file(path);
+                    } else if app.tab_manager.tabs.is_empty() && app.editor.current_path.is_some() {
+                        // Last tab was closed via × — clear the editor so the welcome screen appears.
+                        app.load_active_tab();
+                    }
+                    // Keep settings_panel.open in sync with whether a settings tab exists
+                    app.settings_panel.open = app.tab_manager.tabs.iter().any(|t| t.is_settings);
+                }
+
+                let active_is_settings = app
+                    .tab_manager
+                    .active_tab
+                    .and_then(|id| app.tab_manager.tabs.iter().find(|t| t.id == id))
+                    .map(|t| t.is_settings)
+                    .unwrap_or(false);
+
+                if active_is_settings {
+                    if app.settings_panel.show_inline(ui, &mut app.config) {
+                        app.config.save();
+                    }
+                } else if app.editor.current_path.is_some() || !app.editor.buffer.to_string().is_empty()
+                {
+                    // ── Breadcrumbs bar ───────────────────────────────────────────
+                    if let Some(ref path) = app.editor.current_path.clone() {
+                        let crumb_height = 22.0;
+                        let (crumb_rect, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), crumb_height),
+                            egui::Sense::hover(),
+                        );
+                        let crumb_bg = egui::Color32::from_rgb(
+                            app.config.theme.background[0].saturating_add(12),
+                            app.config.theme.background[1].saturating_add(12),
+                            app.config.theme.background[2].saturating_add(12),
+                        );
+                        ui.painter().rect_filled(crumb_rect, 0.0, crumb_bg);
+                        let mut crumb_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(crumb_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        crumb_ui.add_space(8.0);
+                        // Show up to last 3 path components
+                        let components: Vec<String> = path
+                            .components()
+                            .map(|c| c.as_os_str().to_string_lossy().to_string())
+                            .filter(|s| !s.is_empty() && s != "/")
+                            .collect();
+                        let shown: Vec<&str> = components
+                            .iter()
+                            .rev()
+                            .take(3)
+                            .rev()
+                            .map(|s| s.as_str())
+                            .collect();
+                        for (i, part) in shown.iter().enumerate() {
+                            if i > 0 {
+                                crumb_ui.label(
+                                    egui::RichText::new(" › ")
+                                        .color(egui::Color32::from_gray(90))
+                                        .size(11.0),
+                                );
+                            }
+                            crumb_ui.label(
+                                egui::RichText::new(*part)
+                                    .color(egui::Color32::from_gray(160))
+                                    .size(11.0),
+                            );
+                        }
+                        // Current symbol
+                        if let Some(ref sym) = app.editor.current_symbol.clone() {
+                            crumb_ui.label(
+                                egui::RichText::new(" › ")
+                                    .color(egui::Color32::from_gray(90))
+                                    .size(11.0),
+                            );
+                            crumb_ui.label(
+                                egui::RichText::new(sym.as_str())
+                                    .color(egui::Color32::from_rgb(180, 200, 255))
+                                    .size(11.0),
+                            );
+                        }
+                    }
+
+                    // Update current symbol from outline
+                    {
+                        let (cur_row, _) = app.editor.cursor.position();
+                        app.editor.current_symbol = app
+                            .outline_symbols
+                            .iter()
+                            .rfind(|s| s.line as usize <= cur_row)
+                            .map(|s| s.name.clone());
+                    }
+
+                    app.editor.workspace_path = app.workspace_path.clone();
+                    let lsp_hover = app.lsp_hover_result.take();
+                    // Compute breakpoint lines for the current file (1-based from DAP, 0-based for gutter).
+                    let bp_lines: std::collections::HashSet<usize> = app
+                        .editor
+                        .current_path
+                        .as_ref()
+                        .map(|p| {
+                            app.dap
+                                .breakpoint_lines_for(p)
+                                .iter()
+                                .map(|l| l.saturating_sub(1)) // convert 1-based → 0-based
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    app.editor
+                        .show(ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines);
+                } else {
+                    welcome_screen(ui);
+                }
             }
         });
 }

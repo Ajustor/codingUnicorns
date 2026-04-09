@@ -9,6 +9,7 @@ pub mod extension;
 mod filetree;
 mod git;
 mod lsp;
+mod nav_history;
 pub mod plugin;
 pub mod runner;
 mod tabs;

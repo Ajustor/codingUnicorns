@@ -89,6 +89,7 @@ impl KeyBinding {
             "OpenBracket" | "[" => Some(egui::Key::OpenBracket),
             "CloseBracket" | "]" => Some(egui::Key::CloseBracket),
             "Slash" | "/" => Some(egui::Key::Slash),
+            "Backslash" | "\\" => Some(egui::Key::Backslash),
             _ => None,
         }
     }
@@ -182,6 +183,12 @@ pub struct EditorConfig {
     pub word_wrap: bool,
     pub line_numbers: bool,
     pub auto_save: bool,
+    #[serde(default = "default_true")]
+    pub auto_close_brackets: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +212,7 @@ impl Default for Config {
                 word_wrap: false,
                 line_numbers: true,
                 auto_save: false,
+                auto_close_brackets: true,
             },
             font: FontConfig {
                 size: 14.0,

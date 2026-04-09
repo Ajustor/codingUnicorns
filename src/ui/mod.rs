@@ -1,5 +1,7 @@
 pub mod debugger;
+pub mod git_panel;
 pub mod layout;
+pub mod merge_panel;
 pub mod palette;
 pub mod run_panel;
 pub mod search;
