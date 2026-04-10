@@ -250,6 +250,8 @@ pub struct EditorConfig {
     pub auto_save: bool,
     #[serde(default = "default_true")]
     pub auto_close_brackets: bool,
+    #[serde(default)]
+    pub show_gitignored: bool,
 }
 
 fn default_true() -> bool {
@@ -278,6 +280,7 @@ impl Default for Config {
                 line_numbers: true,
                 auto_save: false,
                 auto_close_brackets: true,
+                show_gitignored: false,
             },
             font: FontConfig {
                 size: 14.0,

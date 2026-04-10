@@ -87,6 +87,7 @@ impl CodingUnicorns {
 
     pub fn open_folder(&mut self, path: PathBuf) {
         self.workspace_path = Some(path.clone());
+        self.file_tree.show_gitignored = self.config.editor.show_gitignored;
         self.file_tree.load(path.clone());
         self.git_status.load(path.clone());
         self.runner.load_for_workspace(&path);

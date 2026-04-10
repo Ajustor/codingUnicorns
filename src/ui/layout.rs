@@ -47,9 +47,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
         let was_focused = LAST_FOCUSED.swap(focused_now, std::sync::atomic::Ordering::Relaxed);
         if focused_now && !was_focused {
             // Window just gained focus — reload file tree to pick up external changes.
-            if let Some(root) = &mut app.file_tree.root {
-                root.load_children();
-            }
+            app.file_tree.reload_children();
         }
     }
 
@@ -547,26 +545,20 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                     } else {
                                         let _ = std::fs::remove_file(&path);
                                     }
-                                    if let Some(root) = &mut app.file_tree.root {
-                                        root.load_children();
-                                    }
+                                    app.file_tree.reload_children();
                                 }
                                 FileTreeAction::Rename(old_path, new_name) => {
                                     if let Some(parent) = old_path.parent() {
                                         let new_path = parent.join(&new_name);
                                         let _ = std::fs::rename(&old_path, &new_path);
-                                        if let Some(root) = &mut app.file_tree.root {
-                                            root.load_children();
-                                        }
+                                        app.file_tree.reload_children();
                                     }
                                 }
                                 FileTreeAction::NewFile(parent) => {
                                     // Create with a temp name then immediately enter inline rename
                                     let new_path = find_free_path(&parent, "untitled", false);
                                     let _ = std::fs::write(&new_path, "");
-                                    if let Some(root) = &mut app.file_tree.root {
-                                        root.load_children();
-                                    }
+                                    app.file_tree.reload_children();
                                     let name = new_path
                                         .file_name()
                                         .map(|n| n.to_string_lossy().to_string())
@@ -577,9 +569,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                 FileTreeAction::NewFolder(parent) => {
                                     let new_path = find_free_path(&parent, "new_folder", true);
                                     let _ = std::fs::create_dir(&new_path);
-                                    if let Some(root) = &mut app.file_tree.root {
-                                        root.load_children();
-                                    }
+                                    app.file_tree.reload_children();
                                     let name = new_path
                                         .file_name()
                                         .map(|n| n.to_string_lossy().to_string())
@@ -921,6 +911,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         .show_inline(&mut left_ui, &mut app.config)
                     {
                         app.config.save();
+                        if app.file_tree.show_gitignored != app.config.editor.show_gitignored {
+                            app.file_tree.show_gitignored = app.config.editor.show_gitignored;
+                            app.file_tree.reload_children();
+                        }
                     }
                 } else if app.editor.current_path.is_some()
                     || !app.editor.buffer.to_string().is_empty()
@@ -1133,6 +1127,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 if active_is_settings {
                     if app.settings_panel.show_inline(ui, &mut app.config) {
                         app.config.save();
+                        if app.file_tree.show_gitignored != app.config.editor.show_gitignored {
+                            app.file_tree.show_gitignored = app.config.editor.show_gitignored;
+                            app.file_tree.reload_children();
+                        }
                     }
                 } else if app
                     .editor

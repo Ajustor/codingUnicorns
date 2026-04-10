@@ -238,6 +238,7 @@ impl CodingUnicorns {
                 let ws_path = PathBuf::from(&ws_str);
                 if ws_path.is_dir() {
                     app.workspace_path = Some(ws_path.clone());
+                    app.file_tree.show_gitignored = app.config.editor.show_gitignored;
                     app.file_tree.load(ws_path.clone());
                     app.git_status.load(ws_path.clone());
                     app.runner.load_for_workspace(&ws_path);
