@@ -2698,6 +2698,7 @@ impl Editor {
                             config.theme.accent[2],
                         ),
                         lines: &self.minimap_lines,
+                        fold_regions: &self.fold_regions,
                     };
                     if let Some(new_scroll_y) =
                         crate::ui::minimap::render(ui, &painter, rect, &minimap_data)

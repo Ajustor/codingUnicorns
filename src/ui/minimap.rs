@@ -27,6 +27,8 @@ pub struct MinimapData<'a> {
     pub accent_color: egui::Color32,
     /// Per-line shape data for the code structure rendering.
     pub lines: &'a [LineShape],
+    /// Fold regions: `(start_line, end_line)` pairs.
+    pub fold_regions: &'a [(usize, usize)],
 }
 
 /// Renders the minimap overlay on the right side of the given rect.
@@ -83,6 +85,75 @@ pub fn render(
     let content_w = minimap_rect.width() - 12.0;
     let max_chars = 120.0_f32; // normalize line width to ~120 chars
     let char_px = content_w / max_chars;
+
+    // ── Fold regions (background bands showing code blocks) ────────────
+    // Sort by size (largest first) so smaller nested regions draw on top.
+    let mut sorted_regions: Vec<(usize, usize)> = data.fold_regions.to_vec();
+    sorted_regions.sort_by(|a, b| (b.1 - b.0).cmp(&(a.1 - a.0)));
+
+    // Compute nesting depth per region for color variation.
+    for &(start, end) in &sorted_regions {
+        let span = end.saturating_sub(start);
+        if span < 3 {
+            continue;
+        }
+        // Nesting depth: count how many other regions fully contain this one
+        let depth = sorted_regions
+            .iter()
+            .filter(|&&(os, oe)| os < start && oe > end)
+            .count();
+        let depth_clamped = depth.min(5);
+
+        let y_start = minimap_rect.min.y + start as f32 * scale;
+        let y_end = minimap_rect.min.y + (end + 1) as f32 * scale;
+        if y_end < minimap_rect.min.y || y_start > minimap_rect.max.y {
+            continue;
+        }
+
+        // Alternate colors by depth for visual distinction
+        let base_a = (alpha * 18.0).min(30.0) as u8;
+        let region_color = match depth_clamped % 4 {
+            0 => egui::Color32::from_rgba_unmultiplied(80, 140, 220, base_a),  // blue
+            1 => egui::Color32::from_rgba_unmultiplied(160, 120, 200, base_a), // purple
+            2 => egui::Color32::from_rgba_unmultiplied(80, 180, 160, base_a),  // teal
+            _ => egui::Color32::from_rgba_unmultiplied(180, 160, 80, base_a),  // gold
+        };
+
+        // Left indent bar (thin vertical line marking the block boundary)
+        let indent_level = data
+            .lines
+            .get(start)
+            .map(|l| l.indent)
+            .unwrap_or(0);
+        let bar_x_pos = content_x + indent_level as f32 * char_px;
+
+        // Background band
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(bar_x_pos, y_start),
+                egui::pos2(content_x + content_w, y_end.min(minimap_rect.max.y)),
+            ),
+            0.0,
+            region_color,
+        );
+
+        // Left edge line (slightly brighter to show the block boundary)
+        let edge_a = (alpha * 60.0).min(80.0) as u8;
+        let edge_color = match depth_clamped % 4 {
+            0 => egui::Color32::from_rgba_unmultiplied(80, 140, 220, edge_a),
+            1 => egui::Color32::from_rgba_unmultiplied(160, 120, 200, edge_a),
+            2 => egui::Color32::from_rgba_unmultiplied(80, 180, 160, edge_a),
+            _ => egui::Color32::from_rgba_unmultiplied(180, 160, 80, edge_a),
+        };
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(bar_x_pos, y_start),
+                egui::pos2(bar_x_pos + 1.0, y_end.min(minimap_rect.max.y)),
+            ),
+            0.0,
+            edge_color,
+        );
+    }
 
     // ── Code structure (per-line rendering) ──────────────────────────────
     let code_alpha = (alpha * 1.4).min(1.0);
