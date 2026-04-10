@@ -730,10 +730,7 @@ fn install_deps(
         for pkg in &deps.pip {
             let step = format!("pip3 install {pkg}");
             progress(step.clone());
-            match shell_command("pip3")
-                .args(["install", pkg])
-                .output()
-            {
+            match shell_command("pip3").args(["install", pkg]).output() {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => errors.push(format!(
                     "pip3 {pkg}: {}",
@@ -752,10 +749,7 @@ fn install_deps(
         for pkg in &deps.cargo {
             let step = format!("cargo install {pkg}");
             progress(step.clone());
-            match shell_command("cargo")
-                .args(["install", pkg])
-                .output()
-            {
+            match shell_command("cargo").args(["install", pkg]).output() {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => errors.push(format!(
                     "cargo install {pkg}: {}",

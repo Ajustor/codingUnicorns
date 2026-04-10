@@ -108,8 +108,7 @@ impl GitStatus {
                             FileChangeKind::None
                         };
 
-                        if index_status == FileChangeKind::None
-                            && wt_status == FileChangeKind::None
+                        if index_status == FileChangeKind::None && wt_status == FileChangeKind::None
                         {
                             return None;
                         }

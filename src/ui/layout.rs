@@ -784,7 +784,9 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                         let content = merge_view.result_text.clone();
                         let _ = std::fs::write(&path, &content);
                         // Stage the resolved file
-                        if let Some(rel_path) = app.workspace_path.as_ref()
+                        if let Some(rel_path) = app
+                            .workspace_path
+                            .as_ref()
                             .and_then(|ws| path.strip_prefix(ws).ok())
                             .map(|p| p.to_string_lossy().to_string())
                         {
@@ -914,10 +916,15 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                     .unwrap_or(false);
 
                 if active_is_settings {
-                    if app.settings_panel.show_inline(&mut left_ui, &mut app.config) {
+                    if app
+                        .settings_panel
+                        .show_inline(&mut left_ui, &mut app.config)
+                    {
                         app.config.save();
                     }
-                } else if app.editor.current_path.is_some() || !app.editor.buffer.to_string().is_empty() {
+                } else if app.editor.current_path.is_some()
+                    || !app.editor.buffer.to_string().is_empty()
+                {
                     // Breadcrumbs
                     if let Some(ref path) = app.editor.current_path.clone() {
                         let crumb_height = 22.0;
@@ -998,8 +1005,13 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    app.editor
-                        .show(&mut left_ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines);
+                    app.editor.show(
+                        &mut left_ui,
+                        &app.config,
+                        &app.plugin_manager,
+                        lsp_hover,
+                        &bp_lines,
+                    );
                 } else {
                     welcome_screen(&mut left_ui);
                 }
@@ -1056,7 +1068,11 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                     app.open_file_in_pane2(path);
                 }
                 // Close split if right pane has no tabs
-                let pane2_empty = app.tab_manager2.as_ref().map(|tm| tm.tabs.is_empty()).unwrap_or(true);
+                let pane2_empty = app
+                    .tab_manager2
+                    .as_ref()
+                    .map(|tm| tm.tabs.is_empty())
+                    .unwrap_or(true);
                 if pane2_empty {
                     app.editor2 = None;
                     app.tab_manager2 = None;
@@ -1065,10 +1081,15 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                     // Render right editor
                     let no_bp: std::collections::HashSet<usize> = std::collections::HashSet::new();
                     if let Some(ref mut e2) = app.editor2 {
-                        e2.show(&mut right_ui, &app.config, &app.plugin_manager, None, &no_bp);
+                        e2.show(
+                            &mut right_ui,
+                            &app.config,
+                            &app.plugin_manager,
+                            None,
+                            &no_bp,
+                        );
                     }
                 }
-
             } else {
                 // ── Single pane (existing behavior) ────────────────────────
                 if !app.tab_manager.tabs.is_empty() {
@@ -1133,8 +1154,7 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                                 color_image,
                                 egui::TextureOptions::LINEAR,
                             );
-                            let size =
-                                egui::vec2(img_data.width as f32, img_data.height as f32);
+                            let size = egui::vec2(img_data.width as f32, img_data.height as f32);
                             app.image_texture = Some((texture, size));
                         }
                     }
@@ -1148,16 +1168,12 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                             egui::vec2(original_size.x * scale, original_size.y * scale);
                         ui.vertical_centered(|ui| {
                             ui.add_space(((available.y - display_size.y) / 2.0).max(0.0));
-                            ui.image(egui::load::SizedTexture::new(
-                                texture.id(),
-                                display_size,
-                            ));
+                            ui.image(egui::load::SizedTexture::new(texture.id(), display_size));
                             ui.add_space(8.0);
                             ui.label(
                                 egui::RichText::new(format!(
                                     "{}×{}",
-                                    original_size.x as u32,
-                                    original_size.y as u32
+                                    original_size.x as u32, original_size.y as u32
                                 ))
                                 .small()
                                 .color(egui::Color32::GRAY),
@@ -1172,7 +1188,8 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
                             );
                         });
                     }
-                } else if app.editor.current_path.is_some() || !app.editor.buffer.to_string().is_empty()
+                } else if app.editor.current_path.is_some()
+                    || !app.editor.buffer.to_string().is_empty()
                 {
                     // ── Breadcrumbs bar ───────────────────────────────────────────
                     if let Some(ref path) = app.editor.current_path.clone() {

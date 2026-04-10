@@ -145,8 +145,7 @@ impl Editor {
             if sr == er && ec > sc {
                 let line = self.buffer.line(sr);
                 let selected: String = line.chars().skip(sc).take(ec - sc).collect();
-                if selected.len() >= 3
-                    && selected.chars().all(|c| c.is_alphanumeric() || c == '_')
+                if selected.len() >= 3 && selected.chars().all(|c| c.is_alphanumeric() || c == '_')
                 {
                     selected
                 } else {
@@ -178,8 +177,8 @@ impl Editor {
         let word_len = word_chars.len();
         let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
 
-        for line_idx in first_visible_line
-            ..=last_visible_line.min(self.buffer.num_lines().saturating_sub(1))
+        for line_idx in
+            first_visible_line..=last_visible_line.min(self.buffer.num_lines().saturating_sub(1))
         {
             let line = self.buffer.line(line_idx);
             let chars: Vec<char> = line.chars().collect();

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use super::WritingUnicorns;
 use super::workspace_search::{find_definition_in_buffer, search_workspace_for_symbol};
+use super::WritingUnicorns;
 
 impl WritingUnicorns {
     pub(crate) fn ensure_lsp_for_file(&mut self, path: &std::path::Path) {

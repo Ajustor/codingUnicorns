@@ -395,7 +395,6 @@ fn tokenize_line_regex(_lang: &str, line: &str) -> Vec<Token> {
     }]
 }
 
-
 /// Returns keywords for autocomplete. Language support comes from extensions only.
 pub fn keywords_for_language(_lang: &str) -> &'static [&'static str] {
     &[]

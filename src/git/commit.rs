@@ -104,7 +104,9 @@ impl GitStatus {
         } else if analysis.is_up_to_date() {
             // nothing to do
         } else {
-            return Err("Cannot fast-forward: diverged history. Please merge manually.".to_string());
+            return Err(
+                "Cannot fast-forward: diverged history. Please merge manually.".to_string(),
+            );
         }
         self.refresh();
         Ok(())

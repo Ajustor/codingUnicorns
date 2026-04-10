@@ -123,12 +123,7 @@ impl GitPanel {
                         .unwrap_or(FileChangeKind::None);
                     let (icon, color) = file_kind_icon(&kind);
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(icon)
-                                .color(color)
-                                .monospace()
-                                .small(),
-                        );
+                        ui.label(egui::RichText::new(icon).color(color).monospace().small());
                         ui.label(egui::RichText::new(path).small());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
@@ -173,18 +168,11 @@ impl GitPanel {
                         .unwrap_or(FileChangeKind::None);
                     let (icon, color) = file_kind_icon(&kind);
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(icon)
-                                .color(color)
-                                .monospace()
-                                .small(),
-                        );
+                        ui.label(egui::RichText::new(icon).color(color).monospace().small());
                         ui.label(egui::RichText::new(path).small());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
-                                .small_button(
-                                    egui::RichText::new("+").color(egui::Color32::GREEN),
-                                )
+                                .small_button(egui::RichText::new("+").color(egui::Color32::GREEN))
                                 .on_hover_text("Stage")
                                 .clicked()
                             {
@@ -226,7 +214,10 @@ impl GitPanel {
                         .hint_text("branch-name"),
                 );
                 let can_create = !self.new_branch_name.trim().is_empty();
-                if ui.add_enabled(can_create, egui::Button::new("Create").small()).clicked() {
+                if ui
+                    .add_enabled(can_create, egui::Button::new("Create").small())
+                    .clicked()
+                {
                     let name = self.new_branch_name.trim().to_string();
                     let from = self.new_branch_from.clone();
                     match git.create_branch(&name, &from) {
@@ -247,14 +238,19 @@ impl GitPanel {
 
         if self.show_rename_dialog {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("Rename '{}':", self.rename_branch_old)).small());
+                ui.label(
+                    egui::RichText::new(format!("Rename '{}':", self.rename_branch_old)).small(),
+                );
                 ui.add(
                     egui::TextEdit::singleline(&mut self.rename_branch_name)
                         .desired_width(120.0)
                         .hint_text("new-name"),
                 );
                 let can_rename = !self.rename_branch_name.trim().is_empty();
-                if ui.add_enabled(can_rename, egui::Button::new("Rename").small()).clicked() {
+                if ui
+                    .add_enabled(can_rename, egui::Button::new("Rename").small())
+                    .clicked()
+                {
                     let old = self.rename_branch_old.clone();
                     let new_name = self.rename_branch_name.trim().to_string();
                     match git.rename_branch(&old, &new_name) {
@@ -305,16 +301,17 @@ impl GitPanel {
                                         egui::Color32::from_gray(130)
                                     };
 
-                                    let dot_center = egui::pos2(
-                                        rect.left() + dot_x,
-                                        rect.center().y,
-                                    );
+                                    let dot_center =
+                                        egui::pos2(rect.left() + dot_x, rect.center().y);
 
                                     // Draw vertical line (skip last entry)
                                     if i + 1 < graph_entries.len() {
                                         painter.line_segment(
                                             [
-                                                egui::pos2(rect.left() + line_x, dot_center.y + 4.0),
+                                                egui::pos2(
+                                                    rect.left() + line_x,
+                                                    dot_center.y + 4.0,
+                                                ),
                                                 egui::pos2(rect.left() + line_x, rect.bottom()),
                                             ],
                                             egui::Stroke::new(1.5, egui::Color32::from_gray(100)),
@@ -331,7 +328,8 @@ impl GitPanel {
 
                                     // Text: hash + message + branch tags
                                     let text_x = rect.left() + dot_x * 2.0 + 6.0;
-                                    let mut text = format!("{} {}", entry.short_hash, entry.message);
+                                    let mut text =
+                                        format!("{} {}", entry.short_hash, entry.message);
                                     if !entry.branches.is_empty() {
                                         let tags: Vec<String> = entry
                                             .branches
@@ -353,10 +351,18 @@ impl GitPanel {
                 }
 
                 // Clone branch data upfront to avoid borrow conflicts during mutation
-                let local: Vec<BranchInfo> =
-                    git.branches.iter().filter(|b| !b.is_remote).cloned().collect();
-                let remote: Vec<BranchInfo> =
-                    git.branches.iter().filter(|b| b.is_remote).cloned().collect();
+                let local: Vec<BranchInfo> = git
+                    .branches
+                    .iter()
+                    .filter(|b| !b.is_remote)
+                    .cloned()
+                    .collect();
+                let remote: Vec<BranchInfo> = git
+                    .branches
+                    .iter()
+                    .filter(|b| b.is_remote)
+                    .cloned()
+                    .collect();
 
                 // Pending actions collected during UI to execute after loop
                 let mut checkout_name: Option<String> = None;
@@ -379,9 +385,8 @@ impl GitPanel {
                                 };
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(icon).color(color).small());
-                                    let label = egui::RichText::new(&branch.name)
-                                        .small()
-                                        .color(color);
+                                    let label =
+                                        egui::RichText::new(&branch.name).small().color(color);
                                     let response = ui.selectable_label(branch.is_current, label);
                                     if response.clicked() && !branch.is_current {
                                         checkout_name = Some(branch.name.clone());
@@ -411,8 +416,9 @@ impl GitPanel {
                                             ui.separator();
                                             if ui
                                                 .button(
-                                                    egui::RichText::new("Delete")
-                                                        .color(egui::Color32::from_rgb(220, 80, 80)),
+                                                    egui::RichText::new("Delete").color(
+                                                        egui::Color32::from_rgb(220, 80, 80),
+                                                    ),
                                                 )
                                                 .clicked()
                                             {
@@ -497,11 +503,7 @@ impl GitPanel {
         false
     }
 
-    pub fn show_conflicts(
-        &mut self,
-        ui: &mut egui::Ui,
-        git: &mut GitStatus,
-    ) -> Option<String> {
+    pub fn show_conflicts(&mut self, ui: &mut egui::Ui, git: &mut GitStatus) -> Option<String> {
         // Only rescan for conflict markers when the file list changes
         let file_count = git.files.len();
         if file_count != self.conflict_cache_file_count {

@@ -4,10 +4,7 @@ pub(super) fn resolve_shell() -> (String, Vec<String>) {
     {
         // Prefer pwsh (PowerShell 7+), then Windows PowerShell 5.1, then cmd.exe
         if which_exists("pwsh") {
-            return (
-                "pwsh.exe".to_string(),
-                vec!["-NoLogo".to_string()],
-            );
+            return ("pwsh.exe".to_string(), vec!["-NoLogo".to_string()]);
         }
         let ps5 =
             std::path::Path::new("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
@@ -17,10 +14,7 @@ pub(super) fn resolve_shell() -> (String, Vec<String>) {
                 vec!["-NoLogo".to_string()],
             );
         }
-        (
-            "cmd.exe".to_string(),
-            vec![],
-        )
+        ("cmd.exe".to_string(), vec![])
     }
 
     #[cfg(not(windows))]

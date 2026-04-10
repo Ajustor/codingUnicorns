@@ -69,7 +69,12 @@ impl Terminal {
         #[cfg(windows)]
         {
             if let Some(result) = Self::try_spawn("cmd.exe", &[]) {
-                return (Some(result.0), Some(result.1), Some(result.2), "cmd".to_string());
+                return (
+                    Some(result.0),
+                    Some(result.1),
+                    Some(result.2),
+                    "cmd".to_string(),
+                );
             }
         }
 

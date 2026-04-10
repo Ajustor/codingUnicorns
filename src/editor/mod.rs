@@ -731,10 +731,13 @@ impl Editor {
 
                 // Grab keyboard focus for the editor before processing events.
                 // This must happen BEFORE the input loop so arrow keys work.
-                if !self.show_find && !self.show_goto_line && !self.autocomplete.visible
-                    && (response.clicked() || ui.memory(|m| m.focused().is_none())) {
-                        ui.memory_mut(|m| m.request_focus(response.id));
-                    }
+                if !self.show_find
+                    && !self.show_goto_line
+                    && !self.autocomplete.visible
+                    && (response.clicked() || ui.memory(|m| m.focused().is_none()))
+                {
+                    ui.memory_mut(|m| m.request_focus(response.id));
+                }
 
                 if response.has_focus() || ui.memory(|m| m.focused().is_none()) {
                     ui.input(|i| {
@@ -790,14 +793,18 @@ impl Editor {
 
                                         self.buffer.checkpoint();
                                         // Insert in reverse order to preserve positions
-                                        for (sorted_idx, &(row, col, _)) in positions.iter().enumerate().rev() {
+                                        for (sorted_idx, &(row, col, _)) in
+                                            positions.iter().enumerate().rev()
+                                        {
                                             let line_text = lines[sorted_idx];
                                             for (j, ch) in line_text.chars().enumerate() {
                                                 self.buffer.insert_char(row, col + j, ch);
                                             }
                                         }
                                         // Update cursor positions (forward order)
-                                        for (sorted_idx, &(row, col, is_main)) in positions.iter().enumerate() {
+                                        for (sorted_idx, &(row, col, is_main)) in
+                                            positions.iter().enumerate()
+                                        {
                                             let new_col = col + lines[sorted_idx].chars().count();
                                             if is_main {
                                                 self.cursor.set_position(row, new_col);
@@ -1840,8 +1847,11 @@ impl Editor {
                 // Rebuild tree-sitter highlight cache when content changes.
                 if self.highlighter.needs_update(self.content_version) {
                     let source = self.buffer.to_string();
-                    self.highlighter
-                        .highlight_document(&source, self.content_version, Some(plugin_manager));
+                    self.highlighter.highlight_document(
+                        &source,
+                        self.content_version,
+                        Some(plugin_manager),
+                    );
                 }
 
                 // Fold regions: recompute if dirty (on every content change)
@@ -1909,7 +1919,11 @@ impl Editor {
                         // Draw the first (header) line normally, then "⋯" placeholder
                         let preview: String = line.chars().take(60).collect();
                         let folded_count = fold_end - line_idx;
-                        let tokens = self.highlighter.tokens_for_line(line_idx, &preview, Some(plugin_manager));
+                        let tokens = self.highlighter.tokens_for_line(
+                            line_idx,
+                            &preview,
+                            Some(plugin_manager),
+                        );
                         let mut job = egui::text::LayoutJob::default();
                         for tok in &tokens {
                             job.append(
@@ -2380,7 +2394,9 @@ impl Editor {
                     }
 
                     // Syntax-highlighted text
-                    let tokens = self.highlighter.tokens_for_line(line_idx, &line, Some(plugin_manager));
+                    let tokens =
+                        self.highlighter
+                            .tokens_for_line(line_idx, &line, Some(plugin_manager));
                     let mut job = egui::text::LayoutJob::default();
                     for tok in &tokens {
                         job.append(
@@ -2608,8 +2624,8 @@ impl Editor {
                         if track_resp.clicked() {
                             if let Some(pos) = track_resp.interact_pointer_pos() {
                                 let click_ratio = (pos.y - rect.min.y) / track_h;
-                                self.scroll_offset.y =
-                                    (click_ratio * content_h - view_h / 2.0).clamp(0.0, scroll_range);
+                                self.scroll_offset.y = (click_ratio * content_h - view_h / 2.0)
+                                    .clamp(0.0, scroll_range);
                             }
                         }
                     } else {

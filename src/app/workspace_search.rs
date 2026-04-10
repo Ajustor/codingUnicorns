@@ -93,7 +93,10 @@ pub(super) fn search_in_dir(
 }
 
 /// Return the 0-indexed line number of the first line in `path` that contains any of `patterns`.
-pub(super) fn search_file_for_patterns(path: &std::path::Path, patterns: &[String]) -> Option<usize> {
+pub(super) fn search_file_for_patterns(
+    path: &std::path::Path,
+    patterns: &[String],
+) -> Option<usize> {
     let content = std::fs::read_to_string(path).ok()?;
     for (line_idx, line) in content.lines().enumerate() {
         let trimmed = line.trim();

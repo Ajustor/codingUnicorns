@@ -4,15 +4,13 @@ use super::{ImageData, WritingUnicorns};
 
 /// Returns true if the path has an image file extension we can display.
 pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .as_deref()
-    {
-        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "ico") => true,
-        _ => false,
-    }
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "ico")
+    )
 }
 
 impl WritingUnicorns {

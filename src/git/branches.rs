@@ -46,7 +46,9 @@ impl GitStatus {
                     Ok(rw) => rw,
                     Err(_) => return,
                 };
-                revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL).ok();
+                revwalk
+                    .set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)
+                    .ok();
                 // Push all local branch tips
                 if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
                     for (branch, _) in branches.flatten() {
@@ -70,13 +72,11 @@ impl GitStatus {
                             // Find branches pointing to this commit
                             let mut branch_names: Vec<String> = vec![];
                             for bi in &self.branches {
-                                if let Ok(reference) = repo.find_reference(
-                                    &if bi.is_remote {
-                                        format!("refs/remotes/{}", bi.name)
-                                    } else {
-                                        format!("refs/heads/{}", bi.name)
-                                    },
-                                ) {
+                                if let Ok(reference) = repo.find_reference(&if bi.is_remote {
+                                    format!("refs/remotes/{}", bi.name)
+                                } else {
+                                    format!("refs/heads/{}", bi.name)
+                                }) {
                                     if reference.target() == Some(oid) {
                                         branch_names.push(bi.name.clone());
                                     }
@@ -105,11 +105,18 @@ impl GitStatus {
     pub fn checkout_branch(&mut self, branch_name: &str) -> Result<(), String> {
         let repo_path = self.repo_path.as_ref().ok_or("No repository")?;
         let repo = git2::Repository::discover(repo_path).map_err(|e| e.message().to_string())?;
-        let (object, reference) = repo.revparse_ext(branch_name).map_err(|e| e.message().to_string())?;
-        repo.checkout_tree(&object, None).map_err(|e| e.message().to_string())?;
+        let (object, reference) = repo
+            .revparse_ext(branch_name)
+            .map_err(|e| e.message().to_string())?;
+        repo.checkout_tree(&object, None)
+            .map_err(|e| e.message().to_string())?;
         if let Some(reference) = reference {
-            repo.set_head(reference.name().unwrap_or(&format!("refs/heads/{}", branch_name)))
-                .map_err(|e| e.message().to_string())?;
+            repo.set_head(
+                reference
+                    .name()
+                    .unwrap_or(&format!("refs/heads/{}", branch_name)),
+            )
+            .map_err(|e| e.message().to_string())?;
         } else {
             repo.set_head(&format!("refs/heads/{}", branch_name))
                 .map_err(|e| e.message().to_string())?;
@@ -134,10 +141,7 @@ impl GitStatus {
             let target_oid = reference.target().ok_or("No target")?;
             let mut head_ref = repo.head().map_err(|e| e.message().to_string())?;
             head_ref
-                .set_target(
-                    target_oid,
-                    &format!("merge {}: fast-forward", branch_name),
-                )
+                .set_target(target_oid, &format!("merge {}: fast-forward", branch_name))
                 .map_err(|e| e.message().to_string())?;
             repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
                 .map_err(|e| e.message().to_string())?;
