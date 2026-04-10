@@ -21,17 +21,15 @@ impl GitStatus {
         if let Some(ref repo_path) = self.repo_path {
             if let Ok(repo) = git2::Repository::discover(repo_path) {
                 if let Ok(branches) = repo.branches(None) {
-                    for branch_result in branches {
-                        if let Ok((branch, branch_type)) = branch_result {
-                            if let Some(name) = branch.name().ok().flatten() {
-                                let is_remote = branch_type == git2::BranchType::Remote;
-                                let is_current = branch.is_head();
-                                self.branches.push(BranchInfo {
-                                    name: name.to_string(),
-                                    is_remote,
-                                    is_current,
-                                });
-                            }
+                    for (branch, branch_type) in branches.flatten() {
+                        if let Some(name) = branch.name().ok().flatten() {
+                            let is_remote = branch_type == git2::BranchType::Remote;
+                            let is_current = branch.is_head();
+                            self.branches.push(BranchInfo {
+                                name: name.to_string(),
+                                is_remote,
+                                is_current,
+                            });
                         }
                     }
                 }
@@ -51,12 +49,10 @@ impl GitStatus {
                 revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL).ok();
                 // Push all local branch tips
                 if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
-                    for branch_result in branches {
-                        if let Ok((branch, _)) = branch_result {
-                            if let Ok(reference) = branch.into_reference().resolve() {
-                                if let Some(oid) = reference.target() {
-                                    revwalk.push(oid).ok();
-                                }
+                    for (branch, _) in branches.flatten() {
+                        if let Ok(reference) = branch.into_reference().resolve() {
+                            if let Some(oid) = reference.target() {
+                                revwalk.push(oid).ok();
                             }
                         }
                     }

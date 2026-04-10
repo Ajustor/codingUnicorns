@@ -814,7 +814,7 @@ fn copy_lib_safe(src: &std::path::Path, dest: &std::path::Path) -> std::io::Resu
         // Remove any previous .old file
         let _ = std::fs::remove_file(&old_path);
         // Rename current DLL to .old (works even if loaded on Windows)
-        if let Err(_) = std::fs::rename(dest, &old_path) {
+        if std::fs::rename(dest, &old_path).is_err() {
             // If rename fails too, try removing directly (will fail if locked)
             let _ = std::fs::remove_file(dest);
         }

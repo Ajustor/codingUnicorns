@@ -731,11 +731,10 @@ impl Editor {
 
                 // Grab keyboard focus for the editor before processing events.
                 // This must happen BEFORE the input loop so arrow keys work.
-                if !self.show_find && !self.show_goto_line && !self.autocomplete.visible {
-                    if response.clicked() || ui.memory(|m| m.focused().is_none()) {
+                if !self.show_find && !self.show_goto_line && !self.autocomplete.visible
+                    && (response.clicked() || ui.memory(|m| m.focused().is_none())) {
                         ui.memory_mut(|m| m.request_focus(response.id));
                     }
-                }
 
                 if response.has_focus() || ui.memory(|m| m.focused().is_none()) {
                     ui.input(|i| {
