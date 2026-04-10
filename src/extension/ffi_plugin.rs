@@ -23,6 +23,11 @@ pub struct FfiLangPlugin {
             *const std::ffi::c_char,
         ) -> *mut std::ffi::c_char,
     >,
+    reset_tokenizer_fn: Option<unsafe extern "C" fn()>,
+    tokenize_document_fn:
+        Option<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut std::ffi::c_char>,
+    tokenize_document_tsx_fn:
+        Option<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut std::ffi::c_char>,
 }
 
 // Safety: all raw fn pointers are Send + Sync as long as the underlying C functions are
@@ -91,7 +96,24 @@ impl FfiLangPlugin {
                 .ok()
                 .map(|s| *s);
 
-            // We store the library in _lib so it stays alive (symbols remain valid).
+            let reset_tokenizer_fn = lib
+                .get::<unsafe extern "C" fn()>(b"reset_tokenizer\0")
+                .ok()
+                .map(|s| *s);
+
+            let tokenize_document_fn = lib
+                .get::<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut std::ffi::c_char>(
+                    b"tokenize_document_ffi\0",
+                )
+                .ok()
+                .map(|s| *s);
+
+            let tokenize_document_tsx_fn = lib
+                .get::<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut std::ffi::c_char>(
+                    b"tokenize_document_tsx_ffi\0",
+                )
+                .ok()
+                .map(|s| *s);
 
             Ok(Self {
                 _lib: lib,
@@ -102,6 +124,9 @@ impl FfiLangPlugin {
                 tokenize_fn,
                 free_fn,
                 hover_fn,
+                reset_tokenizer_fn,
+                tokenize_document_fn,
+                tokenize_document_tsx_fn,
             })
         }
     }
@@ -112,6 +137,25 @@ impl FfiLangPlugin {
         let c_line = CString::new(line).ok()?;
         unsafe {
             let ptr = tokenize(c_line.as_ptr());
+            if ptr.is_null() {
+                return None;
+            }
+            let result = CStr::from_ptr(ptr).to_str().ok().map(|s| s.to_string());
+            free(ptr);
+            result
+        }
+    }
+
+    fn call_tokenize_document(&self, text: &str, tsx: bool) -> Option<String> {
+        let func = if tsx {
+            self.tokenize_document_tsx_fn.or(self.tokenize_document_fn)?
+        } else {
+            self.tokenize_document_fn?
+        };
+        let free = self.free_fn?;
+        let c_text = CString::new(text).ok()?;
+        unsafe {
+            let ptr = func(c_text.as_ptr());
             if ptr.is_null() {
                 return None;
             }
@@ -151,6 +195,15 @@ impl Plugin for FfiLangPlugin {
         parse_token_json(&json)
     }
 
+    fn tokenize_document(&self, lang: &str, text: &str) -> Option<Vec<Vec<Token>>> {
+        if !self.extensions.iter().any(|e| e == lang) {
+            return None;
+        }
+        let tsx = lang == "tsx" || lang == "jsx";
+        let json = self.call_tokenize_document(text, tsx)?;
+        parse_document_json(&json)
+    }
+
     fn hover_info(&self, lang: &str, word: &str, file_content: &str) -> Option<String> {
         if !self.extensions.iter().any(|e| e == lang) {
             return None;
@@ -169,6 +222,12 @@ impl Plugin for FfiLangPlugin {
                 .collect::<Vec<&str>>()
                 .into_boxed_slice(),
         )
+    }
+
+    fn reset_tokenizer(&self) {
+        if let Some(reset) = self.reset_tokenizer_fn {
+            unsafe { reset() };
+        }
     }
 
     fn lsp_server_command(&self) -> Option<(String, Vec<String>)> {
@@ -219,6 +278,61 @@ fn parse_token_json(json: &str) -> Option<Vec<Token>> {
     }
 
     Some(tokens)
+}
+
+/// Parse the JSON array-of-arrays returned by `tokenize_document_ffi`.
+/// Format: `[[{"text":"...","kind":"..."}, ...], ...]`
+fn parse_document_json(json: &str) -> Option<Vec<Vec<Token>>> {
+    let json = json.trim();
+    if !json.starts_with('[') || !json.ends_with(']') {
+        return None;
+    }
+    // The outer array contains line arrays. We find each inner [...] by bracket matching.
+    let bytes = json.as_bytes();
+    let mut lines = Vec::new();
+    let mut i = 1; // skip outer '['
+    while i < bytes.len() {
+        // Skip whitespace and commas
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b',' || bytes[i] == b'\n') {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] == b']' {
+            break;
+        }
+        if bytes[i] != b'[' {
+            break;
+        }
+        // Find matching ']' respecting nested strings
+        let start = i;
+        let mut depth = 0;
+        let mut in_str = false;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' if !in_str => in_str = true,
+                b'"' if in_str => in_str = false,
+                b'\\' if in_str => {
+                    i += 1;
+                } // skip escaped char
+                b'[' if !in_str => depth += 1,
+                b']' if !in_str => {
+                    depth -= 1;
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let line_json = &json[start..i];
+        lines.push(parse_token_json(line_json).unwrap_or_default());
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
 }
 
 /// Extract a string value for `key` from a flat JSON object body (no nested objects).

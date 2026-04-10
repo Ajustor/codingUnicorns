@@ -227,6 +227,10 @@ pub struct Config {
     pub last_file: Option<String>,
     #[serde(default = "default_terminal_height")]
     pub terminal_height: f32,
+    /// Custom shell command (e.g. "pwsh.exe", "cmd.exe", "/bin/zsh").
+    /// When empty, auto-detects the best available shell.
+    #[serde(default)]
+    pub shell: String,
 }
 
 fn default_terminal_height() -> f32 {
@@ -252,6 +256,8 @@ pub struct EditorConfig {
     pub auto_close_brackets: bool,
     #[serde(default)]
     pub show_gitignored: bool,
+    #[serde(default = "default_true")]
+    pub show_minimap: bool,
 }
 
 fn default_true() -> bool {
@@ -281,6 +287,7 @@ impl Default for Config {
                 auto_save: false,
                 auto_close_brackets: true,
                 show_gitignored: false,
+                show_minimap: true,
             },
             font: FontConfig {
                 size: 14.0,
@@ -290,6 +297,7 @@ impl Default for Config {
             last_workspace: None,
             last_file: None,
             terminal_height: default_terminal_height(),
+            shell: String::new(),
         }
     }
 }

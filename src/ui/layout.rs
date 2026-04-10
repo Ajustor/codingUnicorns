@@ -313,7 +313,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .on_hover_text("New terminal")
                     .clicked()
                 {
-                    app.terminals.push(Terminal::new());
+                    app.terminals.push(Terminal::new(&app.config.shell));
                     app.active_terminal = app.terminals.len() - 1;
                 }
 

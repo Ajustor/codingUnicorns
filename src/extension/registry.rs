@@ -98,7 +98,7 @@ impl ExtensionRegistry {
                     let Some(path) = &source.path else { continue };
                     PathBuf::from(path).join("manifest.toml")
                 }
-                SourceKind::Git => continue, // git requires network — skip
+                SourceKind::Git | SourceKind::Zip => continue, // requires re-download — skip
             };
             let Ok(content) = std::fs::read_to_string(&source_manifest_path) else {
                 continue;

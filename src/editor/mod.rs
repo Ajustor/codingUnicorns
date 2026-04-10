@@ -47,6 +47,8 @@ pub struct Editor {
     pub goto_line_input: String,
     /// Set to true to scroll the viewport so the cursor is visible on the next frame.
     pub scroll_to_cursor: bool,
+    /// Set to true to request keyboard focus on the next frame (e.g. after opening a file).
+    pub focus_requested: bool,
     /// Populated by Ctrl+click; consumed by the app to navigate to definition.
     pub go_to_definition_request: Option<String>,
     /// Word under the mouse when Ctrl is held: (row, start_col, end_col).
@@ -140,6 +142,10 @@ pub struct Editor {
     word_occurrences: Vec<(usize, usize, usize)>,
     /// Content version when word_occurrences was last computed.
     word_occurrences_version: i32,
+    /// Cached per-line shape data for the minimap (indent + length).
+    minimap_lines: Vec<crate::ui::minimap::LineShape>,
+    /// Content version when minimap_lines was last computed.
+    minimap_lines_version: i32,
     /// The word that was highlighted (to avoid recomputing when cursor moves within same word).
     word_occurrences_word: String,
 }
@@ -164,6 +170,7 @@ impl Editor {
             show_goto_line: false,
             goto_line_input: String::new(),
             scroll_to_cursor: false,
+            focus_requested: false,
             go_to_definition_request: None,
             ctrl_hover_word_bounds: None,
             hover_word: None,
@@ -208,6 +215,8 @@ impl Editor {
             cursor_blink_epoch: std::time::Instant::now(),
             word_occurrences: vec![],
             word_occurrences_version: -1,
+            minimap_lines: vec![],
+            minimap_lines_version: -1,
             word_occurrences_word: String::new(),
         }
     }
@@ -241,10 +250,17 @@ impl Editor {
         self.folded_lines.clear();
         self.fold_regions.clear();
         self.current_symbol = None;
+        self.hover_tooltip_anchor = None;
+        self.hover_popup_rect = None;
+        self.word_occurrences.clear();
+        self.word_occurrences_version = -1;
         // Detect indentation style from file content
         let (spaces, size) = detect_indent(&content);
         self.detected_indent_spaces = spaces;
         self.detected_indent_size = size;
+        // Always invalidate the highlight cache — even when the language
+        // hasn't changed, the tokens from the previous file must be discarded.
+        self.highlighter.invalidate();
         if let Some(name) = lang {
             self.highlighter.set_language_from_filename(&name);
         }
@@ -729,17 +745,22 @@ impl Editor {
                     }
                 }
 
-                // Grab keyboard focus for the editor before processing events.
-                // This must happen BEFORE the input loop so arrow keys work.
-                if !self.show_find
-                    && !self.show_goto_line
-                    && !self.autocomplete.visible
-                    && (response.clicked() || ui.memory(|m| m.focused().is_none()))
-                {
-                    ui.memory_mut(|m| m.request_focus(response.id));
+                // Manage keyboard focus. The editor is the primary keyboard target
+                // unless a modal (find bar, goto-line, autocomplete) is open.
+                // We only REQUEST focus when needed — never re-request when we
+                // already have it, to avoid disrupting egui's key event delivery.
+                let has_focus = response.has_focus();
+                if !has_focus && !self.show_find && !self.show_goto_line && !self.autocomplete.visible {
+                    let explicit = std::mem::take(&mut self.focus_requested);
+                    if response.clicked()
+                        || explicit
+                        || ui.memory(|m| m.focused().is_none())
+                    {
+                        ui.memory_mut(|m| m.request_focus(response.id));
+                    }
                 }
 
-                if response.has_focus() || ui.memory(|m| m.focused().is_none()) {
+                if has_focus || response.has_focus() {
                     ui.input(|i| {
                         let mut text_typed = false;
                         let mut ac_confirm = false;
@@ -873,6 +894,10 @@ impl Editor {
                                         }
                                         egui::Key::Backspace => {
                                             self.delete_char_before();
+                                            text_typed = true;
+                                        }
+                                        egui::Key::Delete => {
+                                            self.delete_char_after();
                                             text_typed = true;
                                         }
 
@@ -1238,7 +1263,7 @@ impl Editor {
                                         }
 
                                         // Ctrl+D — select word then find next occurrence (VSCode style)
-                                        egui::Key::D if modifiers.ctrl => {
+                                        egui::Key::D if modifiers.ctrl && !modifiers.shift => {
                                             if let Some(word) = self.current_word_full() {
                                                 let word_len = word.chars().count();
                                                 if !self.cursor.has_selection() {
@@ -1257,24 +1282,30 @@ impl Editor {
                                                     self.cursor.set_position(row, start + word_len);
                                                     self.cursor.sel_anchor = Some((row, start));
                                                 } else {
-                                                    // Subsequent presses: add cursor at next occurrence
-                                                    let (cur_row, cur_col) = self.cursor.position();
+                                                    // Subsequent presses: keep main cursor at original
+                                                    // occurrence, add extra cursor at next match.
+                                                    // Search from the last extra cursor (or main if none).
+                                                    let (search_row, search_col) =
+                                                        if let Some(last) = self.extra_cursors.last() {
+                                                            last.position()
+                                                        } else {
+                                                            self.cursor.position()
+                                                        };
                                                     if let Some((match_row, match_col)) =
                                                         find_next_occurrence(
                                                             &self.buffer,
                                                             &word,
-                                                            cur_row,
-                                                            cur_col,
+                                                            search_row,
+                                                            search_col,
                                                         )
                                                     {
-                                                        // Save current main cursor as extra, then advance main to next occurrence
-                                                        let saved = self.cursor.clone();
-                                                        self.extra_cursors.push(saved);
-                                                        self.cursor.row = match_row;
-                                                        self.cursor.col = match_col + word_len;
-                                                        self.cursor.desired_col = self.cursor.col;
-                                                        self.cursor.sel_anchor =
+                                                        let mut extra = Cursor::new();
+                                                        extra.row = match_row;
+                                                        extra.col = match_col + word_len;
+                                                        extra.desired_col = extra.col;
+                                                        extra.sel_anchor =
                                                             Some((match_row, match_col));
+                                                        self.extra_cursors.push(extra);
                                                         self.dedup_cursors();
                                                     }
                                                 }
@@ -2630,6 +2661,48 @@ impl Editor {
                         }
                     } else {
                         self.scroll_offset.y = 0.0;
+                    }
+                }
+
+                // ── Minimap ──────────────────────────────────────────────────────
+                if config.editor.show_minimap {
+                    if self.minimap_lines_version != self.content_version {
+                        self.minimap_lines = (0..total_lines)
+                            .map(|i| {
+                                let line = self.buffer.line(i);
+                                let indent = line.chars().take_while(|c| c.is_whitespace()).count();
+                                let trimmed_len = line.trim().len();
+                                crate::ui::minimap::LineShape {
+                                    indent,
+                                    content_len: trimmed_len,
+                                    blank: trimmed_len == 0,
+                                }
+                            })
+                            .collect();
+                        self.minimap_lines_version = self.content_version;
+                    }
+                    let minimap_data = crate::ui::minimap::MinimapData {
+                        total_lines,
+                        first_visible,
+                        visible_count,
+                        diagnostics: &self.diagnostics,
+                        line_diff: &self.line_diff,
+                        find_matches: &self.find_matches,
+                        cursor_row: self.cursor.row,
+                        extra_cursor_rows: self.extra_cursors.iter().map(|c| c.row).collect(),
+                        line_height,
+                        bg_color,
+                        accent_color: egui::Color32::from_rgb(
+                            config.theme.accent[0],
+                            config.theme.accent[1],
+                            config.theme.accent[2],
+                        ),
+                        lines: &self.minimap_lines,
+                    };
+                    if let Some(new_scroll_y) =
+                        crate::ui::minimap::render(ui, &painter, rect, &minimap_data)
+                    {
+                        self.scroll_offset.y = new_scroll_y;
                     }
                 }
 

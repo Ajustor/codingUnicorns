@@ -105,7 +105,11 @@ fn capture_idx_to_kind(idx: usize) -> TokenKind {
 /// Normalise an extension to its "primary" tree-sitter language key.
 fn primary_lang(lang: &str) -> &str {
     match lang {
-        "jsx" | "mjs" | "cjs" => "js",
+        "jsx" => "tsx",          // JSX uses TSX grammar (superset of JS+JSX)
+        "mjs" | "cjs" => "js",  // CommonJS/ESM variants → plain JS
+        "mts" | "cts" => "ts",  // TypeScript variants
+        "csx" => "cs",          // C# script → C#
+        "htm" => "html",
         _ => lang,
     }
 }
@@ -160,6 +164,51 @@ impl Highlighter {
             "",
         );
 
+        try_add_config(
+            &mut configs,
+            "go",
+            tree_sitter_go::LANGUAGE.into(),
+            tree_sitter_go::HIGHLIGHTS_QUERY,
+            "",
+            "",
+        );
+
+        try_add_config(
+            &mut configs,
+            "ts",
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            "",
+            tree_sitter_typescript::LOCALS_QUERY,
+        );
+
+        try_add_config(
+            &mut configs,
+            "tsx",
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            "",
+            tree_sitter_typescript::LOCALS_QUERY,
+        );
+
+        try_add_config(
+            &mut configs,
+            "html",
+            tree_sitter_html::LANGUAGE.into(),
+            tree_sitter_html::HIGHLIGHTS_QUERY,
+            tree_sitter_html::INJECTIONS_QUERY,
+            "",
+        );
+
+        try_add_config(
+            &mut configs,
+            "toml",
+            tree_sitter_toml_ng::LANGUAGE.into(),
+            tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+            "",
+            "",
+        );
+
         Self {
             language: String::new(),
             line_tokens: Vec::new(),
@@ -191,6 +240,12 @@ impl Highlighter {
         self.set_language(&ext);
     }
 
+    /// Force the token cache to be rebuilt on the next frame.
+    pub fn invalidate(&mut self) {
+        self.last_version = -1;
+        self.line_tokens.clear();
+    }
+
     /// Returns true when the cached tokens are stale and need rebuilding.
     pub fn needs_update(&self, version: i32) -> bool {
         version != self.last_version
@@ -211,7 +266,20 @@ impl Highlighter {
         }
         self.last_version = version;
 
-        let primary = primary_lang(&self.language).to_string();
+        let lang = self.language.clone();
+        let primary = primary_lang(&lang).to_string();
+
+        // 1. Try plugin document-level tokenizer (extensions with embedded tree-sitter)
+        if let Some(pm) = plugin_manager {
+            if let Some(doc_tokens) = pm.tokenize_document(&lang, source) {
+                if !doc_tokens.is_empty() {
+                    self.line_tokens = doc_tokens;
+                    return;
+                }
+            }
+        }
+
+        // 2. Try built-in tree-sitter grammars
         if let Some(config) = self.configs.get(&primary) {
             match ts_highlight(config, source) {
                 Ok(spans) => {
@@ -224,9 +292,9 @@ impl Highlighter {
             }
         }
 
-        // Plugin-based tokenization (from installed extensions)
-        let lang = self.language.clone();
+        // 3. Try plugin line-by-line tokenizer (legacy FFI modules)
         if let Some(pm) = plugin_manager {
+            pm.reset_tokenizer(&lang);
             let tokens: Vec<Vec<Token>> = source
                 .lines()
                 .map(|line| {

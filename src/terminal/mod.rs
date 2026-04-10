@@ -6,6 +6,7 @@ mod shell;
 use ansi::AnsiPerformer;
 use screen_buffer::{Cell, DEFAULT_FG};
 use shell::resolve_shell;
+pub use shell::list_available_shells;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::Color32;
@@ -27,11 +28,16 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn new() -> Self {
-        let (rx, writer, child, shell_name) = Self::spawn_shell();
+    pub fn new(user_shell: &str) -> Self {
+        let (rx, writer, child, shell_name, error) = Self::spawn_shell(user_shell);
         let mut parser = Parser::new();
         let mut performer = AnsiPerformer::new();
-        for byte in "Terminal ready. Click to focus, then type.\r\n".bytes() {
+        let msg = if let Some(err) = error {
+            format!("Failed to start shell: {err}\r\nTried: {shell_name}\r\n\r\nYou can configure a different shell in Settings > Terminal > Shell.\r\nExamples: cmd.exe, powershell.exe, bash\r\n")
+        } else {
+            format!("{shell_name} ready.\r\n")
+        };
+        for byte in msg.bytes() {
             parser.advance(&mut performer, byte);
         }
         Self {
@@ -47,23 +53,26 @@ impl Terminal {
     }
 
     #[allow(clippy::type_complexity)]
-    fn spawn_shell() -> (
+    fn spawn_shell(user_shell: &str) -> (
         Option<Receiver<Vec<u8>>>,
         Option<Box<dyn Write + Send>>,
         Option<Box<dyn portable_pty::Child + Send + Sync>>,
         String,
+        Option<String>, // error message if all attempts failed
     ) {
-        let (shell_path, shell_args) = resolve_shell();
+        let (shell_path, shell_args) = resolve_shell(user_shell);
         let shell_name = std::path::Path::new(&shell_path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("shell")
             .to_string();
 
-        // Try spawning the resolved shell; on failure, fall back to cmd.exe (Windows)
+        // Try spawning the resolved shell
         if let Some(result) = Self::try_spawn(&shell_path, &shell_args) {
-            return (Some(result.0), Some(result.1), Some(result.2), shell_name);
+            return (Some(result.0), Some(result.1), Some(result.2), shell_name, None);
         }
+
+        let mut tried = shell_path.clone();
 
         // Fallback: try cmd.exe on Windows
         #[cfg(windows)]
@@ -74,11 +83,28 @@ impl Terminal {
                     Some(result.1),
                     Some(result.2),
                     "cmd".to_string(),
+                    None,
                 );
             }
+            tried.push_str(", cmd.exe");
         }
 
-        (None, None, None, shell_name)
+        // Fallback: try /bin/sh on Unix
+        #[cfg(not(windows))]
+        {
+            if let Some(result) = Self::try_spawn("/bin/sh", &[]) {
+                return (
+                    Some(result.0),
+                    Some(result.1),
+                    Some(result.2),
+                    "sh".to_string(),
+                    None,
+                );
+            }
+            tried.push_str(", /bin/sh");
+        }
+
+        (None, None, None, shell_name, Some(tried))
     }
 
     #[allow(clippy::type_complexity)]
@@ -211,6 +237,8 @@ impl Terminal {
                         let cursor_row = self.performer.buf.cursor_row;
                         let cursor_col = self.performer.buf.cursor_col;
 
+                        let num_rows = self.performer.buf.rows.len();
+                        let cursor_row = cursor_row.min(num_rows.saturating_sub(1));
                         let last_screen_row = self
                             .performer
                             .buf
@@ -221,7 +249,8 @@ impl Terminal {
                                     .any(|c| c.ch != ' ' || c.fg != DEFAULT_FG || c.bold)
                             })
                             .map_or(0, |i| i + 1)
-                            .max(cursor_row + 1);
+                            .max(cursor_row + 1)
+                            .min(num_rows);
 
                         for row in &self.performer.buf.scrollback {
                             render_row(

@@ -9,6 +9,34 @@ fn write_source(dest_dir: &std::path::Path, source: &ExtensionSource) {
     }
 }
 
+// ── Module discovery ─────────────────────────────────────────────────────────
+
+/// Info about a workspace member that has a manifest.toml.
+#[derive(Debug, Clone)]
+pub struct DiscoveredModule {
+    /// Cargo workspace member name (directory name).
+    pub member: String,
+    /// Parsed manifest info.
+    pub manifest: super::manifest::ExtensionManifest,
+}
+
+/// Discover installable modules in a workspace directory.
+/// Returns all members that have a `manifest.toml`.
+pub fn discover_modules(workspace_path: &std::path::Path) -> anyhow::Result<Vec<DiscoveredModule>> {
+    let cargo_toml = std::fs::read_to_string(workspace_path.join("Cargo.toml"))?;
+    let members = parse_workspace_members(&cargo_toml)?;
+    let mut result = Vec::new();
+    for member in members {
+        let manifest_path = workspace_path.join(&member).join("manifest.toml");
+        if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+            if let Ok(manifest) = toml::from_str::<super::manifest::ExtensionManifest>(&content) {
+                result.push(DiscoveredModule { member, manifest });
+            }
+        }
+    }
+    Ok(result)
+}
+
 // ── Workspace installer ───────────────────────────────────────────────────────
 
 /// Status events emitted by `install_from_workspace` / `install_group_from_git`.
@@ -44,17 +72,21 @@ pub enum WorkspaceStatus {
     Failed(String),
 }
 
-/// Build every member of a Cargo workspace that has a `manifest.toml` and
-/// install it into `extensions_dir`.
+/// Build selected members of a Cargo workspace that have a `manifest.toml` and
+/// install them into `extensions_dir`.
+///
+/// When `selected_members` is `None`, all modules with manifest.toml are installed.
+/// When `Some(list)`, only matching member directory names are installed.
 ///
 /// Progress is streamed via the returned channel so the UI can update live.
 pub fn install_from_workspace(
     workspace_path: PathBuf,
     extensions_dir: PathBuf,
+    selected_members: Option<Vec<String>>,
 ) -> mpsc::Receiver<WorkspaceStatus> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        workspace_install_inner(workspace_path, extensions_dir, &tx);
+        workspace_install_inner(workspace_path, extensions_dir, selected_members.as_deref(), &tx);
     });
     rx
 }
@@ -101,7 +133,7 @@ pub fn install_group_from_git(
 
         if value.get("workspace").is_some() {
             // Multi-module workspace
-            workspace_install_inner(tmp_dir, extensions_dir, &tx);
+            workspace_install_inner(tmp_dir, extensions_dir, None, &tx);
         } else {
             // Single extension — install it and report as 1/1
             single_git_install_inner(&tmp_dir, &extensions_dir, &repo_url, &tx);
@@ -117,6 +149,7 @@ pub fn install_group_from_git(
 fn workspace_install_inner(
     workspace_path: PathBuf,
     extensions_dir: PathBuf,
+    selected_members: Option<&[String]>,
     tx: &mpsc::Sender<WorkspaceStatus>,
 ) {
     // 1. Parse workspace Cargo.toml
@@ -138,10 +171,15 @@ fn workspace_install_inner(
         }
     };
 
-    // 2. Keep only members that have a manifest.toml
+    // 2. Keep only members that have a manifest.toml and match the selection
     let modules: Vec<String> = members
         .into_iter()
         .filter(|m| workspace_path.join(m).join("manifest.toml").exists())
+        .filter(|m| {
+            selected_members
+                .map(|sel| sel.iter().any(|s| s == m))
+                .unwrap_or(true)
+        })
         .collect();
 
     if modules.is_empty() {
@@ -830,4 +868,215 @@ fn find_lib_file(release_dir: &std::path::Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+// ── ZIP installer ────────────────────────────────────────────────────────────
+
+/// A module discovered inside a ZIP archive.
+#[derive(Debug, Clone)]
+pub struct ZipModule {
+    /// Top-level directory name inside the ZIP (e.g. "rust-lang").
+    pub dir_name: String,
+    pub manifest: super::manifest::ExtensionManifest,
+}
+
+/// Scan a ZIP file for installable modules (directories with manifest.toml).
+pub fn discover_zip_modules(zip_path: &std::path::Path) -> anyhow::Result<Vec<ZipModule>> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut manifests = Vec::new();
+
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)?;
+        let name = entry.name().to_string();
+        // Look for manifest.toml at depth 1: "dir_name/manifest.toml"
+        if name.ends_with("/manifest.toml") || name.ends_with("\\manifest.toml") {
+            let parts: Vec<&str> = name.split(['/', '\\']).collect();
+            if parts.len() == 2 {
+                let dir_name = parts[0].to_string();
+                let content = std::io::read_to_string(entry)?;
+                if let Ok(manifest) = toml::from_str::<super::manifest::ExtensionManifest>(&content)
+                {
+                    manifests.push(ZipModule { dir_name, manifest });
+                }
+            }
+        }
+    }
+    Ok(manifests)
+}
+
+/// Install selected modules from a ZIP archive into `extensions_dir`.
+pub fn install_from_zip(
+    zip_path: PathBuf,
+    extensions_dir: PathBuf,
+    selected_dirs: Option<Vec<String>>,
+) -> mpsc::Receiver<WorkspaceStatus> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        zip_install_inner(zip_path, extensions_dir, selected_dirs.as_deref(), &tx);
+    });
+    rx
+}
+
+fn zip_install_inner(
+    zip_path: PathBuf,
+    extensions_dir: PathBuf,
+    selected_dirs: Option<&[String]>,
+    tx: &mpsc::Sender<WorkspaceStatus>,
+) {
+    let file = match std::fs::File::open(&zip_path) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = tx.send(WorkspaceStatus::Failed(format!("Cannot open ZIP: {e}")));
+            return;
+        }
+    };
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = tx.send(WorkspaceStatus::Failed(format!("Invalid ZIP: {e}")));
+            return;
+        }
+    };
+
+    // Discover modules in the ZIP
+    let mut modules: Vec<(String, super::manifest::ExtensionManifest)> = Vec::new();
+    for i in 0..archive.len() {
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
+        let name = entry.name().to_string();
+        if name.ends_with("/manifest.toml") || name.ends_with("\\manifest.toml") {
+            let parts: Vec<&str> = name.split(['/', '\\']).collect();
+            if parts.len() == 2 {
+                let dir_name = parts[0].to_string();
+                if let Ok(content) = std::io::read_to_string(entry) {
+                    if let Ok(manifest) =
+                        toml::from_str::<super::manifest::ExtensionManifest>(&content)
+                    {
+                        if selected_dirs
+                            .map(|sel| sel.iter().any(|s| s == &dir_name))
+                            .unwrap_or(true)
+                        {
+                            modules.push((dir_name, manifest));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if modules.is_empty() {
+        let _ = tx.send(WorkspaceStatus::Failed(
+            "No modules with manifest.toml found in this ZIP.".to_string(),
+        ));
+        return;
+    }
+
+    let total = modules.len();
+    let mut installed = 0;
+
+    for (i, (dir_name, manifest)) in modules.iter().enumerate() {
+        let _ = tx.send(WorkspaceStatus::Installing {
+            current: manifest.extension.name.clone(),
+            done: i,
+            total,
+        });
+
+        let ext_id = &manifest.extension.id;
+        let dest_dir = extensions_dir.join(ext_id);
+        let _ = std::fs::create_dir_all(&dest_dir);
+
+        // Extract all files from this module's directory
+        let prefix = format!("{dir_name}/");
+        let mut has_lib = false;
+        let mut has_manifest = false;
+
+        // Re-open archive for extraction (ZipArchive doesn't support seeking back)
+        let Ok(file2) = std::fs::File::open(&zip_path) else {
+            let _ = tx.send(WorkspaceStatus::ModuleFailed {
+                name: dir_name.clone(),
+                reason: "Cannot re-open ZIP".to_string(),
+            });
+            continue;
+        };
+        let Ok(mut archive2) = zip::ZipArchive::new(file2) else {
+            continue;
+        };
+
+        for j in 0..archive2.len() {
+            let Ok(mut entry) = archive2.by_index(j) else {
+                continue;
+            };
+            let entry_name = entry.name().to_string();
+            if !entry_name.starts_with(&prefix) {
+                continue;
+            }
+            let rel_path = &entry_name[prefix.len()..];
+            if rel_path.is_empty() || entry.is_dir() {
+                continue;
+            }
+
+            // Only extract known file types
+            let file_name = std::path::Path::new(rel_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+
+            let is_lib = file_name.ends_with(".dll")
+                || file_name.ends_with(".so")
+                || file_name.ends_with(".dylib");
+            let is_manifest = file_name == "manifest.toml";
+
+            if !is_lib && !is_manifest {
+                continue;
+            }
+
+            let dest_file = dest_dir.join(file_name);
+            if is_lib {
+                // Use safe copy for DLLs (handles locked files on Windows)
+                let tmp_path = dest_dir.join(format!("{file_name}.tmp"));
+                if let Ok(mut out) = std::fs::File::create(&tmp_path) {
+                    let _ = std::io::copy(&mut entry, &mut out);
+                }
+                if let Err(e) = copy_lib_safe(&tmp_path, &dest_file) {
+                    let _ = tx.send(WorkspaceStatus::ModuleFailed {
+                        name: dir_name.clone(),
+                        reason: format!("Copy lib: {e}"),
+                    });
+                }
+                let _ = std::fs::remove_file(&tmp_path);
+                has_lib = true;
+            } else {
+                if let Ok(mut out) = std::fs::File::create(&dest_file) {
+                    let _ = std::io::copy(&mut entry, &mut out);
+                }
+                has_manifest = true;
+            }
+        }
+
+        if has_lib && has_manifest {
+            write_source(
+                &dest_dir,
+                &ExtensionSource {
+                    kind: SourceKind::Zip,
+                    path: Some(zip_path.to_string_lossy().to_string()),
+                    member: Some(dir_name.clone()),
+                    url: None,
+                },
+            );
+            installed += 1;
+        } else {
+            let _ = tx.send(WorkspaceStatus::ModuleFailed {
+                name: dir_name.clone(),
+                reason: if !has_lib {
+                    "No .dll/.so/.dylib found".to_string()
+                } else {
+                    "No manifest.toml found".to_string()
+                },
+            });
+        }
+    }
+
+    let _ = tx.send(WorkspaceStatus::Done { installed, total });
 }

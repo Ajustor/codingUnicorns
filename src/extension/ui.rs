@@ -2,6 +2,18 @@ use super::installer::{InstallJob, InstallStatus, WorkspaceStatus};
 use super::manifest::SourceKind;
 use super::registry::ExtensionRegistry;
 
+/// Entry in the module picker modal.
+struct PickerEntry {
+    member: String,
+    name: String,
+    id: String,
+    version: String,
+    description: String,
+    selected: bool,
+    /// None = fresh install, Some(ver) = update from this version.
+    installed_version: Option<String>,
+}
+
 pub struct ExtensionsPanel {
     pub search_query: String,
     pub install_url: String,
@@ -27,6 +39,19 @@ pub struct ExtensionsPanel {
     pub update_statuses: std::collections::HashMap<String, InstallStatus>,
     /// Set to true when any installation completes — the app should reload LSP/plugins.
     pub plugins_changed: bool,
+    /// Extension ID pending uninstall — the app must unload the plugin first.
+    pub pending_uninstall: Option<String>,
+    // ZIP installer
+    pub zip_job: Option<std::sync::mpsc::Receiver<WorkspaceStatus>>,
+    pub zip_status: WorkspaceStatus,
+    pub zip_log: Vec<String>,
+    // Module picker modal
+    show_picker: bool,
+    picker_entries: Vec<PickerEntry>,
+    /// Source path for the picker (workspace path or zip path).
+    picker_source_path: String,
+    /// Whether the picker was opened for a ZIP (vs workspace).
+    picker_is_zip: bool,
 }
 
 impl ExtensionsPanel {
@@ -57,6 +82,14 @@ impl ExtensionsPanel {
             update_jobs: std::collections::HashMap::new(),
             update_statuses: std::collections::HashMap::new(),
             plugins_changed: false,
+            pending_uninstall: None,
+            zip_job: None,
+            zip_status: WorkspaceStatus::Idle,
+            zip_log: Vec::new(),
+            show_picker: false,
+            picker_entries: Vec::new(),
+            picker_source_path: String::new(),
+            picker_is_zip: false,
         }
     }
 
@@ -150,6 +183,33 @@ impl ExtensionsPanel {
             }
             if finished {
                 self.git_group_job = None;
+                if reload {
+                    registry.load_installed();
+                    self.plugins_changed = true;
+                }
+            }
+        }
+
+        // Poll ZIP install job
+        if let Some(rx) = &self.zip_job {
+            let mut finished = false;
+            let mut reload = false;
+            while let Ok(status) = rx.try_recv() {
+                let msg = workspace_status_to_log(&status);
+                if !msg.is_empty() {
+                    self.zip_log.push(msg);
+                }
+                if matches!(
+                    &status,
+                    WorkspaceStatus::Done { .. } | WorkspaceStatus::Failed(_)
+                ) {
+                    finished = true;
+                    reload = matches!(&status, WorkspaceStatus::Done { .. });
+                }
+                self.zip_status = status;
+            }
+            if finished {
+                self.zip_job = None;
                 if reload {
                     registry.load_installed();
                     self.plugins_changed = true;
@@ -363,9 +423,7 @@ impl ExtensionsPanel {
                 }
 
                 if let Some(id) = to_uninstall {
-                    if let Err(e) = registry.uninstall(&id) {
-                        log::error!("Uninstall failed: {e}");
-                    }
+                    self.pending_uninstall = Some(id);
                 }
             });
 
@@ -504,6 +562,71 @@ impl ExtensionsPanel {
 
             ui.add_space(8.0);
 
+            // ── INSTALL FROM ZIP ──────────────────────────────────────────────
+            ui.collapsing("📦 INSTALL FROM ZIP", |ui| {
+                ui.set_max_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new(
+                        "Install pre-compiled extensions from a ZIP archive.\n\
+                         The ZIP should contain folders with manifest.toml + DLL/SO files.",
+                    )
+                    .size(11.0)
+                    .color(egui::Color32::GRAY),
+                );
+                ui.add_space(4.0);
+
+                let is_installing = self.zip_job.is_some();
+                if ui
+                    .add_enabled(
+                        !is_installing,
+                        egui::Button::new("Browse ZIP…"),
+                    )
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("ZIP archive", &["zip"])
+                        .pick_file()
+                    {
+                        let path_str = path.to_string_lossy().to_string();
+                        self.open_zip_picker(&path_str, registry);
+                    }
+                }
+
+                if is_installing {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Installing…")
+                                .size(11.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                    });
+                }
+
+                // Log output
+                if !self.zip_log.is_empty() {
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(120.0)
+                        .id_salt("zip_log")
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &self.zip_log {
+                                let color = if line.starts_with('✓') {
+                                    egui::Color32::from_rgb(100, 200, 100)
+                                } else if line.starts_with('✗') || line.starts_with('⚠') {
+                                    egui::Color32::from_rgb(240, 160, 60)
+                                } else {
+                                    egui::Color32::GRAY
+                                };
+                                ui.label(egui::RichText::new(line).size(11.0).color(color));
+                            }
+                        });
+                }
+            });
+
+            ui.add_space(8.0);
+
             // ── INSTALL FROM WORKSPACE ────────────────────────────────────────
             ui.collapsing("⚙ BUILD FROM SOURCES", |ui| {
                 ui.set_max_width(ui.available_width());
@@ -540,20 +663,14 @@ impl ExtensionsPanel {
                         .add_enabled(
                             can_build,
                             egui::Button::new(
-                                egui::RichText::new("▶ Build & Install All")
+                                egui::RichText::new("▶ Select & Install")
                                     .color(egui::Color32::WHITE),
                             )
                             .fill(egui::Color32::from_rgb(0, 140, 80)),
                         )
                         .clicked()
                     {
-                        self.workspace_log.clear();
-                        self.workspace_status = WorkspaceStatus::Building;
-                        let rx = super::installer::install_from_workspace(
-                            std::path::PathBuf::from(&self.workspace_path),
-                            registry.extensions_dir.clone(),
-                        );
-                        self.workspace_job = Some(rx);
+                        self.open_module_picker(&self.workspace_path.clone(), registry);
                     }
 
                     if is_building {
@@ -706,6 +823,242 @@ impl ExtensionsPanel {
             });
         });
     }
+
+    fn open_module_picker(&mut self, workspace_path: &str, registry: &ExtensionRegistry) {
+        let path = std::path::PathBuf::from(workspace_path);
+        match super::installer::discover_modules(&path) {
+            Ok(modules) => {
+                self.picker_is_zip = false;
+                self.picker_entries = modules
+                    .into_iter()
+                    .map(|m| {
+                        let id = m.manifest.extension.id.clone();
+                        let installed_version = registry
+                            .installed
+                            .iter()
+                            .find(|e| e.manifest.extension.id == id)
+                            .map(|e| e.manifest.extension.version.clone());
+                        PickerEntry {
+                            member: m.member,
+                            name: m.manifest.extension.name.clone(),
+                            id,
+                            version: m.manifest.extension.version.clone(),
+                            description: m.manifest.extension.description.clone(),
+                            selected: true,
+                            installed_version,
+                        }
+                    })
+                    .collect();
+                self.picker_source_path = workspace_path.to_string();
+                self.show_picker = true;
+            }
+            Err(e) => {
+                self.workspace_log.clear();
+                self.workspace_log
+                    .push(format!("Failed to discover modules: {e}"));
+            }
+        }
+    }
+
+    fn open_zip_picker(&mut self, zip_path: &str, registry: &ExtensionRegistry) {
+        let path = std::path::PathBuf::from(zip_path);
+        match super::installer::discover_zip_modules(&path) {
+            Ok(modules) => {
+                self.picker_is_zip = true;
+                self.picker_entries = modules
+                    .into_iter()
+                    .map(|m| {
+                        let id = m.manifest.extension.id.clone();
+                        let installed_version = registry
+                            .installed
+                            .iter()
+                            .find(|e| e.manifest.extension.id == id)
+                            .map(|e| e.manifest.extension.version.clone());
+                        PickerEntry {
+                            member: m.dir_name,
+                            name: m.manifest.extension.name.clone(),
+                            id,
+                            version: m.manifest.extension.version.clone(),
+                            description: m.manifest.extension.description.clone(),
+                            selected: true,
+                            installed_version,
+                        }
+                    })
+                    .collect();
+                self.picker_source_path = zip_path.to_string();
+                self.show_picker = true;
+            }
+            Err(e) => {
+                self.zip_log.clear();
+                self.zip_log
+                    .push(format!("Failed to read ZIP: {e}"));
+            }
+        }
+    }
+
+    pub fn show_picker_modal(&mut self, ctx: &egui::Context, registry: &mut ExtensionRegistry) {
+        if !self.show_picker {
+            return;
+        }
+
+        let mut do_install = false;
+        let mut do_close = false;
+
+        egui::Window::new("Select Modules to Install")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(450.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(&self.picker_source_path)
+                        .size(11.0)
+                        .color(egui::Color32::GRAY),
+                );
+                ui.add_space(6.0);
+
+                // Select all / Deselect all
+                ui.horizontal(|ui| {
+                    if ui.small_button("Select all").clicked() {
+                        for e in &mut self.picker_entries {
+                            e.selected = true;
+                        }
+                    }
+                    if ui.small_button("Deselect all").clicked() {
+                        for e in &mut self.picker_entries {
+                            e.selected = false;
+                        }
+                    }
+                    let selected = self.picker_entries.iter().filter(|e| e.selected).count();
+                    let total = self.picker_entries.len();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{selected}/{total} selected"))
+                                .size(11.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                    });
+                });
+                ui.separator();
+
+                // Module list
+                egui::ScrollArea::vertical()
+                    .max_height(350.0)
+                    .show(ui, |ui| {
+                        for entry in &mut self.picker_entries {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut entry.selected, "");
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(&entry.name)
+                                                .strong()
+                                                .size(13.0),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("v{}", entry.version))
+                                                .size(11.0)
+                                                .color(egui::Color32::GRAY),
+                                        );
+                                        if let Some(cur_ver) = &entry.installed_version {
+                                            if cur_ver == &entry.version {
+                                                ui.label(
+                                                    egui::RichText::new("(reinstall)")
+                                                        .size(11.0)
+                                                        .color(egui::Color32::from_rgb(180, 180, 180)),
+                                                );
+                                            } else {
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "(update from v{cur_ver})"
+                                                    ))
+                                                    .size(11.0)
+                                                    .color(egui::Color32::from_rgb(80, 180, 230)),
+                                                );
+                                            }
+                                        } else {
+                                            ui.label(
+                                                egui::RichText::new("(new)")
+                                                    .size(11.0)
+                                                    .color(egui::Color32::from_rgb(80, 200, 80)),
+                                            );
+                                        }
+                                    });
+                                    if !entry.description.is_empty() {
+                                        ui.label(
+                                            egui::RichText::new(&entry.description)
+                                                .size(11.0)
+                                                .color(egui::Color32::GRAY),
+                                        );
+                                    }
+                                });
+                            });
+                            ui.add_space(2.0);
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Action buttons
+                ui.horizontal(|ui| {
+                    let any_selected = self.picker_entries.iter().any(|e| e.selected);
+                    let selected = self.picker_entries.iter().filter(|e| e.selected).count();
+                    let label = if selected == 0 {
+                        "Install".to_string()
+                    } else {
+                        format!("Install ({selected})")
+                    };
+                    if ui
+                        .add_enabled(
+                            any_selected,
+                            egui::Button::new(
+                                egui::RichText::new(label).color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(0, 140, 80)),
+                        )
+                        .clicked()
+                    {
+                        do_install = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        do_close = true;
+                    }
+                });
+            });
+
+        if do_install {
+            let selected: Vec<String> = self
+                .picker_entries
+                .iter()
+                .filter(|e| e.selected)
+                .map(|e| e.member.clone())
+                .collect();
+            let path = std::path::PathBuf::from(&self.picker_source_path);
+            let ext_dir = registry.extensions_dir.clone();
+
+            if self.picker_is_zip {
+                self.zip_log.clear();
+                self.zip_status = WorkspaceStatus::Idle;
+                let rx = super::installer::install_from_zip(path, ext_dir, Some(selected));
+                self.zip_job = Some(rx);
+            } else {
+                self.workspace_log.clear();
+                self.workspace_status = WorkspaceStatus::Building;
+                let rx =
+                    super::installer::install_from_workspace(path, ext_dir, Some(selected));
+                self.workspace_job = Some(rx);
+            }
+            self.show_picker = false;
+            self.picker_entries.clear();
+        }
+
+        if do_close {
+            self.show_picker = false;
+            self.picker_entries.clear();
+        }
+    }
 }
 
 /// Start a reinstall job based on where the extension was originally installed from.
@@ -731,6 +1084,7 @@ fn start_update_job(
             let url = source.url.as_deref()?.to_string();
             Some(super::installer::InstallJob::start(url, ext_dir))
         }
+        SourceKind::Zip => None, // ZIP-installed extensions cannot be auto-updated
     }
 }
 

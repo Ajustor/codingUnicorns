@@ -46,6 +46,15 @@ pub trait Plugin: Send + Sync {
         None
     }
 
+    /// Tokenize an entire document at once (tree-sitter based).
+    /// Returns per-line token vectors, or None if not supported.
+    fn tokenize_document(&self, _lang: &str, _text: &str) -> Option<Vec<Vec<crate::editor::highlight::Token>>> {
+        None
+    }
+
+    /// Reset multi-line tokenizer state before tokenizing a new document.
+    fn reset_tokenizer(&self) {}
+
     /// File extensions handled by this plugin (e.g. `&["rs"]`, `&["ts", "tsx"]`).
     /// Used to match the correct LSP server to a file.
     fn file_extensions(&self) -> &[&str] {

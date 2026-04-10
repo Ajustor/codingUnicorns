@@ -23,6 +23,7 @@ pub enum SourceKind {
     Workspace,
     Folder,
     Git,
+    Zip,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

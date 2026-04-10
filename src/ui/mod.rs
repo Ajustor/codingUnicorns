@@ -1,4 +1,5 @@
 pub mod debugger;
+pub mod minimap;
 pub mod git_panel;
 pub mod layout;
 pub mod merge_panel;

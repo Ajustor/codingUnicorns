@@ -54,7 +54,9 @@ impl ScreenBuffer {
             self.line_feed();
             self.cursor_col = 0;
         }
-        if let Some(row) = self.rows.get_mut(self.cursor_row) {
+        // Clamp cursor_row defensively in case external sequences put it out of range.
+        let row_idx = self.cursor_row.min(self.rows.len().saturating_sub(1));
+        if let Some(row) = self.rows.get_mut(row_idx) {
             if let Some(cell) = row.get_mut(self.cursor_col) {
                 *cell = Cell {
                     ch,
@@ -71,6 +73,9 @@ impl ScreenBuffer {
     }
 
     pub(super) fn line_feed(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
         if self.cursor_row + 1 >= self.term_rows {
             let top = self.rows.remove(0);
             self.scrollback.push(top);
@@ -79,6 +84,8 @@ impl ScreenBuffer {
                 self.scrollback.drain(0..excess);
             }
             self.rows.push(vec![Cell::default(); self.cols]);
+            // Keep cursor_row in bounds after scroll.
+            self.cursor_row = self.cursor_row.min(self.rows.len().saturating_sub(1));
         } else {
             self.cursor_row += 1;
         }
@@ -106,27 +113,33 @@ impl ScreenBuffer {
     }
 
     pub(super) fn erase_display(&mut self, param: u16) {
-        let (crow, ccol) = (self.cursor_row, self.cursor_col);
+        let crow = self.cursor_row.min(self.rows.len().saturating_sub(1));
+        let ccol = self.cursor_col.min(self.cols.saturating_sub(1));
         match param {
             0 => {
-                for c in ccol..self.cols {
-                    self.rows[crow][c] = Cell::default();
+                if let Some(row) = self.rows.get_mut(crow) {
+                    for cell in &mut row[ccol..] {
+                        *cell = Cell::default();
+                    }
                 }
-                for r in (crow + 1)..self.term_rows {
+                for r in (crow + 1)..self.rows.len() {
                     self.rows[r] = vec![Cell::default(); self.cols];
                 }
             }
             1 => {
-                for r in 0..crow {
+                for r in 0..crow.min(self.rows.len()) {
                     self.rows[r] = vec![Cell::default(); self.cols];
                 }
-                for c in 0..=ccol.min(self.cols.saturating_sub(1)) {
-                    self.rows[crow][c] = Cell::default();
+                if let Some(row) = self.rows.get_mut(crow) {
+                    let end = ccol.min(row.len().saturating_sub(1));
+                    for cell in &mut row[..=end] {
+                        *cell = Cell::default();
+                    }
                 }
             }
             2 | 3 => {
-                for r in 0..self.term_rows {
-                    self.rows[r] = vec![Cell::default(); self.cols];
+                for row in &mut self.rows {
+                    *row = vec![Cell::default(); self.cols];
                 }
                 self.cursor_row = 0;
                 self.cursor_col = 0;
@@ -136,20 +149,25 @@ impl ScreenBuffer {
     }
 
     pub(super) fn erase_line(&mut self, param: u16) {
-        let (crow, ccol) = (self.cursor_row, self.cursor_col);
+        let crow = self.cursor_row.min(self.rows.len().saturating_sub(1));
+        let ccol = self.cursor_col.min(self.cols.saturating_sub(1));
+        let Some(row) = self.rows.get_mut(crow) else {
+            return;
+        };
         match param {
             0 => {
-                for c in ccol..self.cols {
-                    self.rows[crow][c] = Cell::default();
+                for cell in &mut row[ccol..] {
+                    *cell = Cell::default();
                 }
             }
             1 => {
-                for c in 0..=ccol.min(self.cols.saturating_sub(1)) {
-                    self.rows[crow][c] = Cell::default();
+                let end = ccol.min(row.len().saturating_sub(1));
+                for cell in &mut row[..=end] {
+                    *cell = Cell::default();
                 }
             }
             2 => {
-                self.rows[crow] = vec![Cell::default(); self.cols];
+                *row = vec![Cell::default(); self.cols];
             }
             _ => {}
         }

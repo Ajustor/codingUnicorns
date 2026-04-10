@@ -39,6 +39,7 @@ impl CodingUnicorns {
             self.editor.set_content(String::new(), Some(path.clone()));
             self.config.last_file = Some(path.to_string_lossy().to_string());
             self.config.save();
+            self.editor.focus_requested = true;
             return;
         }
 
@@ -64,6 +65,7 @@ impl CodingUnicorns {
             }
             self.last_lsp_content_version = 0;
             self.editor.refresh_line_diff();
+            self.editor.focus_requested = true;
         }
     }
 

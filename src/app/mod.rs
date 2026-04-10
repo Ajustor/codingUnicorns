@@ -157,6 +157,7 @@ impl CodingUnicorns {
             }
         }
         let initial_terminal_height = config.terminal_height;
+        let shell_override = config.shell.clone();
         let mut app = Self {
             config,
             tab_manager: TabManager::new(),
@@ -170,7 +171,7 @@ impl CodingUnicorns {
             pending_definition_id: None,
             pending_completion_id: None,
             last_lsp_content_version: 0,
-            terminals: vec![Terminal::new()],
+            terminals: vec![Terminal::new(&shell_override)],
             active_terminal: 0,
             status_bar: StatusBar::new(),
             command_palette: CommandPalette::new(),
@@ -864,6 +865,25 @@ impl eframe::App for CodingUnicorns {
 
         crate::ui::layout::render(self, ctx);
 
+        // Handle pending extension uninstall: unload plugin DLL first, then delete files.
+        if let Some(id) = self.extensions_panel.pending_uninstall.take() {
+            // Find the extensions list for this module so we can unload its plugin.
+            let exts: Vec<String> = self
+                .extension_registry
+                .installed
+                .iter()
+                .find(|e| e.manifest.extension.id == id)
+                .map(|e| e.manifest.capabilities.languages.clone())
+                .unwrap_or_default();
+            // Drop the plugin (releases the DLL lock on Windows).
+            self.plugin_manager.unload_by_extensions(&exts);
+            // Now safe to delete the files.
+            if let Err(e) = self.extension_registry.uninstall(&id) {
+                log::error!("Uninstall failed: {e}");
+            }
+            self.extensions_panel.plugins_changed = true;
+        }
+
         // Reload LSP + plugins when a module installation just completed.
         if self.extensions_panel.plugins_changed {
             self.extensions_panel.plugins_changed = false;
@@ -962,9 +982,15 @@ impl eframe::App for CodingUnicorns {
             }
         }
 
-        // Request continuous repaint while terminal is visible (for live output)
+        // Module picker modal (rendered on top of everything)
+        self.extensions_panel
+            .show_picker_modal(ctx, &mut self.extension_registry);
+
+        // Request periodic repaint while terminal is visible (for live output).
+        // Using a short interval instead of immediate repaint avoids burning CPU
+        // at 60+ FPS when the terminal is idle.
         if self.show_terminal {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 }

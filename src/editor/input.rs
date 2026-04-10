@@ -39,6 +39,24 @@ impl Editor {
         }
 
         if self.cursor.has_selection() {
+            if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
+                // Adjust extra cursors BEFORE deleting, since deletion shifts positions.
+                if sr == er {
+                    let deleted = ec - sc;
+                    for ec_cursor in &mut self.extra_cursors {
+                        if ec_cursor.row == sr && ec_cursor.col > sc {
+                            ec_cursor.col = ec_cursor.col.saturating_sub(deleted);
+                            ec_cursor.desired_col = ec_cursor.col;
+                        }
+                        if let Some((ar, ac)) = ec_cursor.sel_anchor {
+                            if ar == sr && ac > sc {
+                                ec_cursor.sel_anchor =
+                                    Some((ar, ac.saturating_sub(deleted)));
+                            }
+                        }
+                    }
+                }
+            }
             self.delete_selection();
         }
         let (row, col) = self.cursor.position();
@@ -252,6 +270,83 @@ impl Editor {
 
         self.is_modified = true;
         self.content_version = self.content_version.wrapping_add(1);
+    }
+
+    pub fn delete_char_after(&mut self) {
+        self.buffer.checkpoint();
+        if self.cursor.has_selection() {
+            self.delete_selection();
+            return;
+        }
+        let (row, col) = self.cursor.position();
+        let line_len = self.buffer.line_len(row);
+
+        if col < line_len {
+            self.buffer.delete_char(row, col);
+
+            // Adjust extra cursors on the same row that are after the deleted column.
+            for ec in &mut self.extra_cursors {
+                if ec.row == row && ec.col > col {
+                    ec.col -= 1;
+                    ec.desired_col = ec.col;
+                }
+                if let Some((ar, ac)) = ec.sel_anchor {
+                    if ar == row && ac > col {
+                        ec.sel_anchor = Some((ar, ac - 1));
+                    }
+                }
+            }
+        } else if row + 1 < self.buffer.num_lines() {
+            // At end of line: join with next line
+            self.buffer.join_lines(row + 1);
+        }
+
+        // Process each extra cursor.
+        let n = self.extra_cursors.len();
+        for i in 0..n {
+            if self.extra_cursors[i].has_selection() {
+                if let Some(((sr, sc), (er, ec))) = self.extra_cursors[i].selection_range() {
+                    if sr == er {
+                        let count = ec - sc;
+                        for _ in 0..count {
+                            self.buffer.delete_char(sr, sc);
+                        }
+                        self.extra_cursors[i].set_position(sr, sc);
+                        self.extra_cursors[i].clear_selection();
+                        for j in (i + 1)..n {
+                            if self.extra_cursors[j].row == sr && self.extra_cursors[j].col > sc {
+                                self.extra_cursors[j].col = self.extra_cursors[j]
+                                    .col
+                                    .saturating_sub(ec)
+                                    .saturating_add(sc);
+                                self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
+                            }
+                        }
+                    } else {
+                        self.extra_cursors[i].set_position(sr, sc);
+                        self.extra_cursors[i].clear_selection();
+                    }
+                }
+            } else {
+                let (er, ec_col) = self.extra_cursors[i].position();
+                let el = self.buffer.line_len(er);
+                if ec_col < el {
+                    self.buffer.delete_char(er, ec_col);
+                    for j in (i + 1)..n {
+                        if self.extra_cursors[j].row == er && self.extra_cursors[j].col > ec_col {
+                            self.extra_cursors[j].col -= 1;
+                            self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
+                        }
+                    }
+                } else if er + 1 < self.buffer.num_lines() {
+                    self.buffer.join_lines(er + 1);
+                }
+            }
+        }
+
+        self.is_modified = true;
+        self.content_version = self.content_version.wrapping_add(1);
+        self.cursor_blink_epoch = std::time::Instant::now();
     }
 
     pub fn insert_newline(&mut self) {

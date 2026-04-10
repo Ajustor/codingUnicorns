@@ -78,6 +78,35 @@ impl PluginManager {
             .find_map(|p| p.tokenize_line(lang, line))
     }
 
+    /// Tokenize an entire document via a plugin's document-level tokenizer.
+    pub fn tokenize_document(
+        &self,
+        lang: &str,
+        text: &str,
+    ) -> Option<Vec<Vec<crate::editor::highlight::Token>>> {
+        self.plugins
+            .iter()
+            .find_map(|p| p.tokenize_document(lang, text))
+    }
+
+    /// Unload all plugins whose file extensions match those of the given extension ID.
+    /// This drops the `Library` handle, unlocking the DLL on Windows.
+    pub fn unload_by_extensions(&mut self, extensions: &[String]) {
+        self.plugins.retain(|p| {
+            let exts = p.file_extensions();
+            !extensions.iter().any(|e| exts.contains(&e.as_str()))
+        });
+    }
+
+    /// Reset multi-line tokenizer state for all plugins that handle `lang`.
+    pub fn reset_tokenizer(&self, lang: &str) {
+        for plugin in &self.plugins {
+            if plugin.file_extensions().contains(&lang) {
+                plugin.reset_tokenizer();
+            }
+        }
+    }
+
     /// Query all plugins for hover documentation for `word` in a file of type `lang`.
     /// Returns the first non-empty result, or `None`.
     pub fn hover_info(&self, lang: &str, word: &str, file_content: &str) -> Option<String> {
