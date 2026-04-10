@@ -510,7 +510,7 @@ impl ExtensionsPanel {
                 ui.label(
                     egui::RichText::new(
                         "Point to a Cargo workspace that contains modules with manifest.toml.\n\
-                         Writing Unicorns will run cargo build --release and install all modules.",
+                         Coding Unicorns will run cargo build --release and install all modules.",
                     )
                     .size(11.0)
                     .color(egui::Color32::GRAY),
@@ -582,7 +582,7 @@ impl ExtensionsPanel {
                 ui.label(
                     egui::RichText::new(
                         "Clone a git repository containing a Cargo workspace of modules.\n\
-                         Writing Unicorns will build and install every member that has a manifest.toml.\n\
+                         Coding Unicorns will build and install every member that has a manifest.toml.\n\
                          Single-extension repositories are also supported.",
                     )
                     .size(11.0)

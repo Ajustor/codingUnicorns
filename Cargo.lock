@@ -739,6 +739,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "coding-unicorns"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "dirs-next",
+ "eframe",
+ "egui",
+ "egui-phosphor",
+ "egui_extras",
+ "env_logger",
+ "fuzzy-matcher",
+ "git2",
+ "image",
+ "libloading",
+ "log",
+ "lsp-types",
+ "miniz_oxide 0.9.1",
+ "notify",
+ "portable-pty",
+ "regex",
+ "rfd",
+ "ropey",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tree-sitter",
+ "tree-sitter-highlight",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "uuid",
+ "vte",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5123,43 +5160,6 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
-
-[[package]]
-name = "writing-unicorns"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "crossbeam-channel",
- "dirs-next",
- "eframe",
- "egui",
- "egui-phosphor",
- "egui_extras",
- "env_logger",
- "fuzzy-matcher",
- "git2",
- "image",
- "libloading",
- "log",
- "lsp-types",
- "miniz_oxide 0.9.1",
- "notify",
- "portable-pty",
- "regex",
- "rfd",
- "ropey",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tree-sitter",
- "tree-sitter-highlight",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "uuid",
- "vte",
-]
 
 [[package]]
 name = "x11-dl"

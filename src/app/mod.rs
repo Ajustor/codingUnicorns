@@ -28,7 +28,7 @@ mod lsp_ops;
 mod navigation;
 mod workspace_search;
 
-pub struct WritingUnicorns {
+pub struct CodingUnicorns {
     pub config: Config,
     pub tab_manager: TabManager,
     pub editor: Editor,
@@ -133,7 +133,7 @@ pub struct ImageData {
     pub height: u32,
 }
 
-impl WritingUnicorns {
+impl CodingUnicorns {
     pub fn new(_cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
         let config = Config::load();
         let mut plugin_manager = PluginManager::new();
@@ -259,7 +259,7 @@ impl WritingUnicorns {
     }
 }
 
-impl eframe::App for WritingUnicorns {
+impl eframe::App for CodingUnicorns {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle window close request — warn about unsaved files
         let close_requested = ctx.input(|i| i.viewport().close_requested());

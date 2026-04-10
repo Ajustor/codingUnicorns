@@ -1,4 +1,4 @@
-# 🦄 Writing Unicorns
+# 🦄 Coding Unicorns
 
 Un IDE léger et performant construit en Rust, inspiré de VSCode.  
 Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
@@ -88,12 +88,12 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 ## Installation
 
 ```bash
-git clone https://github.com/votre-utilisateur/writingUnicorns
-cd writingUnicorns
+git clone https://github.com/votre-utilisateur/codingUnicorns
+cd codingUnicorns
 cargo build --release
 ```
 
-Le binaire se trouve dans `target/release/writing-unicorns` (ou `.exe` sur Windows).
+Le binaire se trouve dans `target/release/coding-unicorns` (ou `.exe` sur Windows).
 
 ```bash
 cargo run --release
@@ -225,7 +225,7 @@ L'éditeur ne contient aucun support de langage intégré. Pour obtenir la color
 #### Depuis un workspace git (plusieurs modules d'un coup)
 
 1. Panel Extensions → **Install Group from Git**
-2. Collez l'URL du dépôt (ex: `https://github.com/user/writing-unicorns-modules`)
+2. Collez l'URL du dépôt (ex: `https://github.com/user/coding-unicorns-modules`)
 3. Cliquez **Install All** — tous les modules sont compilés et installés
 
 #### Depuis un dépôt git (un module)
@@ -277,9 +277,9 @@ Le fichier de configuration est stocké dans :
 
 | OS | Chemin |
 |----|--------|
-| Linux | `~/.config/writing-unicorns/config.toml` |
-| macOS | `~/Library/Application Support/writing-unicorns/config.toml` |
-| Windows | `%APPDATA%\writing-unicorns\config.toml` |
+| Linux | `~/.config/coding-unicorns/config.toml` |
+| macOS | `~/Library/Application Support/coding-unicorns/config.toml` |
+| Windows | `%APPDATA%\coding-unicorns\config.toml` |
 
 ---
 

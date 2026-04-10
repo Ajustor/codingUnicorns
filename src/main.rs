@@ -16,7 +16,7 @@ mod tabs;
 mod terminal;
 mod ui;
 
-use app::WritingUnicorns;
+use app::CodingUnicorns;
 
 fn load_icon() -> Option<egui::IconData> {
     let bytes = include_bytes!("../assets/icon.png");
@@ -66,7 +66,7 @@ fn main() -> eframe::Result<()> {
 
     let icon = load_icon();
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Writing Unicorns")
+        .with_title("Coding Unicorns")
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([600.0, 400.0]);
     if let Some(icon_data) = icon {
@@ -79,7 +79,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Writing Unicorns",
+        "Coding Unicorns",
         options,
         Box::new(|cc| {
             // Load Phosphor icon font so sidebar icons render correctly
@@ -104,7 +104,7 @@ fn main() -> eframe::Result<()> {
 
             cc.egui_ctx.set_fonts(fonts);
 
-            Ok(Box::new(WritingUnicorns::new(cc, initial_path)))
+            Ok(Box::new(CodingUnicorns::new(cc, initial_path)))
         }),
     )
 }

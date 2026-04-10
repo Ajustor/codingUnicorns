@@ -1,6 +1,6 @@
-# Writing Unicorns — Plugin System
+# Coding Unicorns — Plugin System
 
-Writing Unicorns supports a lightweight plugin system inspired by VSCode extensions. Plugins live in-process and integrate directly with the editor loop.
+Coding Unicorns supports a lightweight plugin system inspired by VSCode extensions. Plugins live in-process and integrate directly with the editor loop.
 
 ---
 
@@ -79,7 +79,7 @@ fn tokenize_line(&self, lang: &str, line: &str) -> Option<Vec<Token>> {
 
 ## Registering a Plugin
 
-In `src/app.rs`, inside `WritingUnicorns::new()`:
+In `src/app.rs`, inside `CodingUnicorns::new()`:
 
 ```rust
 let mut plugin_manager = PluginManager::new();

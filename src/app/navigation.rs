@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use super::WritingUnicorns;
+use super::CodingUnicorns;
 use crate::editor::Editor;
 use crate::tabs::TabManager;
 
-impl WritingUnicorns {
+impl CodingUnicorns {
     pub fn push_nav_and_goto(&mut self, target_path: PathBuf, target_line: usize) {
         if let Some(current_path) = self.editor.current_path.clone() {
             let (row, col) = self.editor.cursor.position();

@@ -294,7 +294,7 @@ impl Default for Config {
 impl Config {
     pub fn config_path() -> PathBuf {
         let mut path = dirs_next::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        path.push("writing-unicorns");
+        path.push("coding-unicorns");
         path.push("config.toml");
         path
     }

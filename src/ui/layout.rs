@@ -1,5 +1,5 @@
 use crate::app::file_ops::is_image_file;
-use crate::app::WritingUnicorns;
+use crate::app::CodingUnicorns;
 use crate::config::Config;
 use crate::terminal::Terminal;
 use crate::ui::run_panel::RunPanelAction;
@@ -20,7 +20,7 @@ pub enum SidebarTab {
     Debug,
 }
 
-pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
+pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     ctx.set_visuals(dark_visuals(&app.config));
 
     // ── Auto-save (2-second inactivity) ──────────────────────────────────────
@@ -92,11 +92,11 @@ pub fn render(app: &mut WritingUnicorns, ctx: &Context) {
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Writing Unicorns".to_string());
+            .unwrap_or_else(|| "Coding Unicorns".to_string());
         let title = if app.editor.is_modified {
-            format!("● {} — Writing Unicorns", filename)
+            format!("● {} — Coding Unicorns", filename)
         } else {
-            format!("{} — Writing Unicorns", filename)
+            format!("{} — Coding Unicorns", filename)
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
@@ -1290,7 +1290,7 @@ fn welcome_screen(ui: &mut egui::Ui) {
     ui.vertical_centered(|ui| {
         ui.add_space(80.0);
         ui.label(
-            egui::RichText::new("🦄 Writing Unicorns")
+            egui::RichText::new("🦄 Coding Unicorns")
                 .size(32.0)
                 .color(egui::Color32::from_rgb(180, 130, 255))
                 .strong(),

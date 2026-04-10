@@ -63,7 +63,7 @@ pub struct ResolvedRun {
     pub env: Vec<(String, String)>,
 }
 
-/// Top-level structure for `.writing-unicorns/launch.toml`
+/// Top-level structure for `.coding-unicorns/launch.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LaunchFile {
     #[serde(default)]
@@ -91,7 +91,7 @@ impl RunManager {
     pub fn load_for_workspace(&mut self, workspace: &Path) {
         self.workspace = Some(workspace.to_path_buf());
 
-        let launch_file = workspace.join(".writing-unicorns").join("launch.toml");
+        let launch_file = workspace.join(".coding-unicorns").join("launch.toml");
         if launch_file.exists() {
             if let Ok(content) = std::fs::read_to_string(&launch_file) {
                 if let Ok(lf) = toml::from_str::<LaunchFile>(&content) {
@@ -106,10 +106,10 @@ impl RunManager {
         self.active_config = 0;
     }
 
-    /// Save current configs to `.writing-unicorns/launch.toml`.
+    /// Save current configs to `.coding-unicorns/launch.toml`.
     pub fn save(&self) {
         if let Some(ws) = &self.workspace {
-            let dir = ws.join(".writing-unicorns");
+            let dir = ws.join(".coding-unicorns");
             let _ = std::fs::create_dir_all(&dir);
             let lf = LaunchFile {
                 configurations: self.configs.clone(),

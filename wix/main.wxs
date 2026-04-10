@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  WiX v3 installer manifest for Writing Unicorns.
+  WiX v3 installer manifest for Coding Unicorns.
 
   Build requirements:
     - WiX Toolset v3 (candle.exe / light.exe)
     - assets\icon.ico  (generate with scripts\New-Icon.ps1)
-    - target\release\writing-unicorns.exe
+    - target\release\coding-unicorns.exe
 
   Build commands (from the project root):
     candle.exe -arch x64 -out wix\main.wixobj wix\main.wxs
-    light.exe  -ext WixUIExtension -out writing-unicorns-setup.msi wix\main.wixobj
+    light.exe  -ext WixUIExtension -out coding-unicorns-setup.msi wix\main.wixobj
 
   Or via cargo-wix:
     cargo wix -no-build -nocapture
@@ -17,20 +17,20 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
 
   <Product Id="*"
-           Name="Writing Unicorns"
+           Name="Coding Unicorns"
            Language="1033"
            Version="0.4.0"
-           Manufacturer="Writing Unicorns"
+           Manufacturer="Coding Unicorns"
            UpgradeCode="{B7E3F4A2-9C5D-4F8B-A1E3-D5C7B9F2E4A6}">
 
     <Package InstallerVersion="500"
              Compressed="yes"
              InstallScope="perMachine"
-             Description="Writing Unicorns — lightweight IDE"
-             Comments="Writing Unicorns installer" />
+             Description="Coding Unicorns — lightweight IDE"
+             Comments="Coding Unicorns installer" />
 
     <!-- Prevent downgrade -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Writing Unicorns is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Coding Unicorns is already installed." />
 
     <!-- Embed the cabinet into the MSI -->
     <MediaTemplate EmbedCab="yes" />
@@ -38,7 +38,7 @@
     <!-- Application icon (shown in Add/Remove Programs) -->
     <Icon Id="AppIcon" SourceFile="assets\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
-    <Property Id="ARPHELPLINK"    Value="https://github.com/user/writingUnicorns" />
+    <Property Id="ARPHELPLINK"    Value="https://github.com/user/codingUnicorns" />
 
     <!-- Minimal install UI: progress bar + finish -->
     <UIRef Id="WixUI_Minimal" />
@@ -48,16 +48,16 @@
     <!-- ── Directory layout ─────────────────────────────────────────────── -->
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLFOLDER" Name="Writing Unicorns" />
+        <Directory Id="INSTALLFOLDER" Name="Coding Unicorns" />
       </Directory>
       <Directory Id="ProgramMenuFolder">
-        <Directory Id="ApplicationProgramsFolder" Name="Writing Unicorns" />
+        <Directory Id="ApplicationProgramsFolder" Name="Coding Unicorns" />
       </Directory>
       <Directory Id="DesktopFolder" Name="Desktop" />
     </Directory>
 
     <!-- ── Features ─────────────────────────────────────────────────────── -->
-    <Feature Id="ProductFeature" Title="Writing Unicorns" Level="1">
+    <Feature Id="ProductFeature" Title="Coding Unicorns" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
       <ComponentGroupRef Id="ProductShortcuts" />
     </Feature>
@@ -66,9 +66,25 @@
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       <Component Id="MainExecutable" Guid="*">
         <File Id="MainExecutable"
-              Name="writing-unicorns.exe"
-              Source="target\release\writing-unicorns.exe"
+              Name="coding-unicorns.exe"
+              Source="target\release\coding-unicorns.exe"
               KeyPath="yes" />
+      </Component>
+
+      <!-- CLI alias: "cu" command available from any terminal -->
+      <Component Id="CliAlias" Guid="*">
+        <File Id="CliAlias"
+              Name="cu.cmd"
+              Source="scripts\cu.cmd"
+              KeyPath="yes" />
+        <!-- Add the install folder to the system PATH so "cu" works everywhere -->
+        <Environment Id="PATH"
+                     Name="PATH"
+                     Value="[INSTALLFOLDER]"
+                     Permanent="no"
+                     Part="last"
+                     Action="set"
+                     System="yes" />
       </Component>
     </ComponentGroup>
 
@@ -78,16 +94,16 @@
                  Directory="ApplicationProgramsFolder"
                  Guid="*">
         <Shortcut Id="StartMenuLink"
-                  Name="Writing Unicorns"
-                  Description="Writing Unicorns — lightweight IDE"
-                  Target="[INSTALLFOLDER]writing-unicorns.exe"
+                  Name="Coding Unicorns"
+                  Description="Coding Unicorns — lightweight IDE"
+                  Target="[INSTALLFOLDER]coding-unicorns.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon" />
         <RemoveFolder Id="RemoveApplicationProgramsFolder"
                       Directory="ApplicationProgramsFolder"
                       On="uninstall" />
         <RegistryValue Root="HKCU"
-                       Key="Software\WritingUnicorns"
+                       Key="Software\CodingUnicorns"
                        Name="StartMenu"
                        Type="integer"
                        Value="1"
@@ -99,13 +115,13 @@
                  Directory="DesktopFolder"
                  Guid="*">
         <Shortcut Id="DesktopLink"
-                  Name="Writing Unicorns"
-                  Description="Writing Unicorns — lightweight IDE"
-                  Target="[INSTALLFOLDER]writing-unicorns.exe"
+                  Name="Coding Unicorns"
+                  Description="Coding Unicorns — lightweight IDE"
+                  Target="[INSTALLFOLDER]coding-unicorns.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon" />
         <RegistryValue Root="HKCU"
-                       Key="Software\WritingUnicorns"
+                       Key="Software\CodingUnicorns"
                        Name="Desktop"
                        Type="integer"
                        Value="1"

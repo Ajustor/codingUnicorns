@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add 7 editor UX features (selection highlighting, auto-close brackets, multi-cursor paste, navigation history + F12, git stage/commit/push, 3-panel merge tool, split editor) to bring Writing Unicorns closer to a VS Code experience.
+**Goal:** Add 7 editor UX features (selection highlighting, auto-close brackets, multi-cursor paste, navigation history + F12, git stage/commit/push, 3-panel merge tool, split editor) to bring Coding Unicorns closer to a VS Code experience.
 
 **Architecture:** Each feature is isolated and can be implemented independently. Features 1-3 are small, self-contained changes. Feature 4 adds a navigation history module. Feature 5 extends the existing git module. Feature 6 adds a new merge tool UI. Feature 7 (split editor) is the most invasive, replacing the single editor/tab_manager with a pane system.
 
@@ -696,13 +696,13 @@ In `src/app.rs`, add import:
 use crate::nav_history::NavigationHistory;
 ```
 
-Add field to `WritingUnicorns` struct (after `debugger_panel` at line 101):
+Add field to `CodingUnicorns` struct (after `debugger_panel` at line 101):
 
 ```rust
     pub nav_history: NavigationHistory,
 ```
 
-Initialize in `WritingUnicorns::new()` (in the `Self { ... }` block):
+Initialize in `CodingUnicorns::new()` (in the `Self { ... }` block):
 
 ```rust
             nav_history: NavigationHistory::new(),
@@ -710,7 +710,7 @@ Initialize in `WritingUnicorns::new()` (in the `Self { ... }` block):
 
 - [ ] **Step 4.4: Create `push_nav_and_goto` helper**
 
-In `src/app.rs`, add method to `impl WritingUnicorns`:
+In `src/app.rs`, add method to `impl CodingUnicorns`:
 
 ```rust
     /// Push current position to navigation history, then navigate to target.
@@ -1683,7 +1683,7 @@ This is the most invasive change. It touches nearly every file that references `
 
 - [ ] **Step 7.1: Add pane fields to app struct**
 
-In `src/app.rs`, add fields to `WritingUnicorns` (keep the existing `editor` and `tab_manager` for now, add split state):
+In `src/app.rs`, add fields to `CodingUnicorns` (keep the existing `editor` and `tab_manager` for now, add split state):
 
 ```rust
     /// Second editor pane (None = no split).

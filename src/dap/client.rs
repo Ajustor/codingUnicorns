@@ -48,8 +48,8 @@ impl DapClient {
             "type": "request",
             "command": "initialize",
             "arguments": {
-                "clientID": "writing-unicorns",
-                "clientName": "Writing Unicorns",
+                "clientID": "coding-unicorns",
+                "clientName": "Coding Unicorns",
                 "adapterID": "generic",
                 "linesStartAt1": true,
                 "columnsStartAt1": true,

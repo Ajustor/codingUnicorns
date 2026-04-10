@@ -1,4 +1,4 @@
-# Writing Unicorns - Editor UX Features Design
+# Coding Unicorns - Editor UX Features Design
 
 **Date:** 2026-04-09
 **Scope:** 7 features to bring the editor closer to a VS Code-like experience

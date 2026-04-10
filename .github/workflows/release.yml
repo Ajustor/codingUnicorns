@@ -21,19 +21,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: writing-unicorns-linux-x64
+            artifact: coding-unicorns-linux-x64
 
           #- os: macos-latest
           #  target: x86_64-apple-darwin
-          #  artifact: writing-unicorns-macos-x64
+          #  artifact: coding-unicorns-macos-x64
 
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: writing-unicorns-macos-arm64
+            artifact: coding-unicorns-macos-arm64
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: writing-unicorns-windows-x64.exe
+            artifact: coding-unicorns-windows-x64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -67,12 +67,12 @@ jobs:
       - name: Rename binary (Unix)
         if: matrix.os != 'windows-latest'
         run: |
-          cp target/${{ matrix.target }}/release/writing-unicorns ${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/coding-unicorns ${{ matrix.artifact }}
 
       - name: Rename binary (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          cp target/${{ matrix.target }}/release/writing-unicorns.exe ${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/coding-unicorns.exe ${{ matrix.artifact }}
 
       # ── Windows extras ─────────────────────────────────────────────────────
 
@@ -83,8 +83,8 @@ jobs:
           # Copy the release binary to target/release/ so the WiX manifest
           # finds it at the expected relative path.
           New-Item -ItemType Directory -Force -Path target\release | Out-Null
-          Copy-Item target\${{ matrix.target }}\release\writing-unicorns.exe `
-                    target\release\writing-unicorns.exe -Force
+          Copy-Item target\${{ matrix.target }}\release\coding-unicorns.exe `
+                    target\release\coding-unicorns.exe -Force
 
           # Convert PNG → ICO using built-in Windows APIs (no extra tools needed)
           .\scripts\New-Icon.ps1 `
@@ -108,7 +108,7 @@ jobs:
           $light  = Join-Path $wixDir.FullName "bin\light.exe"
 
           & $candle -arch x64 -out wix\main.wixobj wix\main.wxs
-          & $light  -ext WixUIExtension -out writing-unicorns-setup.msi wix\main.wixobj
+          & $light  -ext WixUIExtension -out coding-unicorns-setup.msi wix\main.wixobj
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -120,14 +120,14 @@ jobs:
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: writing-unicorns-setup-msi
-          path: writing-unicorns-setup.msi
+          name: coding-unicorns-setup-msi
+          path: coding-unicorns-setup.msi
 
       - name: Upload icon (ICO)
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: writing-unicorns-icon-ico
+          name: coding-unicorns-icon-ico
           path: assets/icon.ico
 
   release:
@@ -145,7 +145,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: Writing Unicorns ${{ github.ref_name }}
+          name: Coding Unicorns ${{ github.ref_name }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |

@@ -30,7 +30,7 @@ impl ExtensionRegistry {
     pub fn extensions_dir() -> PathBuf {
         dirs_next::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("writing-unicorns")
+            .join("coding-unicorns")
             .join("extensions")
     }
 

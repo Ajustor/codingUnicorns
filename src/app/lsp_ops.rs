@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use super::workspace_search::{find_definition_in_buffer, search_workspace_for_symbol};
-use super::WritingUnicorns;
+use super::CodingUnicorns;
 
-impl WritingUnicorns {
+impl CodingUnicorns {
     pub(crate) fn ensure_lsp_for_file(&mut self, path: &std::path::Path) {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if let Some(workspace) = self.workspace_path.clone() {

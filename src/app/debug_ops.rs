@@ -1,7 +1,7 @@
-use super::WritingUnicorns;
+use super::CodingUnicorns;
 use crate::ui::layout::SidebarTab;
 
-impl WritingUnicorns {
+impl CodingUnicorns {
     /// Start a DAP debug session using the language plugin for the current file.
     pub fn start_debug_session(&mut self) {
         let Some(path) = self.editor.current_path.clone() else {

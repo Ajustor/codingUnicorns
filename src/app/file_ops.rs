@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{ImageData, WritingUnicorns};
+use super::{ImageData, CodingUnicorns};
 
 /// Returns true if the path has an image file extension we can display.
 pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
@@ -13,7 +13,7 @@ pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
     )
 }
 
-impl WritingUnicorns {
+impl CodingUnicorns {
     pub fn open_file(&mut self, path: PathBuf) {
         // Always clear any previous image state when opening a new file.
         self.pending_image = None;
