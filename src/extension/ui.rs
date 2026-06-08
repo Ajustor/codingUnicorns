@@ -2,6 +2,14 @@ use super::installer::{InstallJob, InstallStatus, WorkspaceStatus};
 use super::manifest::SourceKind;
 use super::registry::ExtensionRegistry;
 
+/// Pending uninstall awaiting the user's choice in the confirmation dialog.
+struct UninstallPrompt {
+    id: String,
+    name: String,
+    /// Human-readable dependency list (empty when the module installed none).
+    deps: Vec<String>,
+}
+
 /// Entry in the module picker modal.
 struct PickerEntry {
     member: String,
@@ -41,6 +49,11 @@ pub struct ExtensionsPanel {
     pub plugins_changed: bool,
     /// Extension ID pending uninstall — the app must unload the plugin first.
     pub pending_uninstall: Option<String>,
+    /// When the pending uninstall should also remove the module's external
+    /// dependencies (LSP server, etc.). Read alongside `pending_uninstall`.
+    pub pending_uninstall_remove_deps: bool,
+    /// Uninstall confirmation dialog state (None = dialog closed).
+    uninstall_prompt: Option<UninstallPrompt>,
     // ZIP installer
     pub zip_job: Option<std::sync::mpsc::Receiver<WorkspaceStatus>>,
     pub zip_status: WorkspaceStatus,
@@ -83,6 +96,8 @@ impl ExtensionsPanel {
             update_statuses: std::collections::HashMap::new(),
             plugins_changed: false,
             pending_uninstall: None,
+            pending_uninstall_remove_deps: false,
+            uninstall_prompt: None,
             zip_job: None,
             zip_status: WorkspaceStatus::Idle,
             zip_log: Vec::new(),
@@ -90,6 +105,102 @@ impl ExtensionsPanel {
             picker_entries: Vec::new(),
             picker_source_path: String::new(),
             picker_is_zip: false,
+        }
+    }
+
+    /// Render the uninstall confirmation dialog. Lets the user remove just the
+    /// module, or also the external dependencies (LSP server, etc.) it installed.
+    fn show_uninstall_dialog(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = &self.uninstall_prompt else {
+            return;
+        };
+        let mut choice: Option<bool> = None; // Some(remove_deps)
+        let mut cancel = false;
+
+        egui::Window::new("Uninstall module")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Uninstall \"{}\"?", prompt.name))
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                );
+                ui.add_space(4.0);
+
+                if prompt.deps.is_empty() {
+                    ui.label(
+                        egui::RichText::new("This removes the module from the editor.")
+                            .size(12.0)
+                            .color(egui::Color32::from_gray(170)),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("Uninstall").color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(200, 60, 60)))
+                            .clicked()
+                        {
+                            choice = Some(false);
+                        }
+                    });
+                } else {
+                    ui.label(
+                        egui::RichText::new(
+                            "This module installed the following (incl. its language server):",
+                        )
+                        .size(12.0)
+                        .color(egui::Color32::from_gray(170)),
+                    );
+                    ui.add_space(2.0);
+                    for d in &prompt.deps {
+                        ui.label(
+                            egui::RichText::new(format!("  • {d}"))
+                                .size(12.0)
+                                .color(egui::Color32::from_gray(205)),
+                        );
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Remove these too, or keep them?")
+                            .size(12.0)
+                            .color(egui::Color32::from_gray(170)),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                        if ui.button("Module only").clicked() {
+                            choice = Some(false);
+                        }
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("Module + dependencies")
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(200, 60, 60)))
+                            .clicked()
+                        {
+                            choice = Some(true);
+                        }
+                    });
+                }
+            });
+
+        if cancel {
+            self.uninstall_prompt = None;
+        } else if let Some(remove_deps) = choice {
+            if let Some(p) = self.uninstall_prompt.take() {
+                self.pending_uninstall = Some(p.id);
+                self.pending_uninstall_remove_deps = remove_deps;
+            }
         }
     }
 
@@ -252,7 +363,7 @@ impl ExtensionsPanel {
                 });
                 ui.add_space(4.0);
                 let query = self.search_query.to_lowercase();
-                let mut to_uninstall: Option<String> = None;
+                let mut to_uninstall: Option<UninstallPrompt> = None;
 
                 let has_matches = registry.installed.iter().any(|e| {
                     query.is_empty()
@@ -331,7 +442,13 @@ impl ExtensionsPanel {
                                             .frame(false),
                                         );
                                         if uninstall_btn.clicked() {
-                                            to_uninstall = Some(ext.manifest.extension.id.clone());
+                                            to_uninstall = Some(UninstallPrompt {
+                                                id: ext.manifest.extension.id.clone(),
+                                                name: ext.manifest.extension.name.clone(),
+                                                deps: super::installer::dependency_summary(
+                                                    &ext.manifest.dependencies,
+                                                ),
+                                            });
                                         }
                                     },
                                 );
@@ -422,10 +539,12 @@ impl ExtensionsPanel {
                     }
                 }
 
-                if let Some(id) = to_uninstall {
-                    self.pending_uninstall = Some(id);
+                if let Some(prompt) = to_uninstall {
+                    self.uninstall_prompt = Some(prompt);
                 }
             });
+
+        self.show_uninstall_dialog(ui.ctx());
 
             ui.add_space(8.0);
 

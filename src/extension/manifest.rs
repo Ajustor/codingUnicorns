@@ -50,6 +50,10 @@ pub struct Dependencies {
     /// Go tools to install (`go install <pkg>`).
     #[serde(default)]
     pub go: Vec<String>,
+    /// .NET global tools to install (`dotnet tool update --global <pkg>`).
+    /// Pin a version with `name@version`, e.g. `csharp-ls@0.16.0`.
+    #[serde(default)]
+    pub dotnet: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -37,6 +37,12 @@ impl Editor {
         self.autocomplete.update(&word, &buffer_words, keywords);
     }
 
+    /// Public entry point for the local (buffer words + language keywords) autocomplete.
+    /// Used as a fallback when no LSP server is connected for the current file type.
+    pub fn trigger_local_completion(&mut self) {
+        self.trigger_autocomplete_update();
+    }
+
     pub(super) fn all_cursor_rows(&self) -> Vec<usize> {
         let mut rows = vec![self.cursor.row];
         for ec in &self.extra_cursors {

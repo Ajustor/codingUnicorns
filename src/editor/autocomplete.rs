@@ -1,11 +1,32 @@
 use std::collections::HashSet;
 
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
+
+/// A single completion entry: the text to insert plus an optional kind tag
+/// (e.g. "Function", "Keyword") used to render a colored badge in the popup.
+#[derive(Clone)]
+pub struct Suggestion {
+    pub label: String,
+    pub kind: Option<String>,
+}
+
+impl Suggestion {
+    fn local(label: String, kind: Option<&str>) -> Self {
+        Self {
+            label,
+            kind: kind.map(|k| k.to_string()),
+        }
+    }
+}
+
 pub struct Autocomplete {
     pub visible: bool,
     pub query: String,
-    pub suggestions: Vec<String>,
+    pub suggestions: Vec<Suggestion>,
     pub selected: usize,
     pub cursor_screen_pos: egui::Pos2,
+    matcher: SkimMatcherV2,
 }
 
 impl Autocomplete {
@@ -16,10 +37,12 @@ impl Autocomplete {
             suggestions: Vec::new(),
             selected: 0,
             cursor_screen_pos: egui::Pos2::ZERO,
+            matcher: SkimMatcherV2::default(),
         }
     }
 
-    /// Recompute suggestions based on the partial word being typed.
+    /// Recompute suggestions based on the partial word being typed, ranked by a
+    /// fuzzy-match score (subsequence match, not just prefix).
     pub fn update(&mut self, word: &str, buffer_words: &[String], lang_keywords: &[&str]) {
         if word.chars().count() < 2 {
             self.visible = false;
@@ -27,33 +50,45 @@ impl Autocomplete {
         }
 
         self.query = word.to_string();
-        let lower = word.to_lowercase();
 
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut suggestions: Vec<String> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        // (score, label, kind) — keywords are tagged so the popup shows a badge.
+        let mut scored: Vec<(i64, &str, Option<&str>)> = Vec::new();
 
-        // Language keywords first, then buffer words.
         for &kw in lang_keywords {
-            if kw.to_lowercase().starts_with(&lower) && kw != word && seen.insert(kw.to_string()) {
-                suggestions.push(kw.to_string());
+            if kw == word || !seen.insert(kw) {
+                continue;
+            }
+            if let Some(score) = self.matcher.fuzzy_match(kw, word) {
+                scored.push((score, kw, Some("Keyword")));
             }
         }
         for bw in buffer_words {
-            if bw.to_lowercase().starts_with(&lower) && bw != word && seen.insert(bw.clone()) {
-                suggestions.push(bw.clone());
+            if bw == word || !seen.insert(bw.as_str()) {
+                continue;
+            }
+            if let Some(score) = self.matcher.fuzzy_match(bw, word) {
+                scored.push((score, bw.as_str(), None));
             }
         }
 
-        suggestions.sort();
-        self.suggestions = suggestions;
+        // Highest score first. `sort_by` is stable, so ties keep insertion order
+        // (keywords before buffer words).
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.truncate(50);
+
+        self.suggestions = scored
+            .into_iter()
+            .map(|(_, label, kind)| Suggestion::local(label.to_string(), kind))
+            .collect();
         self.selected = 0;
         self.visible = !self.suggestions.is_empty();
     }
 
-    /// Returns the suggestion to confirm, if any.
+    /// Returns the label to confirm, if any.
     pub fn confirm(&self) -> Option<&str> {
         if self.visible && !self.suggestions.is_empty() {
-            Some(&self.suggestions[self.selected])
+            Some(self.suggestions[self.selected].label.as_str())
         } else {
             None
         }
@@ -69,12 +104,13 @@ impl Autocomplete {
         }
     }
 
-    /// Populate suggestions directly from LSP completion labels and show the popup.
-    pub fn set_lsp_suggestions(&mut self, labels: Vec<String>) {
-        if labels.is_empty() {
+    /// Populate suggestions directly from LSP completion items (already ranked by
+    /// the server) and show the popup.
+    pub fn set_lsp_suggestions(&mut self, items: Vec<Suggestion>) {
+        if items.is_empty() {
             return;
         }
-        self.suggestions = labels;
+        self.suggestions = items;
         self.selected = 0;
         self.visible = true;
     }
@@ -86,7 +122,8 @@ impl Autocomplete {
         }
 
         const ITEM_HEIGHT: f32 = 20.0;
-        const POPUP_WIDTH: f32 = 220.0;
+        const POPUP_WIDTH: f32 = 240.0;
+        const BADGE_W: f32 = 22.0;
         const MAX_VISIBLE: usize = 8;
 
         // Compute which window of suggestions to show.
@@ -136,15 +173,46 @@ impl Autocomplete {
                                 );
                             }
 
+                            // Kind badge (left gutter).
+                            if let Some(kind) = &suggestion.kind {
+                                let (badge, color) = kind_badge(kind);
+                                if !badge.is_empty() {
+                                    ui.painter().text(
+                                        egui::pos2(rect.min.x + 5.0, rect.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        badge,
+                                        egui::FontId::monospace(12.0),
+                                        color,
+                                    );
+                                }
+                            }
+
                             ui.painter().text(
-                                egui::pos2(rect.min.x + 6.0, rect.center().y),
+                                egui::pos2(rect.min.x + BADGE_W, rect.center().y),
                                 egui::Align2::LEFT_CENTER,
-                                suggestion,
+                                &suggestion.label,
                                 egui::FontId::monospace(13.0),
                                 egui::Color32::from_rgb(212, 212, 212),
                             );
                         }
                     });
             });
+    }
+}
+
+/// Map a completion kind to a compact badge + color for the popup gutter.
+/// Accepts LSP kind names ("Function", "Class", …) and local tags ("Keyword").
+fn kind_badge(kind: &str) -> (&'static str, egui::Color32) {
+    use egui::Color32;
+    match kind {
+        "Function" | "Method" => ("ƒ", Color32::from_rgb(220, 220, 170)),
+        "Constructor" | "Class" | "Interface" => ("C", Color32::from_rgb(78, 201, 176)),
+        "Field" | "Property" => ("○", Color32::from_rgb(156, 220, 254)),
+        "Variable" => ("v", Color32::from_rgb(156, 220, 254)),
+        "Module" => ("M", Color32::from_rgb(197, 134, 192)),
+        "Keyword" => ("kw", Color32::from_rgb(197, 134, 192)),
+        "Snippet" => ("◇", Color32::from_gray(180)),
+        "Text" => ("", Color32::from_gray(140)),
+        _ => ("•", Color32::from_gray(140)),
     }
 }
