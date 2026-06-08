@@ -2619,8 +2619,14 @@ impl Editor {
                         );
                     }
                     let galley = ui.fonts(|f| f.layout_job(job));
-                    painter.galley(
-                        egui::pos2(x_start, y + line_height * 0.15),
+                    // Clip to the content area (right of the gutter) so horizontally
+                    // scrolled text doesn't draw over the line-number gutter.
+                    let text_clip = egui::Rect::from_min_max(
+                        egui::pos2(x_start, rect.min.y),
+                        egui::pos2(rect.max.x, rect.max.y),
+                    );
+                    painter.with_clip_rect(text_clip).galley(
+                        egui::pos2(x_start - self.scroll_offset.x, y + line_height * 0.15),
                         galley,
                         fg_color,
                     );
