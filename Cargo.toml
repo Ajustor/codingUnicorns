@@ -43,7 +43,7 @@ image = { version = "0.25", default-features = false, features = [
   "jpeg",
   "webp",
 ] }
-egui_commonmark = "0.20"
+egui_commonmark = { version = "0.20", features = ["better_syntax_highlighting"] }
 
 [profile.release]
 opt-level = "s"
