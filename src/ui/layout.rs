@@ -750,6 +750,41 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             });
     }
 
+    if app.show_claude {
+        egui::SidePanel::right("claude_panel")
+            .resizable(true)
+            .default_width(360.0)
+            .min_width(260.0)
+            .show(ctx, |ui| {
+                let pending = app.claude_pending.as_ref();
+                let action = app.claude_panel.show(ui, &app.claude_session, pending);
+                match action {
+                    crate::ui::claude_panel::ClaudeAction::Send(text) => {
+                        app.start_claude_turn(text);
+                    }
+                    crate::ui::claude_panel::ClaudeAction::NewConversation => {
+                        app.claude_session.reset();
+                        app.claude_pending = None;
+                        app.claude_turn = None;
+                    }
+                    crate::ui::claude_panel::ClaudeAction::Cancel => {
+                        if let Some(turn) = &mut app.claude_turn {
+                            turn.cancel();
+                        }
+                        app.claude_turn = None;
+                        app.claude_session.running = false;
+                        app.claude_pending = None;
+                    }
+                    crate::ui::claude_panel::ClaudeAction::Permission(decision) => {
+                        if let Some(req) = app.claude_pending.take() {
+                            let _ = req.reply.send(decision);
+                        }
+                    }
+                    crate::ui::claude_panel::ClaudeAction::None => {}
+                }
+            });
+    }
+
     // Use a zero-margin frame so there's no gap/padding around the editor area
     CentralPanel::default()
         .frame(

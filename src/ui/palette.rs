@@ -9,6 +9,7 @@ const _FILETREE_USED: () = ();
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaletteCommand {
     ToggleTerminal,
+    ToggleClaude,
     ToggleSidebar,
     GoToLine,
     SaveFile,
@@ -24,6 +25,7 @@ impl PaletteCommand {
     fn all() -> &'static [PaletteCommand] {
         &[
             PaletteCommand::ToggleTerminal,
+            PaletteCommand::ToggleClaude,
             PaletteCommand::ToggleSidebar,
             PaletteCommand::GoToLine,
             PaletteCommand::SaveFile,
@@ -39,6 +41,7 @@ impl PaletteCommand {
     pub fn label(&self) -> &'static str {
         match self {
             Self::ToggleTerminal => "Toggle Terminal",
+            Self::ToggleClaude => "Toggle Claude panel",
             Self::ToggleSidebar => "Toggle Sidebar",
             Self::GoToLine => "Go to Line…",
             Self::SaveFile => "Save File",
@@ -54,6 +57,7 @@ impl PaletteCommand {
     pub fn shortcut(&self) -> &'static str {
         match self {
             Self::ToggleTerminal => "Ctrl+`",
+            Self::ToggleClaude => "Ctrl+Shift+I",
             Self::ToggleSidebar => "Ctrl+B",
             Self::GoToLine => "Ctrl+G",
             Self::SaveFile => "Ctrl+S",
