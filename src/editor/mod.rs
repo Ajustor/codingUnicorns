@@ -2553,7 +2553,8 @@ impl Editor {
                             // the indent boundary rather than under the first glyph.
                             let gx = x_start + (g * ind_size) as f32 * char_width
                                 - self.scroll_offset.x
-                                - char_width * 0.5;
+                                - char_width * 0.5
+                                - 2.0;
                             // clamp to visible text area
                             if gx < x_start || gx > rect.max.x {
                                 continue;
