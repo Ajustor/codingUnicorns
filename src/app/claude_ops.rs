@@ -60,6 +60,30 @@ impl CodingUnicorns {
                 }
             }
         }
+
+        // Lazily resolve the active Claude account (once) while the panel is open,
+        // off the UI thread, for the header indicator.
+        if self.show_claude && self.claude_account.is_none() {
+            match &self.claude_account_rx {
+                None => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let binary = self.config.claude_binary.clone();
+                    std::thread::spawn(move || {
+                        let label = crate::claude::account::fetch_account(&binary)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let _ = tx.send(label);
+                    });
+                    self.claude_account_rx = Some(rx);
+                }
+                Some(rx) => {
+                    if let Ok(label) = rx.try_recv() {
+                        self.claude_account = Some(label);
+                        self.claude_account_rx = None;
+                        ctx.request_repaint();
+                    }
+                }
+            }
+        }
     }
 
     /// Launch one conversation turn for `user_text`.

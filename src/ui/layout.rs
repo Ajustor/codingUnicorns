@@ -757,7 +757,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             .min_width(260.0)
             .show(ctx, |ui| {
                 let pending = app.claude_pending.as_ref();
-                let action = app.claude_panel.show(ui, &app.claude_session, pending);
+                let account = app.claude_account.as_deref();
+                let action = app.claude_panel.show(ui, &app.claude_session, pending, account);
                 match action {
                     crate::ui::claude_panel::ClaudeAction::Send(text) => {
                         if text.starts_with('/') {

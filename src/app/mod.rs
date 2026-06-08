@@ -61,6 +61,10 @@ pub struct CodingUnicorns {
     pub claude_pending: Option<crate::claude::permission::PermissionRequest>,
     /// Optional model override set via the `/model` slash command (transient).
     pub claude_model: Option<String>,
+    /// Active Claude account label (e.g. "user@x · team"), fetched lazily.
+    pub claude_account: Option<String>,
+    /// In-flight account fetch (background `claude auth status`).
+    pub claude_account_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub show_sidebar: bool,
     pub sidebar_width: f32,
     pub terminal_height: f32,
@@ -195,6 +199,8 @@ impl CodingUnicorns {
             claude_perm: None,
             claude_pending: None,
             claude_model: None,
+            claude_account: None,
+            claude_account_rx: None,
             show_sidebar: true,
             sidebar_width: 220.0,
             terminal_height: initial_terminal_height,
