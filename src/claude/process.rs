@@ -17,8 +17,6 @@ pub struct TurnRequest {
     pub perm_token: String,
     /// path to the temp mcp-config file.
     pub mcp_config: std::path::PathBuf,
-    /// path to the editor's own executable (re-invoked as the MCP server).
-    pub self_exe: std::path::PathBuf,
 }
 
 /// A running turn: events stream over `rx`; `cancel()` kills the process.
@@ -30,6 +28,15 @@ pub struct Turn {
 impl Turn {
     pub fn cancel(&mut self) {
         let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        // Kill + reap so abandoning a turn never leaks a zombie `claude` process.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
