@@ -534,6 +534,10 @@ impl eframe::App for CodingUnicorns {
 
         // Poll all LSP clients for incoming messages (also drives auto-restart).
         let (lsp_responses, reconnected_exts) = self.lsp.poll_all();
+        // Keep updating the "LSP loading…" status while a server is busy.
+        if self.lsp.any_busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
         // Re-open the current file on any reconnected LSP server so it receives diagnostics.
         if !reconnected_exts.is_empty() {
             if let Some(ref path) = self.editor.current_path.clone() {

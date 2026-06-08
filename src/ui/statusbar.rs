@@ -5,6 +5,9 @@ use crate::git::GitStatus;
 pub enum LspStatus {
     Inactive,
     Connecting,
+    /// Connected but the server is still doing background work (e.g. csharp-ls
+    /// loading the solution) — not yet able to answer fully.
+    Loading,
     Ready,
     Error,
 }
@@ -79,7 +82,17 @@ impl StatusBar {
                                 egui::RichText::new("⬤ LSP")
                                     .color(egui::Color32::from_rgb(255, 165, 0))
                                     .small(),
-                            );
+                            )
+                            .on_hover_text("Connecting to language server…");
+                            ui.separator();
+                        }
+                        LspStatus::Loading => {
+                            ui.label(
+                                egui::RichText::new("⬤ LSP loading…")
+                                    .color(egui::Color32::from_rgb(255, 200, 60))
+                                    .small(),
+                            )
+                            .on_hover_text("Language server is loading the project (indexing)…");
                             ui.separator();
                         }
                         LspStatus::Ready => {

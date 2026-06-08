@@ -181,8 +181,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .unwrap_or("");
                 match app.lsp.get(ext) {
                     None => LspStatus::Inactive,
-                    Some(c) if c.is_connected => LspStatus::Ready,
-                    Some(_) => LspStatus::Connecting,
+                    Some(c) if !c.is_connected => LspStatus::Connecting,
+                    Some(c) if c.is_busy() => LspStatus::Loading,
+                    Some(_) => LspStatus::Ready,
                 }
             };
             app.status_bar
