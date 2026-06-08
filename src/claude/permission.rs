@@ -45,6 +45,8 @@ impl PermissionListener {
 }
 
 fn handle_conn(stream: TcpStream, token: &str, tx: &Sender<PermissionRequest>) {
+    // A silent peer must not hold this thread forever while reading the request.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
     let mut writer = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -84,6 +86,9 @@ fn handle_conn(stream: TcpStream, token: &str, tx: &Sender<PermissionRequest>) {
 
 /// Write the temp mcp-config that points `claude` at this editor binary running
 /// as the permission MCP server. Returns the config path.
+///
+/// Note: only `--port` is written here; the auth token travels via the
+/// `CU_PERM_TOKEN` env var, not argv.
 pub fn write_mcp_config(
     dir: &std::path::Path,
     self_exe: &std::path::Path,
@@ -104,6 +109,11 @@ pub fn write_mcp_config(
 
 /// Entry point when the binary is re-invoked as the permission MCP server.
 /// Speaks minimal MCP (JSON-RPC 2.0) over stdio; blocks until stdin closes.
+///
+/// The `token` is supplied by the caller via the `CU_PERM_TOKEN` environment
+/// variable (set on the `claude` process by `process::spawn_turn` and inherited
+/// by this re-invoked server) — it is NOT passed as a CLI argument. `write_mcp_config`
+/// only writes `--port`; the dispatcher reads the token from the environment.
 pub fn run_permission_mcp_server(port: u16, token: String) {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
