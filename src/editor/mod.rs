@@ -136,6 +136,9 @@ pub struct Editor {
     pub folded_lines: std::collections::HashSet<usize>,
     /// Cached (start, end) foldable region list.
     fold_regions: Vec<(usize, usize)>,
+    /// content_version for which `fold_regions` was last computed (avoids an
+    /// O(file) recompute every frame on files that have no foldable regions).
+    fold_regions_version: i32,
     // ── Breadcrumbs ─────────────────────────────────────────────────────────
     /// Current symbol name at cursor (populated by app from outline).
     pub current_symbol: Option<String>,
@@ -228,6 +231,7 @@ impl Editor {
             bracket_match: None,
             folded_lines: std::collections::HashSet::new(),
             fold_regions: Vec::new(),
+            fold_regions_version: -1,
             current_symbol: None,
             line_diff: Vec::new(),
             line_diff_path: None,
@@ -270,6 +274,7 @@ impl Editor {
         self.signature_help_request_pending = false;
         self.folded_lines.clear();
         self.fold_regions.clear();
+        self.fold_regions_version = -1;
         self.current_symbol = None;
         self.hover_tooltip_anchor = None;
         self.hover_popup_rect = None;
@@ -1980,9 +1985,12 @@ impl Editor {
                     }
                 }
 
-                // Fold regions: recompute if dirty (on every content change)
-                if self.fold_regions.is_empty() || self.content_version % 30 == 0 {
+                // Fold regions: recompute only when the content changed — NOT every
+                // frame. (The old `is_empty()` check recomputed on every frame for
+                // files with no foldable regions, an O(file) per-frame cost.)
+                if self.fold_regions_version != self.content_version {
                     self.fold_regions = compute_fold_regions(&self.buffer);
+                    self.fold_regions_version = self.content_version;
                 }
 
                 // Build fold map: start_line → end_line for O(1) lookup
