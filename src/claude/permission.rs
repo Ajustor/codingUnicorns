@@ -102,6 +102,88 @@ pub fn write_mcp_config(
     Ok(path)
 }
 
+/// Entry point when the binary is re-invoked as the permission MCP server.
+/// Speaks minimal MCP (JSON-RPC 2.0) over stdio; blocks until stdin closes.
+pub fn run_permission_mcp_server(port: u16, token: String) {
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    for line in stdin.lock().lines().map_while(Result::ok) {
+        let Ok(req) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        let id = req.get("id").cloned();
+        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        let resp = match method {
+            "initialize" => Some(json!({
+                "jsonrpc":"2.0","id":id,
+                "result":{
+                    "protocolVersion":"2024-11-05",
+                    "capabilities":{"tools":{}},
+                    "serverInfo":{"name":"editor","version":"0.1.0"}
+                }
+            })),
+            "tools/list" => Some(json!({
+                "jsonrpc":"2.0","id":id,
+                "result":{"tools":[{
+                    "name":"approve",
+                    "description":"Ask the editor user to approve a tool use.",
+                    "inputSchema":{"type":"object","properties":{
+                        "tool_name":{"type":"string"},
+                        "input":{"type":"object"}
+                    }}
+                }]}
+            })),
+            "tools/call" => {
+                let args = req.get("params").and_then(|p| p.get("arguments"));
+                let tool = args.and_then(|a| a.get("tool_name")).and_then(|t| t.as_str()).unwrap_or("");
+                let input = args.and_then(|a| a.get("input")).cloned().unwrap_or(Value::Null);
+                let decision = ask_editor(port, &token, tool, &input);
+                let payload = match decision {
+                    Decision::Allow => json!({"behavior":"allow","updatedInput": input}),
+                    Decision::Deny => json!({"behavior":"deny","message":"Denied by user"}),
+                };
+                Some(json!({
+                    "jsonrpc":"2.0","id":id,
+                    "result":{"content":[{"type":"text","text": payload.to_string()}]}
+                }))
+            }
+            // notifications (no id) — no response
+            _ => None,
+        };
+        if let Some(r) = resp {
+            let _ = writeln!(stdout, "{r}");
+            let _ = stdout.flush();
+        }
+    }
+}
+
+/// Connect to the editor listener and block for the user's decision.
+fn ask_editor(port: u16, token: &str, tool: &str, input: &Value) -> Decision {
+    let Ok(stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        return Decision::Deny;
+    };
+    let mut writer = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return Decision::Deny,
+    };
+    let req = json!({"token": token, "tool": tool, "input": input});
+    if writeln!(writer, "{req}").is_err() {
+        return Decision::Deny;
+    }
+    let mut reader = BufReader::new(stream);
+    let mut resp = String::new();
+    if reader.read_line(&mut resp).is_err() {
+        return Decision::Deny;
+    }
+    match serde_json::from_str::<Value>(resp.trim()).ok()
+        .and_then(|v| v.get("decision").and_then(|d| d.as_str()).map(str::to_string))
+        .as_deref()
+    {
+        Some("allow") => Decision::Allow,
+        _ => Decision::Deny,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
