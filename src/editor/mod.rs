@@ -280,6 +280,11 @@ impl Editor {
         self.hover_popup_rect = None;
         self.word_occurrences.clear();
         self.word_occurrences_version = -1;
+        // Invalidate the minimap cache too — content_version resets to 0 on every
+        // load, so without this the new file can collide with the previous file's
+        // cached version and the minimap shows a stale ("ghost") overview.
+        self.minimap_lines.clear();
+        self.minimap_lines_version = -1;
         // Detect indentation style from file content
         let (spaces, size) = detect_indent(&content);
         self.detected_indent_spaces = spaces;
@@ -788,6 +793,23 @@ impl Editor {
                     {
                         ui.memory_mut(|m| m.request_focus(response.id));
                     }
+                }
+
+                // Capture Tab + arrow keys so egui's directional focus navigation
+                // doesn't move focus out of the editor (into the file tree / terminal)
+                // when the user presses an arrow key.
+                if has_focus || response.has_focus() {
+                    ui.memory_mut(|m| {
+                        m.set_focus_lock_filter(
+                            response.id,
+                            egui::EventFilter {
+                                tab: true,
+                                horizontal_arrows: true,
+                                vertical_arrows: true,
+                                escape: false,
+                            },
+                        );
+                    });
                 }
 
                 if has_focus || response.has_focus() {
