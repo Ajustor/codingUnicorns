@@ -760,11 +760,15 @@ impl Editor {
                 }
 
                 // Manage keyboard focus. The editor is the primary keyboard target
-                // unless a modal (find bar, goto-line, autocomplete) is open.
+                // unless a focus-grabbing modal (find bar, goto-line) is open.
+                // The autocomplete popup is NOT excluded: it's a non-focusable hover
+                // Area and the editor itself handles its arrow/Enter navigation, so
+                // the editor must KEEP focus while it's open (otherwise arrow keys
+                // can leak focus away and break completion navigation).
                 // We only REQUEST focus when needed — never re-request when we
                 // already have it, to avoid disrupting egui's key event delivery.
                 let has_focus = response.has_focus();
-                if !has_focus && !self.show_find && !self.show_goto_line && !self.autocomplete.visible {
+                if !has_focus && !self.show_find && !self.show_goto_line {
                     let explicit = std::mem::take(&mut self.focus_requested);
                     if response.clicked()
                         || explicit
