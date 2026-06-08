@@ -52,6 +52,10 @@ pub struct Highlighter {
     line_tokens: Vec<Vec<Token>>,
     /// The `content_version` for which `line_tokens` was last computed.
     last_version: i32,
+    /// For very large files we tokenize only the visible window (+ margin) instead
+    /// of the whole document. This is the `[start, end)` line range currently cached
+    /// in viewport mode (`None` in full-document mode).
+    viewport: Option<(usize, usize)>,
 }
 
 impl Highlighter {
@@ -60,6 +64,7 @@ impl Highlighter {
             language: String::new(),
             line_tokens: Vec::new(),
             last_version: -1,
+            viewport: None,
         }
     }
 
@@ -90,11 +95,54 @@ impl Highlighter {
     pub fn invalidate(&mut self) {
         self.last_version = -1;
         self.line_tokens.clear();
+        self.viewport = None;
     }
 
     /// Returns true when the cached tokens are stale and need rebuilding.
     pub fn needs_update(&self, version: i32) -> bool {
         version != self.last_version
+    }
+
+    /// In viewport mode: whether the visible window needs re-tokenizing — either the
+    /// content changed, or the visible range scrolled outside the cached window.
+    pub fn viewport_stale(&self, version: i32, vis_start: usize, vis_end: usize) -> bool {
+        if version != self.last_version {
+            return true;
+        }
+        match self.viewport {
+            None => true,
+            Some((s, e)) => vis_start < s || vis_end > e,
+        }
+    }
+
+    /// Tokenize only `window_src` (the text of lines `[start_line, start_line+N)`)
+    /// and place the resulting tokens at their absolute line indices. Off-window
+    /// lines are left empty (rendered plain — they're off-screen anyway). Used for
+    /// very large files where re-tokenizing the whole document each frame lags.
+    pub fn highlight_viewport(
+        &mut self,
+        window_src: &str,
+        start_line: usize,
+        total_lines: usize,
+        version: i32,
+        cached_range: (usize, usize),
+        plugin_manager: Option<&crate::plugin::manager::PluginManager>,
+    ) {
+        let lang = self.language.clone();
+        let window_tokens = plugin_manager.and_then(|pm| pm.tokenize_document(&lang, window_src));
+
+        let mut lines = vec![Vec::new(); total_lines];
+        if let Some(win) = window_tokens {
+            for (i, toks) in win.into_iter().enumerate() {
+                let abs = start_line + i;
+                if abs < total_lines {
+                    lines[abs] = toks;
+                }
+            }
+        }
+        self.line_tokens = lines;
+        self.last_version = version;
+        self.viewport = Some(cached_range);
     }
 
     /// Rebuild the per-line token cache from `source`.
@@ -111,6 +159,7 @@ impl Highlighter {
             return;
         }
         self.last_version = version;
+        self.viewport = None;
 
         let lang = self.language.clone();
 
