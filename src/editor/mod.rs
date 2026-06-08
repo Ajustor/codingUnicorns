@@ -65,6 +65,11 @@ pub struct Editor {
     pub workspace_path: Option<std::path::PathBuf>,
     /// Monotonically increasing counter bumped on every edit; used to detect changes for LSP didChange.
     pub content_version: i32,
+    /// Debounce state for full-document re-highlighting: the content_version we're
+    /// waiting to tokenize, and when it last changed. Avoids re-tokenizing huge
+    /// files on every keystroke (which lags the UI).
+    pub hl_pending_version: i32,
+    pub hl_pending_at: Option<std::time::Instant>,
     /// Set when an LSP hover request has been fired; cleared when the response arrives.
     pub hover_lsp_request_pending: bool,
     /// Cursor row when the LSP hover request was triggered.
@@ -193,6 +198,8 @@ impl Editor {
             hover_signature: None,
             workspace_path: None,
             content_version: 0,
+            hl_pending_version: -1,
+            hl_pending_at: None,
             hover_lsp_request_pending: false,
             hover_row: 0,
             hover_col: 0,
@@ -1893,14 +1900,37 @@ impl Editor {
                     self.bracket_match = find_matching_bracket(&self.buffer, cur_row, cur_col);
                 }
 
-                // Rebuild tree-sitter highlight cache when content changes.
+                // Rebuild the highlight cache when content changes. For large files
+                // the full re-tokenization (tree-sitter + token transfer) is costly,
+                // so debounce it: only re-tokenize once typing pauses briefly. Small
+                // files re-highlight immediately (re-tokenization is cheap there).
                 if self.highlighter.needs_update(self.content_version) {
-                    let source = self.buffer.to_string();
-                    self.highlighter.highlight_document(
-                        &source,
-                        self.content_version,
-                        Some(plugin_manager),
-                    );
+                    let ready = if self.buffer.num_lines() > 2000 {
+                        if self.hl_pending_version != self.content_version {
+                            self.hl_pending_version = self.content_version;
+                            self.hl_pending_at = Some(std::time::Instant::now());
+                        }
+                        let elapsed_ok = self
+                            .hl_pending_at
+                            .map(|t| t.elapsed() >= std::time::Duration::from_millis(150))
+                            .unwrap_or(true);
+                        if !elapsed_ok {
+                            response
+                                .ctx
+                                .request_repaint_after(std::time::Duration::from_millis(150));
+                        }
+                        elapsed_ok
+                    } else {
+                        true
+                    };
+                    if ready {
+                        let source = self.buffer.to_string();
+                        self.highlighter.highlight_document(
+                            &source,
+                            self.content_version,
+                            Some(plugin_manager),
+                        );
+                    }
                 }
 
                 // Fold regions: recompute if dirty (on every content change)
