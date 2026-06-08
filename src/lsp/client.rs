@@ -66,6 +66,9 @@ pub struct LspClient {
     restart_attempts: u32,
     /// Channel through which a background reconnect thread sends the new inner.
     reconnect_rx: Option<mpsc::Receiver<LspClientInner>>,
+    /// Number of in-flight server work-done progresses (solution load, indexing…).
+    /// > 0 means the server is busy and not yet ready to answer fully.
+    work_done_active: u32,
 }
 
 impl LspClient {
@@ -79,7 +82,14 @@ impl LspClient {
             last_crash_time: None,
             restart_attempts: 0,
             reconnect_rx: None,
+            work_done_active: 0,
         }
+    }
+
+    /// True while the server has at least one active work-done progress
+    /// (e.g. csharp-ls loading the MSBuild solution).
+    pub fn is_busy(&self) -> bool {
+        self.work_done_active > 0
     }
 
     fn next_id(inner: &mut LspClientInner) -> u64 {
@@ -239,6 +249,7 @@ impl LspClient {
                 self.restart_attempts = 0;
                 self.reconnect_rx = None;
                 self.last_crash_time = None;
+                self.work_done_active = 0;
             }
         }
 
@@ -266,6 +277,21 @@ impl LspClient {
                 (None, Some("textDocument/publishDiagnostics")) => {
                     Self::process_diagnostics_msg(&mut self.diagnostics, &msg);
                 }
+                // Work-done progress — track busy state (solution load / indexing).
+                (None, Some("$/progress")) => {
+                    let kind = msg
+                        .get("params")
+                        .and_then(|p| p.get("value"))
+                        .and_then(|v| v.get("kind"))
+                        .and_then(|k| k.as_str());
+                    match kind {
+                        Some("begin") => self.work_done_active += 1,
+                        Some("end") => {
+                            self.work_done_active = self.work_done_active.saturating_sub(1)
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
@@ -275,6 +301,7 @@ impl LspClient {
         if self.is_connected && !inner.transport.is_alive.load(Ordering::Relaxed) {
             self.is_connected = false;
             self.last_crash_time = Some(std::time::Instant::now());
+            self.work_done_active = 0;
         }
 
         results
