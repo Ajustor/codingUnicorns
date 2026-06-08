@@ -785,6 +785,18 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             let _ = req.reply.send(decision);
                         }
                     }
+                    crate::ui::claude_panel::ClaudeAction::OpenInteractive => {
+                        // Launch the real interactive `claude` in a terminal tab so
+                        // its built-in commands work, rooted at the workspace.
+                        let cwd = app.workspace_path.clone();
+                        let term = crate::terminal::Terminal::new_command(
+                            &app.config.claude_binary,
+                            cwd.as_deref(),
+                        );
+                        app.terminals.push(term);
+                        app.active_terminal = app.terminals.len() - 1;
+                        app.show_terminal = true;
+                    }
                     crate::ui::claude_panel::ClaudeAction::None => {}
                 }
             });
