@@ -13,6 +13,9 @@ pub enum ClaudeAction {
     NewConversation,
     Cancel,
     Permission(Decision),
+    /// Open the real interactive `claude` CLI in a terminal (for built-in
+    /// commands like /usage, /cost, /context that don't exist in headless mode).
+    OpenInteractive,
 }
 
 impl ClaudePanel {
@@ -48,6 +51,16 @@ impl ClaudePanel {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("New").clicked() {
                     action = ClaudeAction::NewConversation;
+                }
+                if ui
+                    .small_button("Interactive")
+                    .on_hover_text(
+                        "Open the real interactive Claude in a terminal — for built-in \
+                         commands like /usage, /cost, /context",
+                    )
+                    .clicked()
+                {
+                    action = ClaudeAction::OpenInteractive;
                 }
                 if session.cost_usd > 0.0 {
                     ui.label(

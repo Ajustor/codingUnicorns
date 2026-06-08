@@ -52,6 +52,36 @@ impl Terminal {
         }
     }
 
+    /// Spawn an explicit command (not a resolved shell) in its own PTY, optionally
+    /// in `cwd`. Used to run the interactive `claude` CLI from the Claude panel so
+    /// its built-in commands (/usage, /cost, …) work in a real terminal.
+    pub fn new_command(command: &str, cwd: Option<&std::path::Path>) -> Self {
+        let mut parser = Parser::new();
+        let mut performer = AnsiPerformer::new();
+        let (rx, writer, child, error) = match Self::try_spawn(command, &[], cwd) {
+            Some((rx, w, c)) => (Some(rx), Some(w), Some(c), None),
+            None => (None, None, None, Some(command.to_string())),
+        };
+        let msg = if let Some(err) = error {
+            format!("Failed to start `{err}`.\r\nIs it installed and on PATH?\r\n")
+        } else {
+            format!("{command} ready.\r\n")
+        };
+        for byte in msg.bytes() {
+            parser.advance(&mut performer, byte);
+        }
+        Self {
+            shell_name: command.to_string(),
+            performer,
+            rx,
+            writer,
+            parser,
+            _child: child,
+            needs_scroll: true,
+            focused: true,
+        }
+    }
+
     #[allow(clippy::type_complexity)]
     fn spawn_shell(user_shell: &str) -> (
         Option<Receiver<Vec<u8>>>,
@@ -68,7 +98,7 @@ impl Terminal {
             .to_string();
 
         // Try spawning the resolved shell
-        if let Some(result) = Self::try_spawn(&shell_path, &shell_args) {
+        if let Some(result) = Self::try_spawn(&shell_path, &shell_args, None) {
             return (Some(result.0), Some(result.1), Some(result.2), shell_name, None);
         }
 
@@ -77,7 +107,7 @@ impl Terminal {
         // Fallback: try cmd.exe on Windows
         #[cfg(windows)]
         {
-            if let Some(result) = Self::try_spawn("cmd.exe", &[]) {
+            if let Some(result) = Self::try_spawn("cmd.exe", &[], None) {
                 return (
                     Some(result.0),
                     Some(result.1),
@@ -92,7 +122,7 @@ impl Terminal {
         // Fallback: try /bin/sh on Unix
         #[cfg(not(windows))]
         {
-            if let Some(result) = Self::try_spawn("/bin/sh", &[]) {
+            if let Some(result) = Self::try_spawn("/bin/sh", &[], None) {
                 return (
                     Some(result.0),
                     Some(result.1),
@@ -111,6 +141,7 @@ impl Terminal {
     fn try_spawn(
         shell_path: &str,
         shell_args: &[String],
+        cwd: Option<&std::path::Path>,
     ) -> Option<(
         Receiver<Vec<u8>>,
         Box<dyn Write + Send>,
@@ -131,6 +162,9 @@ impl Terminal {
             cmd.arg(arg);
         }
         cmd.env("TERM", "xterm-256color");
+        if let Some(dir) = cwd {
+            cmd.cwd(dir);
+        }
 
         let child = pair.slave.spawn_command(cmd).ok()?;
         let reader = pair.master.try_clone_reader().ok()?;
