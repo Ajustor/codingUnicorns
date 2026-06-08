@@ -1713,6 +1713,24 @@ impl Editor {
                     double_click_handled = true;
                 }
 
+                // Triple-click selects the whole line (incl. trailing newline when
+                // there's a line below), like most editors.
+                if response.triple_clicked() {
+                    self.extra_cursors.clear();
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let local = pos - rect.min;
+                        let r = ((local.y + self.scroll_offset.y) / line_height) as usize;
+                        let r = r.min(self.buffer.num_lines().saturating_sub(1));
+                        self.cursor.sel_anchor = Some((r, 0));
+                        if r + 1 < self.buffer.num_lines() {
+                            self.cursor.set_position(r + 1, 0);
+                        } else {
+                            self.cursor.set_position(r, self.buffer.line_len(r));
+                        }
+                    }
+                    double_click_handled = true;
+                }
+
                 if response.drag_started() && !double_click_handled {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let (row, col) = {
