@@ -71,6 +71,9 @@ pub struct CodingUnicorns {
     pub claude_account: Option<String>,
     /// In-flight account fetch (background `claude auth status`).
     pub claude_account_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// Markdown preview (source | rendered split) toggle + render cache.
+    pub show_md_preview: bool,
+    pub md_cache: egui_commonmark::CommonMarkCache,
     pub show_sidebar: bool,
     pub sidebar_width: f32,
     pub terminal_height: f32,
@@ -196,6 +199,11 @@ impl CodingUnicorns {
                     Chord::ctrl_shift(egui::Key::P),
                     "Command palette (commands)",
                 ),
+                (
+                    "toggle_md_preview",
+                    Chord::ctrl_shift(egui::Key::V),
+                    "Toggle Markdown preview",
+                ),
             ] {
                 if let Some(other) = keybinds.register(id, chord, desc) {
                     log::warn!("keybinding conflict: '{id}' shares {chord} with '{other}'");
@@ -234,6 +242,8 @@ impl CodingUnicorns {
             claude_model: None,
             claude_account: None,
             claude_account_rx: None,
+            show_md_preview: false,
+            md_cache: egui_commonmark::CommonMarkCache::default(),
             show_sidebar: true,
             sidebar_width: 220.0,
             terminal_height: initial_terminal_height,
@@ -467,6 +477,7 @@ impl eframe::App for CodingUnicorns {
             match cmd.as_str() {
                 "toggle_claude" => self.show_claude = !self.show_claude,
                 "command_palette_commands" => self.command_palette.toggle_commands(),
+                "toggle_md_preview" => self.show_md_preview = !self.show_md_preview,
                 _ => {}
             }
         }

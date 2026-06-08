@@ -43,6 +43,7 @@ image = { version = "0.25", default-features = false, features = [
   "jpeg",
   "webp",
 ] }
+egui_commonmark = "0.20"
 
 [profile.release]
 opt-level = "s"

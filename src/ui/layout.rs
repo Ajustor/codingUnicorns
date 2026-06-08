@@ -139,6 +139,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     app.command_palette.toggle();
                     ui.close_menu();
                 }
+                if ui.button("Markdown Preview  Ctrl+Shift+V").clicked() {
+                    app.show_md_preview = !app.show_md_preview;
+                    ui.close_menu();
+                }
                 ui.separator();
                 if ui.button("Keyboard Shortcuts  F1").clicked() {
                     app.shortcuts_help.toggle();
@@ -800,6 +804,32 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     }
                     claude::panel::ClaudeAction::None => {}
                 }
+            });
+    }
+
+    // Markdown preview: rendered view on the right, source stays in the editor
+    // (a source | preview split). Only for the current file when it's Markdown.
+    let md_preview = app.show_md_preview
+        && app
+            .editor
+            .current_path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e.to_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"))
+            .unwrap_or(false);
+    if md_preview {
+        SidePanel::right("md_preview")
+            .resizable(true)
+            .default_width(440.0)
+            .min_width(240.0)
+            .show(ctx, |ui| {
+                let md = app.editor.buffer.to_string();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui_commonmark::CommonMarkViewer::new().show(ui, &mut app.md_cache, &md);
+                    });
             });
     }
 
