@@ -31,6 +31,12 @@ mod workspace_search;
 
 pub struct CodingUnicorns {
     pub config: Config,
+    /// Central registry for app-command shortcuts. Owns ONLY the chords that
+    /// were previously hardcoded raw (Ctrl+Shift+I = toggle Claude,
+    /// Ctrl+Shift+P = command palette in command-mode). Built-ins driven by
+    /// `config.keybindings` (toggle sidebar/terminal, command palette, settings,
+    /// shortcuts help) stay on that path to avoid double-handling.
+    pub keybinds: crate::keybinds::KeybindingRegistry,
     pub tab_manager: TabManager,
     pub editor: Editor,
     pub file_tree: FileTree,
@@ -171,8 +177,35 @@ impl CodingUnicorns {
         }
         let initial_terminal_height = config.terminal_height;
         let shell_override = config.shell.clone();
+
+        // Central registry for app-command shortcuts. We register ONLY the
+        // commands that were previously handled by HARDCODED raw chords; the
+        // others remain on `config.keybindings` (registering them here too would
+        // toggle twice and cancel out). See the `keybinds` field doc.
+        let mut keybinds = crate::keybinds::KeybindingRegistry::new();
+        {
+            use crate::keybinds::Chord;
+            for (id, chord, desc) in [
+                (
+                    "toggle_claude",
+                    Chord::ctrl_shift(egui::Key::I),
+                    "Toggle Claude panel",
+                ),
+                (
+                    "command_palette_commands",
+                    Chord::ctrl_shift(egui::Key::P),
+                    "Command palette (commands)",
+                ),
+            ] {
+                if let Some(other) = keybinds.register(id, chord, desc) {
+                    log::warn!("keybinding conflict: '{id}' shares {chord} with '{other}'");
+                }
+            }
+        }
+
         let mut app = Self {
             config,
+            keybinds,
             tab_manager: TabManager::new(),
             editor: Editor::new(),
             file_tree: FileTree::new(),
@@ -362,9 +395,7 @@ impl eframe::App for CodingUnicorns {
             want_open_file,
             want_new,
             want_palette,
-            want_palette_commands,
             want_terminal,
-            want_claude,
             want_sidebar,
             want_help,
             want_settings,
@@ -386,10 +417,7 @@ impl eframe::App for CodingUnicorns {
                 self.config.keybindings.open_file.matches(i),
                 self.config.keybindings.new_file.matches(i),
                 self.config.keybindings.command_palette.matches(i),
-                i.key_pressed(egui::Key::P) && i.modifiers.ctrl && i.modifiers.shift,
                 self.config.keybindings.toggle_terminal.matches(i),
-                // Ctrl+Shift+I = toggle Claude panel
-                i.key_pressed(egui::Key::I) && i.modifiers.ctrl && i.modifiers.shift,
                 self.config.keybindings.toggle_sidebar.matches(i),
                 self.config.keybindings.shortcuts_help.matches(i),
                 self.config.keybindings.settings.matches(i),
@@ -418,6 +446,19 @@ impl eframe::App for CodingUnicorns {
             )
         });
 
+        // App-command shortcuts owned by the central registry. These chords were
+        // previously hardcoded raw; the registry is now their single source.
+        // (Commands driven by `config.keybindings` are handled above and must NOT
+        // be registered/routed here, or they would toggle twice.)
+        let registry_cmd = ctx.input(|i| self.keybinds.triggered(i).map(|s| s.to_string()));
+        if let Some(cmd) = registry_cmd {
+            match cmd.as_str() {
+                "toggle_claude" => self.show_claude = !self.show_claude,
+                "command_palette_commands" => self.command_palette.toggle_commands(),
+                _ => {}
+            }
+        }
+
         if want_open_folder {
             self.folder_pending = Some(self.trigger_open_folder());
         }
@@ -427,16 +468,11 @@ impl eframe::App for CodingUnicorns {
         if want_new {
             self.open_new_file();
         }
-        if want_palette_commands {
-            self.command_palette.toggle_commands();
-        } else if want_palette {
+        if want_palette {
             self.command_palette.toggle();
         }
         if want_terminal {
             self.show_terminal = !self.show_terminal;
-        }
-        if want_claude {
-            self.show_claude = !self.show_claude;
         }
         if want_sidebar {
             self.show_sidebar = !self.show_sidebar;

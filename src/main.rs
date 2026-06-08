@@ -8,6 +8,7 @@ mod editor;
 pub mod extension;
 mod filetree;
 mod git;
+mod keybinds;
 mod lsp;
 mod nav_history;
 pub mod plugin;
