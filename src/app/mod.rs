@@ -355,6 +355,7 @@ impl eframe::App for CodingUnicorns {
             want_palette,
             want_palette_commands,
             want_terminal,
+            want_claude,
             want_sidebar,
             want_help,
             want_settings,
@@ -378,6 +379,8 @@ impl eframe::App for CodingUnicorns {
                 self.config.keybindings.command_palette.matches(i),
                 i.key_pressed(egui::Key::P) && i.modifiers.ctrl && i.modifiers.shift,
                 self.config.keybindings.toggle_terminal.matches(i),
+                // Ctrl+Shift+I = toggle Claude panel
+                i.key_pressed(egui::Key::I) && i.modifiers.ctrl && i.modifiers.shift,
                 self.config.keybindings.toggle_sidebar.matches(i),
                 self.config.keybindings.shortcuts_help.matches(i),
                 self.config.keybindings.settings.matches(i),
@@ -422,6 +425,9 @@ impl eframe::App for CodingUnicorns {
         }
         if want_terminal {
             self.show_terminal = !self.show_terminal;
+        }
+        if want_claude {
+            self.show_claude = !self.show_claude;
         }
         if want_sidebar {
             self.show_sidebar = !self.show_sidebar;
@@ -986,6 +992,7 @@ impl eframe::App for CodingUnicorns {
                 use crate::ui::palette::PaletteCommand;
                 match cmd {
                     PaletteCommand::ToggleTerminal => self.show_terminal = !self.show_terminal,
+                    PaletteCommand::ToggleClaude => self.show_claude = !self.show_claude,
                     PaletteCommand::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
                     PaletteCommand::GoToLine => self.editor.show_goto_line = true,
                     PaletteCommand::SaveFile => {
