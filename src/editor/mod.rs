@@ -151,6 +151,20 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// The currently selected text, if any.
+    pub fn selected_text_pub(&self) -> Option<String> {
+        let ((sr, sc), (er, ec)) = self.cursor.selection_range()?;
+        let start = self.buffer.char_index(sr, sc);
+        let end = self.buffer.char_index(er, ec);
+        Some(self.buffer.rope_slice(start, end))
+    }
+
+    /// The 1-based inclusive line range of the selection, if any.
+    pub fn selection_line_range_pub(&self) -> Option<(usize, usize)> {
+        let ((sr, _), (er, _)) = self.cursor.selection_range()?;
+        Some((sr + 1, er + 1))
+    }
+
     pub fn new() -> Self {
         Self {
             buffer: Buffer::new(),
