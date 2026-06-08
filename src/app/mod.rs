@@ -306,7 +306,19 @@ impl CodingUnicorns {
                     // Read directly to avoid a redundant config save on startup.
                     if let Ok(content) = std::fs::read_to_string(&file_path) {
                         app.tab_manager.open(file_path.clone(), content.clone());
-                        app.editor.set_content(content, Some(file_path));
+                        app.editor
+                            .set_content(content.clone(), Some(file_path.clone()));
+                        // Start the LSP for the restored file (mirrors open_file).
+                        // Without this, resuming a session leaves the LSP cold.
+                        app.ensure_lsp_for_file(&file_path);
+                        if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
+                            let lang_id = lsp_ops::language_id_for_ext(ext);
+                            let uri = format!("file://{}", file_path.display());
+                            if let Some(client) = app.lsp.get_mut(ext) {
+                                client.did_open(&uri, lang_id, &content);
+                            }
+                        }
+                        app.last_lsp_content_version = 0;
                     }
                 }
             }
