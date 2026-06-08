@@ -2559,7 +2559,10 @@ impl Editor {
                                 [egui::pos2(gx, y), egui::pos2(gx, y + line_height)],
                                 egui::Stroke::new(
                                     1.0,
-                                    egui::Color32::from_rgba_premultiplied(80, 80, 90, 50),
+                                    // Subtle guide: faint, non-premultiplied so it stays
+                                    // discreet on the dark background (the old premultiplied
+                                    // value rendered much brighter/harsher than intended).
+                                    egui::Color32::from_rgba_unmultiplied(130, 130, 145, 50),
                                 ),
                             );
                         }
