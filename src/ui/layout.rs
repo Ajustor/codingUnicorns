@@ -163,11 +163,33 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("⎇ {}", app.git_status.branch))
-                        .color(egui::Color32::from_rgb(150, 200, 150))
-                        .small(),
-                );
+                // Markdown preview toggle — shown only when the current file can be
+                // previewed. (Replaces the branch label here; the branch is still in
+                // the bottom status bar.)
+                let can_preview = app
+                    .editor
+                    .current_path
+                    .as_ref()
+                    .and_then(|p| p.extension())
+                    .and_then(|e| e.to_str())
+                    .map(|e| matches!(e.to_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"))
+                    .unwrap_or(false);
+                if can_preview {
+                    let color = if app.show_md_preview {
+                        egui::Color32::from_rgb(120, 170, 255)
+                    } else {
+                        egui::Color32::from_gray(200)
+                    };
+                    let btn = egui::Button::new(egui::RichText::new("👁 Preview").small().color(color))
+                        .frame(false);
+                    if ui
+                        .add(btn)
+                        .on_hover_text("Toggle Markdown preview (Ctrl+Shift+V)")
+                        .clicked()
+                    {
+                        app.show_md_preview = !app.show_md_preview;
+                    }
+                }
             });
         });
     });
