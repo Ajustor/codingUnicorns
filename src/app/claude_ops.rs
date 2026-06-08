@@ -111,6 +111,7 @@ impl CodingUnicorns {
             perm_port: perm.port,
             perm_token: perm.token.clone(),
             mcp_config,
+            model: self.claude_model.clone(),
         };
         match process::spawn_turn(&req) {
             Ok(turn) => self.claude_turn = Some(turn),
@@ -125,5 +126,52 @@ impl CodingUnicorns {
                 });
             }
         }
+    }
+
+    /// Route a panel input beginning with `/`. Local commands control the
+    /// session/panel; any other `/command` is forwarded to `claude` (slash
+    /// skills resolve server-side). `text` keeps its leading `/`.
+    pub(crate) fn handle_claude_slash(&mut self, text: String) {
+        let trimmed = text.trim().to_string();
+        let mut parts = trimmed.splitn(2, char::is_whitespace);
+        let name = parts.next().unwrap_or("").to_ascii_lowercase();
+        let arg = parts
+            .next()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        match name.as_str() {
+            "/clear" | "/new" | "/reset" => {
+                self.claude_session.reset();
+                self.claude_pending = None;
+                self.claude_turn = None;
+                self.push_claude_note("Conversation cleared.".to_string());
+            }
+            "/model" => match arg {
+                Some(m) => {
+                    self.push_claude_note(format!("Model set to `{m}` for upcoming turns."));
+                    self.claude_model = Some(m);
+                }
+                None => {
+                    self.claude_model = None;
+                    self.push_claude_note("Model override cleared (using default).".to_string());
+                }
+            },
+            "/help" => self.push_claude_note(
+                "Local commands: /clear, /model <name> (empty to reset), /help. \
+                 Any other /command is forwarded to Claude as a skill."
+                    .to_string(),
+            ),
+            // Unknown locally → forward to Claude so skills (/review, /commit, …) work.
+            _ => self.start_claude_turn(text),
+        }
+    }
+
+    /// Push a system/tool note into the transcript (panel-local message).
+    fn push_claude_note(&mut self, text: String) {
+        self.claude_session.transcript.push(crate::claude::session::Message {
+            role: crate::claude::session::Role::Tool,
+            text,
+        });
     }
 }

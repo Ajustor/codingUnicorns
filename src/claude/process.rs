@@ -17,6 +17,8 @@ pub struct TurnRequest {
     pub perm_token: String,
     /// path to the temp mcp-config file.
     pub mcp_config: std::path::PathBuf,
+    /// optional model override, passed as `--model` (set via the `/model` command).
+    pub model: Option<String>,
 }
 
 /// A running turn: events stream over `rx`; `cancel()` kills the process.
@@ -53,6 +55,9 @@ pub fn spawn_turn(req: &TurnRequest) -> std::io::Result<Turn> {
         .arg(&req.workspace);
     if let Some(id) = &req.session_id {
         cmd.args(["--resume", id]);
+    }
+    if let Some(model) = &req.model {
+        cmd.args(["--model", model]);
     }
     cmd.current_dir(&req.workspace)
         .env("NO_COLOR", "1")

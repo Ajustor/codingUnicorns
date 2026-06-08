@@ -92,20 +92,28 @@ impl ClaudePanel {
             });
         }
 
-        // Input box.
+        // Input box. Kept ENABLED even while a turn runs, so pressing Enter to send
+        // doesn't disable the widget and steal focus; sending is just gated on idle.
         ui.separator();
-        let resp = ui.add_enabled(
-            !session.running,
+        let resp = ui.add(
             egui::TextEdit::multiline(&mut self.input)
                 .desired_rows(2)
                 .hint_text("Ask Claude…  (Enter to send, Shift+Enter for newline)")
                 .desired_width(f32::INFINITY),
         );
-        let send = resp.has_focus()
+        let enter = resp.has_focus()
             && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-        if send && !self.input.trim().is_empty() {
-            let text = std::mem::take(&mut self.input);
-            action = ClaudeAction::Send(text.trim().to_string());
+        if enter && !session.running {
+            let text = self.input.trim().to_string();
+            if !text.is_empty() {
+                self.input.clear();
+                action = ClaudeAction::Send(text);
+            }
+        }
+        // Keep the caret in the box across send (the Enter would otherwise leave a
+        // stray newline / the next frame's rebuild could drop focus).
+        if enter {
+            resp.request_focus();
         }
 
         action
