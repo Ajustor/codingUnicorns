@@ -77,22 +77,10 @@ impl LspTransport {
 
     pub fn send(&mut self, msg: &Value) -> anyhow::Result<()> {
         let body = serde_json::to_string(msg)?;
-        debug_log('>', &body);
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
         self.stdin.write_all(header.as_bytes())?;
         self.stdin.write_all(body.as_bytes())?;
         self.stdin.flush()?;
         Ok(())
-    }
-}
-
-/// Append one line of LSP traffic to `%TEMP%/cu-lsp.log` for debugging.
-/// `dir` is '>' for outgoing (to server) and '<' for incoming (from server).
-/// Bodies are truncated; this is a temporary diagnostic aid.
-pub(super) fn debug_log(dir: char, body: &str) {
-    let path = std::env::temp_dir().join("cu-lsp.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let truncated: String = body.chars().take(600).collect();
-        let _ = writeln!(f, "{dir} {truncated}");
     }
 }

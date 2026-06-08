@@ -259,7 +259,6 @@ impl LspClient {
         let mut results = Vec::new();
 
         while let Ok(msg) = inner.transport.receiver.try_recv() {
-            crate::lsp::transport::debug_log('<', &msg.to_string());
             let id = msg.get("id").and_then(|v| v.as_u64());
             let method = msg.get("method").and_then(|v| v.as_str());
             match (id, method) {

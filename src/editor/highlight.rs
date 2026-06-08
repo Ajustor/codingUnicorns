@@ -113,31 +113,14 @@ impl Highlighter {
         self.last_version = version;
 
         let lang = self.language.clone();
-        hl_log(&format!(
-            "highlight lang={lang:?} src_lines={} pm={}",
-            source.lines().count(),
-            plugin_manager.is_some()
-        ));
 
         // 1. Document-level tokenizer (extensions with embedded tree-sitter).
         if let Some(pm) = plugin_manager {
-            match pm.tokenize_document(&lang, source) {
-                Some(doc_tokens) if !doc_tokens.is_empty() => {
-                    let strings = doc_tokens
-                        .iter()
-                        .flatten()
-                        .filter(|t| t.kind == TokenKind::String)
-                        .count();
-                    hl_log(&format!(
-                        "  -> DOC path: {} lines, {} string tokens",
-                        doc_tokens.len(),
-                        strings
-                    ));
+            if let Some(doc_tokens) = pm.tokenize_document(&lang, source) {
+                if !doc_tokens.is_empty() {
                     self.line_tokens = doc_tokens;
                     return;
                 }
-                Some(_) => hl_log("  doc tokenizer returned EMPTY"),
-                None => hl_log("  doc tokenizer returned None (no plugin for this ext)"),
             }
         }
 
@@ -158,14 +141,12 @@ impl Highlighter {
                         .map(|t| t.kind != TokenKind::Normal)
                         .unwrap_or(false)
             }) {
-                hl_log("  -> LINE path (per-line tokenizer)");
                 self.line_tokens = tokens;
                 return;
             }
         }
 
         // 3. Plain-text fallback.
-        hl_log("  -> PLAIN fallback (no colors)");
         self.line_tokens = source.lines().map(tokenize_line_plain).collect();
     }
 
@@ -213,13 +194,4 @@ fn tokenize_line_plain(line: &str) -> Vec<Token> {
 /// Returns keywords for autocomplete. Language support comes from extensions only.
 pub fn keywords_for_language(_lang: &str) -> &'static [&'static str] {
     &[]
-}
-
-/// Temporary diagnostic: append a highlighting trace line to `%TEMP%/cu-hl.log`.
-fn hl_log(msg: &str) {
-    use std::io::Write;
-    let path = std::env::temp_dir().join("cu-hl.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "{msg}");
-    }
 }
