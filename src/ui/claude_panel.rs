@@ -25,11 +25,20 @@ impl ClaudePanel {
         ui: &mut egui::Ui,
         session: &ClaudeSession,
         pending: Option<&PermissionRequest>,
+        account: Option<&str>,
     ) -> ClaudeAction {
         let mut action = ClaudeAction::None;
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Claude").strong().color(egui::Color32::WHITE));
+            if let Some(acc) = account {
+                ui.label(
+                    egui::RichText::new(acc)
+                        .small()
+                        .color(egui::Color32::from_gray(140)),
+                )
+                .on_hover_text("Active Claude account (from `claude auth status`)");
+            }
             if session.running {
                 ui.spinner();
                 if ui.small_button("Cancel").clicked() {
