@@ -1904,15 +1904,21 @@ impl Editor {
                         (content_w - rect.width()).max(0.0)
                     };
                     ui.input(|i| {
-                        self.scroll_offset.y -= i.smooth_scroll_delta.y;
+                        let mut dx = i.smooth_scroll_delta.x;
+                        let mut dy = i.smooth_scroll_delta.y;
+                        // Shift+wheel scrolls horizontally — on Windows the wheel
+                        // delta arrives on the Y axis even with Shift held, so remap.
+                        if i.modifiers.shift && dx == 0.0 {
+                            dx = dy;
+                            dy = 0.0;
+                        }
+                        self.scroll_offset.y -= dy;
                         self.scroll_offset.y = self
                             .scroll_offset
                             .y
                             .max(0.0)
                             .min((total_height - rect.height()).max(0.0));
-                        // Horizontal scroll (Shift+wheel / trackpad horizontal).
-                        self.scroll_offset.x -= i.smooth_scroll_delta.x;
-                        self.scroll_offset.x = self.scroll_offset.x.clamp(0.0, max_x);
+                        self.scroll_offset.x = (self.scroll_offset.x - dx).clamp(0.0, max_x);
                     });
                 }
 
