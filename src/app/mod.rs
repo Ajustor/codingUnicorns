@@ -545,7 +545,7 @@ impl eframe::App for CodingUnicorns {
                 if reconnected_exts.contains(&ext) {
                     let uri = format!("file://{}", path.display());
                     let content = self.editor.buffer.to_string();
-                    let lang_id = ext.as_str();
+                    let lang_id = lsp_ops::language_id_for_ext(&ext);
                     if let Some(client) = self.lsp.get_mut(&ext) {
                         client.did_open(&uri, lang_id, &content);
                     }
