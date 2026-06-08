@@ -541,9 +541,14 @@ impl eframe::App for CodingUnicorns {
                 } else if Some(id) == self.pending_completion_id {
                     let items = LspClient::parse_completions(&response);
                     if !items.is_empty() {
-                        self.editor
-                            .autocomplete
-                            .set_lsp_suggestions(items.iter().map(|i| i.label.clone()).collect());
+                        let suggestions = items
+                            .into_iter()
+                            .map(|i| crate::editor::autocomplete::Suggestion {
+                                label: i.label,
+                                kind: Some(i.kind),
+                            })
+                            .collect();
+                        self.editor.autocomplete.set_lsp_suggestions(suggestions);
                     }
                     self.pending_completion_id = None;
                 } else if Some(id) == self.pending_symbols_id {
@@ -656,6 +661,7 @@ impl eframe::App for CodingUnicorns {
         // Handle Ctrl+Space LSP completion request from the editor.
         if self.editor.completion_request_pending {
             self.editor.completion_request_pending = false;
+            let mut lsp_sent = false;
             if let Some(path) = self.editor.current_path.clone() {
                 let row = self.editor.completion_trigger_row;
                 let col = self.editor.completion_trigger_col;
@@ -665,9 +671,15 @@ impl eframe::App for CodingUnicorns {
                             let uri = format!("file://{}", path.display());
                             self.pending_completion_id =
                                 Some(client.request_completions(&uri, row as u32, col as u32));
+                            lsp_sent = true;
                         }
                     }
                 }
+            }
+            // No LSP server connected for this file type — fall back to the local
+            // buffer-word + keyword autocomplete so Ctrl+Space still assists typing.
+            if !lsp_sent {
+                self.editor.trigger_local_completion();
             }
         }
 
@@ -867,16 +879,38 @@ impl eframe::App for CodingUnicorns {
 
         // Handle pending extension uninstall: unload plugin DLL first, then delete files.
         if let Some(id) = self.extensions_panel.pending_uninstall.take() {
-            // Find the extensions list for this module so we can unload its plugin.
-            let exts: Vec<String> = self
-                .extension_registry
-                .installed
-                .iter()
-                .find(|e| e.manifest.extension.id == id)
-                .map(|e| e.manifest.capabilities.languages.clone())
-                .unwrap_or_default();
+            let remove_deps =
+                std::mem::take(&mut self.extensions_panel.pending_uninstall_remove_deps);
+            // Collect what we need from the manifest before the registry entry is
+            // removed: the languages (to unload the plugin) and, if requested, the
+            // dependencies (to uninstall the LSP server + tooling it pulled in).
+            let (exts, deps) = {
+                let installed = self
+                    .extension_registry
+                    .installed
+                    .iter()
+                    .find(|e| e.manifest.extension.id == id);
+                let exts = installed
+                    .map(|e| e.manifest.capabilities.languages.clone())
+                    .unwrap_or_default();
+                let deps = if remove_deps {
+                    installed.map(|e| e.manifest.dependencies.clone())
+                } else {
+                    None
+                };
+                (exts, deps)
+            };
             // Drop the plugin (releases the DLL lock on Windows).
             self.plugin_manager.unload_by_extensions(&exts);
+            // Remove external dependencies off the UI thread — npm/pip/dotnet
+            // uninstall can take several seconds.
+            if let Some(deps) = deps {
+                std::thread::spawn(move || {
+                    for e in crate::extension::installer::uninstall_deps(&deps) {
+                        log::warn!("Dependency uninstall: {e}");
+                    }
+                });
+            }
             // Now safe to delete the files.
             if let Err(e) = self.extension_registry.uninstall(&id) {
                 log::error!("Uninstall failed: {e}");
