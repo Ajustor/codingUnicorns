@@ -22,6 +22,7 @@ use crate::ui::settings::SettingsPanel;
 use crate::ui::shortcuts::ShortcutsHelp;
 use crate::ui::statusbar::StatusBar;
 
+mod claude_ops;
 mod debug_ops;
 pub mod file_ops;
 mod lsp_ops;
@@ -52,6 +53,12 @@ pub struct CodingUnicorns {
     pub settings_panel: SettingsPanel,
     pub sidebar_tab: SidebarTab,
     pub show_terminal: bool,
+    pub show_claude: bool,
+    pub claude_session: crate::claude::session::ClaudeSession,
+    pub claude_panel: crate::ui::claude_panel::ClaudePanel,
+    pub claude_turn: Option<crate::claude::process::Turn>,
+    pub claude_perm: Option<crate::claude::permission::PermissionListener>,
+    pub claude_pending: Option<crate::claude::permission::PermissionRequest>,
     pub show_sidebar: bool,
     pub sidebar_width: f32,
     pub terminal_height: f32,
@@ -179,6 +186,12 @@ impl CodingUnicorns {
             settings_panel: SettingsPanel::new(),
             sidebar_tab: SidebarTab::default(),
             show_terminal: true,
+            show_claude: false,
+            claude_session: crate::claude::session::ClaudeSession::new(),
+            claude_panel: crate::ui::claude_panel::ClaudePanel::new(),
+            claude_turn: None,
+            claude_perm: None,
+            claude_pending: None,
             show_sidebar: true,
             sidebar_width: 220.0,
             terminal_height: initial_terminal_height,
@@ -1019,6 +1032,8 @@ impl eframe::App for CodingUnicorns {
         // Module picker modal (rendered on top of everything)
         self.extensions_panel
             .show_picker_modal(ctx, &mut self.extension_registry);
+
+        self.poll_claude(ctx);
 
         // Request periodic repaint while terminal is visible (for live output).
         // Using a short interval instead of immediate repaint avoids burning CPU
