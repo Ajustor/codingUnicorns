@@ -1918,12 +1918,41 @@ impl Editor {
                     self.bracket_match = find_matching_bracket(&self.buffer, cur_row, cur_col);
                 }
 
-                // Rebuild the highlight cache when content changes. For large files
-                // the full re-tokenization (tree-sitter + token transfer) is costly,
-                // so debounce it: only re-tokenize once typing pauses briefly. Small
-                // files re-highlight immediately (re-tokenization is cheap there).
-                if self.highlighter.needs_update(self.content_version) {
-                    let ready = if self.buffer.num_lines() > 2000 {
+                // Rebuild the highlight cache when content changes.
+                //
+                // Very large files (> VIEWPORT_THRESHOLD lines): tokenizing the whole
+                // document each edit/frame lags badly, so only tokenize the visible
+                // window (± MARGIN lines) and re-tokenize when scrolling out of it.
+                // Smaller files tokenize the whole document (accurate), debounced so
+                // typing in a moderately large file stays smooth.
+                const VIEWPORT_THRESHOLD: usize = 4000;
+                let total_lines_hl = self.buffer.num_lines();
+                if total_lines_hl > VIEWPORT_THRESHOLD {
+                    let vis_start = first_visible;
+                    let vis_end = (first_visible + visible_count).min(total_lines_hl);
+                    if self
+                        .highlighter
+                        .viewport_stale(self.content_version, vis_start, vis_end)
+                    {
+                        const MARGIN: usize = 100;
+                        let start = vis_start.saturating_sub(MARGIN);
+                        let end = (vis_end + MARGIN).min(total_lines_hl);
+                        let window: String = (start..end)
+                            .map(|r| self.buffer.line(r))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        self.highlighter.highlight_viewport(
+                            &window,
+                            start,
+                            total_lines_hl,
+                            self.content_version,
+                            (start, end),
+                            Some(plugin_manager),
+                        );
+                    }
+                } else if self.highlighter.needs_update(self.content_version) {
+                    // Debounce full re-tokenization for moderately large files.
+                    let ready = if total_lines_hl > 2000 {
                         if self.hl_pending_version != self.content_version {
                             self.hl_pending_version = self.content_version;
                             self.hl_pending_at = Some(std::time::Instant::now());
