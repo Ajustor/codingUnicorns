@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 mod app;
-mod claude;
 mod config;
 pub mod dap;
 mod editor;

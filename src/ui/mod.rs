@@ -1,4 +1,3 @@
-pub mod claude_panel;
 pub mod debugger;
 pub mod minimap;
 pub mod git_panel;

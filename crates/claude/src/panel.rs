@@ -1,5 +1,5 @@
-use crate::claude::permission::{Decision, PermissionRequest};
-use crate::claude::session::{ClaudeSession, Role};
+use crate::permission::{Decision, PermissionRequest};
+use crate::session::{ClaudeSession, Role};
 
 #[derive(Default)]
 pub struct ClaudePanel {
