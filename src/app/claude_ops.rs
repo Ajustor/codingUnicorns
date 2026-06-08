@@ -5,10 +5,14 @@ impl CodingUnicorns {
     /// requests, and detect turn completion (clean result OR process death).
     pub(crate) fn poll_claude(&mut self, ctx: &egui::Context) {
         if let Some(turn) = self.claude_turn.take() {
+            let mut got_event = false;
             let mut alive = true;
             loop {
                 match turn.rx.try_recv() {
-                    Ok(ev) => self.claude_session.apply(ev),
+                    Ok(ev) => {
+                        self.claude_session.apply(ev);
+                        got_event = true;
+                    }
                     Err(crossbeam_channel::TryRecvError::Empty) => break,
                     Err(crossbeam_channel::TryRecvError::Disconnected) => {
                         alive = false;
@@ -19,6 +23,13 @@ impl CodingUnicorns {
             if alive && self.claude_session.running {
                 // Still streaming — keep the handle for next frame.
                 self.claude_turn = Some(turn);
+                if got_event {
+                    // More output may be arriving — repaint now.
+                    ctx.request_repaint();
+                } else {
+                    // Idle wait: poll again soon without busy-spinning at full FPS.
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                }
             } else {
                 // Finished. If the process died without a final `result`,
                 // clear running and note it. Dropping `turn` reaps the child.
@@ -29,15 +40,22 @@ impl CodingUnicorns {
                         text: "(claude ended without a result — see logs)".to_string(),
                     });
                 }
+                ctx.request_repaint();
             }
-            ctx.request_repaint();
         }
 
-        // Surface one pending permission request at a time.
+        // Surface one pending permission request at a time. Auto-approve read-only
+        // tools when `claude_auto_allow_read` is set, so they never prompt.
         if self.claude_pending.is_none() {
             if let Some(perm) = &self.claude_perm {
                 if let Ok(req) = perm.requests.try_recv() {
-                    self.claude_pending = Some(req);
+                    let auto_allow = self.config.claude_auto_allow_read
+                        && matches!(req.tool.as_str(), "Read" | "Glob" | "Grep" | "LS");
+                    if auto_allow {
+                        let _ = req.reply.send(crate::claude::permission::Decision::Allow);
+                    } else {
+                        self.claude_pending = Some(req);
+                    }
                     ctx.request_repaint();
                 }
             }
