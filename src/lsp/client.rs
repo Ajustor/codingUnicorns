@@ -249,12 +249,24 @@ impl LspClient {
 
         while let Ok(msg) = inner.transport.receiver.try_recv() {
             crate::lsp::transport::debug_log('<', &msg.to_string());
-            if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
-                results.push((id, msg));
-            } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
-                if method == "textDocument/publishDiagnostics" {
+            let id = msg.get("id").and_then(|v| v.as_u64());
+            let method = msg.get("method").and_then(|v| v.as_str());
+            match (id, method) {
+                // Server→client REQUEST (has both id and method): must respond, or
+                // servers like csharp-ls stall and never answer our own requests.
+                (Some(id), Some(method)) => {
+                    let resp = Self::server_request_response(method, id, &msg);
+                    let _ = inner.transport.send(&resp);
+                }
+                // Response to one of our requests (id, no method).
+                (Some(id), None) => {
+                    results.push((id, msg));
+                }
+                // Notification (method, no id).
+                (None, Some("textDocument/publishDiagnostics")) => {
                     Self::process_diagnostics_msg(&mut self.diagnostics, &msg);
                 }
+                _ => {}
             }
         }
 
@@ -341,6 +353,27 @@ impl LspClient {
         });
 
         false
+    }
+
+    /// Build a reply to a server→client request so the server doesn't stall.
+    /// `workspace/configuration` must return one entry per requested item (null =
+    /// use defaults); everything else (registerCapability, workDoneProgress/create,
+    /// *​/refresh, …) is acked with a null result.
+    fn server_request_response(method: &str, id: u64, msg: &Value) -> Value {
+        match method {
+            "workspace/configuration" => {
+                let n = msg
+                    .get("params")
+                    .and_then(|p| p.get("items"))
+                    .and_then(|i| i.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(1)
+                    .max(1);
+                let items: Vec<Value> = std::iter::repeat(Value::Null).take(n).collect();
+                json!({ "jsonrpc": "2.0", "id": id, "result": items })
+            }
+            _ => json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),
+        }
     }
 
     fn process_diagnostics_msg(store: &mut HashMap<String, Vec<Diagnostic>>, msg: &Value) {
