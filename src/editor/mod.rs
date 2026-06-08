@@ -70,6 +70,13 @@ pub struct Editor {
     /// files on every keystroke (which lags the UI).
     pub hl_pending_version: i32,
     pub hl_pending_at: Option<std::time::Instant>,
+    /// True while a run of typed characters is being coalesced into a single undo
+    /// step. Reset by any non-text key so each typing burst is one undo unit.
+    coalescing_typing: bool,
+    /// Cached longest line length (chars) + the content_version it was computed for.
+    /// Avoids an O(file) max-width scan every frame for the horizontal scrollbar.
+    max_line_chars: usize,
+    max_line_chars_version: i32,
     /// Set when an LSP hover request has been fired; cleared when the response arrives.
     pub hover_lsp_request_pending: bool,
     /// Cursor row when the LSP hover request was triggered.
@@ -203,6 +210,9 @@ impl Editor {
             content_version: 0,
             hl_pending_version: -1,
             hl_pending_at: None,
+            coalescing_typing: false,
+            max_line_chars: 0,
+            max_line_chars_version: -1,
             hover_lsp_request_pending: false,
             hover_row: 0,
             hover_col: 0,
@@ -285,6 +295,8 @@ impl Editor {
         // cached version and the minimap shows a stale ("ghost") overview.
         self.minimap_lines.clear();
         self.minimap_lines_version = -1;
+        self.coalescing_typing = false;
+        self.max_line_chars_version = -1;
         // Detect indentation style from file content
         let (spaces, size) = detect_indent(&content);
         self.detected_indent_spaces = spaces;
@@ -295,6 +307,20 @@ impl Editor {
         if let Some(name) = lang {
             self.highlighter.set_language_from_filename(&name);
         }
+    }
+
+    /// Longest line length (chars), cached and recomputed only when the content
+    /// changes — used to size the horizontal scrollbar and clamp horizontal scroll.
+    /// Avoids an allocating O(file) scan every frame.
+    fn cached_max_line_chars(&mut self) -> usize {
+        if self.max_line_chars_version != self.content_version {
+            self.max_line_chars = (0..self.buffer.num_lines())
+                .map(|i| self.buffer.line_char_len_fast(i))
+                .max()
+                .unwrap_or(0);
+            self.max_line_chars_version = self.content_version;
+        }
+        self.max_line_chars
     }
 
     pub fn save(&mut self) -> anyhow::Result<()> {
@@ -824,6 +850,12 @@ impl Editor {
                                 egui::Event::Text(text) => {
                                     // Don't insert text when Ctrl is held (shortcuts)
                                     if !i.modifiers.ctrl && !i.modifiers.command {
+                                        // Checkpoint once at the start of a typing run so
+                                        // Ctrl+Z undoes the run (not nothing / not per char).
+                                        if !self.coalescing_typing {
+                                            self.buffer.checkpoint();
+                                            self.coalescing_typing = true;
+                                        }
                                         let auto_close = config.editor.auto_close_brackets;
                                         for ch in text.chars() {
                                             self.insert_char(ch, auto_close);
@@ -850,6 +882,8 @@ impl Editor {
                                     }
                                 }
                                 egui::Event::Paste(text) => {
+                                    self.coalescing_typing = false;
+                                    self.buffer.checkpoint();
                                     let cursor_count = 1 + self.extra_cursors.len();
                                     let lines: Vec<&str> = text.lines().collect();
 
@@ -864,7 +898,6 @@ impl Editor {
                                         }
                                         positions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-                                        self.buffer.checkpoint();
                                         // Insert in reverse order to preserve positions
                                         for (sorted_idx, &(row, col, _)) in
                                             positions.iter().enumerate().rev()
@@ -911,6 +944,9 @@ impl Editor {
                                     modifiers,
                                     ..
                                 } => {
+                                    // Any non-text key ends the current typing run, so
+                                    // the next typed run becomes its own undo step.
+                                    self.coalescing_typing = false;
                                     match key {
                                         egui::Key::Enter if modifiers.ctrl && modifiers.shift => {
                                             self.buffer.checkpoint();
@@ -945,10 +981,12 @@ impl Editor {
                                             }
                                         }
                                         egui::Key::Backspace => {
+                                            self.buffer.checkpoint();
                                             self.delete_char_before();
                                             text_typed = true;
                                         }
                                         egui::Key::Delete => {
+                                            self.buffer.checkpoint();
                                             self.delete_char_after();
                                             text_typed = true;
                                         }
@@ -1859,6 +1897,12 @@ impl Editor {
                 }
 
                 if response.hovered() {
+                    // Horizontal scroll bound = longest line width minus the viewport.
+                    let max_x = {
+                        let content_w =
+                            self.cached_max_line_chars() as f32 * char_width + gutter_width + 40.0;
+                        (content_w - rect.width()).max(0.0)
+                    };
                     ui.input(|i| {
                         self.scroll_offset.y -= i.smooth_scroll_delta.y;
                         self.scroll_offset.y = self
@@ -1866,6 +1910,9 @@ impl Editor {
                             .y
                             .max(0.0)
                             .min((total_height - rect.height()).max(0.0));
+                        // Horizontal scroll (Shift+wheel / trackpad horizontal).
+                        self.scroll_offset.x -= i.smooth_scroll_delta.x;
+                        self.scroll_offset.x = self.scroll_offset.x.clamp(0.0, max_x);
                     });
                 }
 
@@ -2656,10 +2703,7 @@ impl Editor {
                 // ── Horizontal scrollbar ─────────────────────────────────────────
                 {
                     let scrollbar_h = 8.0_f32;
-                    let max_line_chars = (0..self.buffer.num_lines())
-                        .map(|i| self.buffer.line_len(i))
-                        .max()
-                        .unwrap_or(0);
+                    let max_line_chars = self.cached_max_line_chars();
                     let content_w = max_line_chars as f32 * char_width + gutter_width + 40.0;
                     let view_w = rect.width();
                     if content_w > view_w {

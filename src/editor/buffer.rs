@@ -46,6 +46,17 @@ impl Buffer {
         self.line(idx).chars().count()
     }
 
+    /// Character count of a line WITHOUT allocating a String (unlike `line_len`).
+    /// Includes the trailing newline — fine for width estimation. Cheap (O(1) on
+    /// the rope), suitable for scanning every line.
+    pub fn line_char_len_fast(&self, idx: usize) -> usize {
+        if idx >= self.rope.len_lines() {
+            0
+        } else {
+            self.rope.line(idx).len_chars()
+        }
+    }
+
     pub fn char_index(&self, row: usize, col: usize) -> usize {
         let line_start = self
             .rope
