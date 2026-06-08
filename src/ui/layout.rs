@@ -760,7 +760,11 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 let action = app.claude_panel.show(ui, &app.claude_session, pending);
                 match action {
                     crate::ui::claude_panel::ClaudeAction::Send(text) => {
-                        app.start_claude_turn(text);
+                        if text.starts_with('/') {
+                            app.handle_claude_slash(text);
+                        } else {
+                            app.start_claude_turn(text);
+                        }
                     }
                     crate::ui::claude_panel::ClaudeAction::NewConversation => {
                         app.claude_session.reset();

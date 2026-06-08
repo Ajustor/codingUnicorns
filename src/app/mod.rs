@@ -59,6 +59,8 @@ pub struct CodingUnicorns {
     pub claude_turn: Option<crate::claude::process::Turn>,
     pub claude_perm: Option<crate::claude::permission::PermissionListener>,
     pub claude_pending: Option<crate::claude::permission::PermissionRequest>,
+    /// Optional model override set via the `/model` slash command (transient).
+    pub claude_model: Option<String>,
     pub show_sidebar: bool,
     pub sidebar_width: f32,
     pub terminal_height: f32,
@@ -192,6 +194,7 @@ impl CodingUnicorns {
             claude_turn: None,
             claude_perm: None,
             claude_pending: None,
+            claude_model: None,
             show_sidebar: true,
             sidebar_width: 220.0,
             terminal_height: initial_terminal_height,
