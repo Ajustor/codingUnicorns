@@ -7,7 +7,11 @@ edition = "2021"
 name = "coding-unicorns"
 path = "src/main.rs"
 
+[workspace]
+members = ["crates/claude"]
+
 [dependencies]
+claude = { path = "crates/claude" }
 eframe = { version = "0.31", features = ["default"] }
 egui = "0.31"
 egui_extras = "0.31"

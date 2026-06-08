@@ -35,8 +35,8 @@ impl CodingUnicorns {
                 // clear running and note it. Dropping `turn` reaps the child.
                 if self.claude_session.running {
                     self.claude_session.running = false;
-                    self.claude_session.transcript.push(crate::claude::session::Message {
-                        role: crate::claude::session::Role::Assistant,
+                    self.claude_session.transcript.push(claude::session::Message {
+                        role: claude::session::Role::Assistant,
                         text: "(claude ended without a result — see logs)".to_string(),
                     });
                 }
@@ -52,7 +52,7 @@ impl CodingUnicorns {
                     let auto_allow = self.config.claude_auto_allow_read
                         && matches!(req.tool.as_str(), "Read" | "Glob" | "Grep" | "LS");
                     if auto_allow {
-                        let _ = req.reply.send(crate::claude::permission::Decision::Allow);
+                        let _ = req.reply.send(claude::permission::Decision::Allow);
                     } else {
                         self.claude_pending = Some(req);
                     }
@@ -69,7 +69,7 @@ impl CodingUnicorns {
                     let (tx, rx) = std::sync::mpsc::channel();
                     let binary = self.config.claude_binary.clone();
                     std::thread::spawn(move || {
-                        let label = crate::claude::account::fetch_account(&binary)
+                        let label = claude::account::fetch_account(&binary)
                             .unwrap_or_else(|| "unknown".to_string());
                         let _ = tx.send(label);
                     });
@@ -88,7 +88,7 @@ impl CodingUnicorns {
 
     /// Launch one conversation turn for `user_text`.
     pub(crate) fn start_claude_turn(&mut self, user_text: String) {
-        use crate::claude::{permission, process, session::EditorContext};
+        use claude::{permission, process, session::EditorContext};
 
         let Some(workspace) = self.workspace_path.clone() else {
             return;
@@ -119,10 +119,10 @@ impl CodingUnicorns {
             selection: self.editor.selected_text_pub(),
             selection_lines: self.editor.selection_line_range_pub(),
         };
-        let prompt = crate::claude::session::ClaudeSession::build_prompt(&user_text, &ctx);
+        let prompt = claude::session::ClaudeSession::build_prompt(&user_text, &ctx);
 
-        self.claude_session.transcript.push(crate::claude::session::Message {
-            role: crate::claude::session::Role::User,
+        self.claude_session.transcript.push(claude::session::Message {
+            role: claude::session::Role::User,
             text: user_text,
         });
         self.claude_session.running = true;
@@ -141,8 +141,8 @@ impl CodingUnicorns {
             Ok(turn) => self.claude_turn = Some(turn),
             Err(e) => {
                 self.claude_session.running = false;
-                self.claude_session.transcript.push(crate::claude::session::Message {
-                    role: crate::claude::session::Role::Assistant,
+                self.claude_session.transcript.push(claude::session::Message {
+                    role: claude::session::Role::Assistant,
                     text: format!(
                         "Failed to launch `{}`: {e}. Is Claude Code installed and on PATH?",
                         self.config.claude_binary
@@ -193,8 +193,8 @@ impl CodingUnicorns {
 
     /// Push a system/tool note into the transcript (panel-local message).
     fn push_claude_note(&mut self, text: String) {
-        self.claude_session.transcript.push(crate::claude::session::Message {
-            role: crate::claude::session::Role::Tool,
+        self.claude_session.transcript.push(claude::session::Message {
+            role: claude::session::Role::Tool,
             text,
         });
     }

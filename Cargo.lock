@@ -729,6 +729,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "claude"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "egui",
+ "log",
+ "serde_json",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -752,6 +762,7 @@ name = "coding-unicorns"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "claude",
  "crossbeam-channel",
  "dirs-next",
  "eframe",

@@ -761,19 +761,19 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 let account = app.claude_account.as_deref();
                 let action = app.claude_panel.show(ui, &app.claude_session, pending, account);
                 match action {
-                    crate::ui::claude_panel::ClaudeAction::Send(text) => {
+                    claude::panel::ClaudeAction::Send(text) => {
                         if text.starts_with('/') {
                             app.handle_claude_slash(text);
                         } else {
                             app.start_claude_turn(text);
                         }
                     }
-                    crate::ui::claude_panel::ClaudeAction::NewConversation => {
+                    claude::panel::ClaudeAction::NewConversation => {
                         app.claude_session.reset();
                         app.claude_pending = None;
                         app.claude_turn = None;
                     }
-                    crate::ui::claude_panel::ClaudeAction::Cancel => {
+                    claude::panel::ClaudeAction::Cancel => {
                         if let Some(turn) = &mut app.claude_turn {
                             turn.cancel();
                         }
@@ -781,12 +781,12 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         app.claude_session.running = false;
                         app.claude_pending = None;
                     }
-                    crate::ui::claude_panel::ClaudeAction::Permission(decision) => {
+                    claude::panel::ClaudeAction::Permission(decision) => {
                         if let Some(req) = app.claude_pending.take() {
                             let _ = req.reply.send(decision);
                         }
                     }
-                    crate::ui::claude_panel::ClaudeAction::OpenInteractive => {
+                    claude::panel::ClaudeAction::OpenInteractive => {
                         // Launch the real interactive `claude` in a terminal tab so
                         // its built-in commands work, rooted at the workspace.
                         let cwd = app.workspace_path.clone();
@@ -798,7 +798,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         app.active_terminal = app.terminals.len() - 1;
                         app.show_terminal = true;
                     }
-                    crate::ui::claude_panel::ClaudeAction::None => {}
+                    claude::panel::ClaudeAction::None => {}
                 }
             });
     }
