@@ -117,6 +117,22 @@ fn load_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result<()> {
+    // Re-invoked by `claude` as the permission MCP server — no GUI.
+    let raw_args: Vec<String> = std::env::args().collect();
+    if raw_args.iter().any(|a| a == "--claude-permission-server") {
+        let port = raw_args
+            .iter()
+            .position(|a| a == "--port")
+            .and_then(|i| raw_args.get(i + 1))
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(0);
+        let token = std::env::var("CU_PERM_TOKEN").unwrap_or_default();
+        if port != 0 {
+            claude::permission::run_permission_mcp_server(port, token);
+        }
+        return Ok(());
+    }
+
     install_panic_logger();
     env_logger::init();
 
