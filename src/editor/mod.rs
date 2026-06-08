@@ -2549,8 +2549,11 @@ impl Editor {
                         };
                         let guides = leading / ind_size;
                         for g in 1..=guides {
-                            let gx =
-                                x_start + (g * ind_size) as f32 * char_width - self.scroll_offset.x;
+                            // Nudge guides half a character to the left so they sit at
+                            // the indent boundary rather than under the first glyph.
+                            let gx = x_start + (g * ind_size) as f32 * char_width
+                                - self.scroll_offset.x
+                                - char_width * 0.5;
                             // clamp to visible text area
                             if gx < x_start || gx > rect.max.x {
                                 continue;
