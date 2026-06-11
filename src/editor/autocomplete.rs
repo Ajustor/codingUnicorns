@@ -9,13 +9,15 @@ use fuzzy_matcher::FuzzyMatcher;
 pub struct Suggestion {
     pub label: String,
     pub kind: Option<String>,
+    pub match_indices: Vec<usize>,
 }
 
 impl Suggestion {
-    fn local(label: String, kind: Option<&str>) -> Self {
+    fn local(label: String, kind: Option<&str>, match_indices: Vec<usize>) -> Self {
         Self {
             label,
             kind: kind.map(|k| k.to_string()),
+            match_indices,
         }
     }
 }
@@ -52,23 +54,23 @@ impl Autocomplete {
         self.query = word.to_string();
 
         let mut seen: HashSet<&str> = HashSet::new();
-        // (score, label, kind) — keywords are tagged so the popup shows a badge.
-        let mut scored: Vec<(i64, &str, Option<&str>)> = Vec::new();
+        // (score, label, kind, match_indices)
+        let mut scored: Vec<(i64, &str, Option<&str>, Vec<usize>)> = Vec::new();
 
         for &kw in lang_keywords {
             if kw == word || !seen.insert(kw) {
                 continue;
             }
-            if let Some(score) = self.matcher.fuzzy_match(kw, word) {
-                scored.push((score, kw, Some("Keyword")));
+            if let Some((score, idx)) = self.matcher.fuzzy_indices(kw, word) {
+                scored.push((score, kw, Some("Keyword"), idx));
             }
         }
         for bw in buffer_words {
             if bw == word || !seen.insert(bw.as_str()) {
                 continue;
             }
-            if let Some(score) = self.matcher.fuzzy_match(bw, word) {
-                scored.push((score, bw.as_str(), None));
+            if let Some((score, idx)) = self.matcher.fuzzy_indices(bw, word) {
+                scored.push((score, bw.as_str(), None, idx));
             }
         }
 
@@ -79,7 +81,7 @@ impl Autocomplete {
 
         self.suggestions = scored
             .into_iter()
-            .map(|(_, label, kind)| Suggestion::local(label.to_string(), kind))
+            .map(|(_, label, kind, idx)| Suggestion::local(label.to_string(), kind, idx))
             .collect();
         self.selected = 0;
         self.visible = !self.suggestions.is_empty();
@@ -116,7 +118,12 @@ impl Autocomplete {
     }
 
     /// Render the popup using an egui Area (does not consume keyboard focus).
-    pub fn show(&self, ctx: &egui::Context) {
+    pub fn show(
+        &self,
+        ctx: &egui::Context,
+        palette: crate::ui::theme::Palette,
+        spacing: crate::ui::theme::Spacing,
+    ) {
         if !self.visible || self.suggestions.is_empty() {
             return;
         }
@@ -151,51 +158,55 @@ impl Autocomplete {
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(40, 44, 52))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 120)))
-                    .inner_margin(egui::Margin::same(2))
-                    .show(ui, |ui| {
-                        for (i, suggestion) in visible.iter().enumerate() {
-                            let actual_idx = scroll_start + i;
-                            let is_selected = actual_idx == self.selected;
+                crate::ui::widgets::popup_frame(palette, spacing).show(ui, |ui| {
+                    for (i, suggestion) in visible.iter().enumerate() {
+                        let actual_idx = scroll_start + i;
+                        let is_selected = actual_idx == self.selected;
 
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(POPUP_WIDTH, ITEM_HEIGHT),
-                                egui::Sense::hover(),
-                            );
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(POPUP_WIDTH, ITEM_HEIGHT),
+                            egui::Sense::hover(),
+                        );
 
-                            if is_selected {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    2.0,
-                                    egui::Color32::from_rgb(30, 80, 140),
+                        if is_selected {
+                            ui.painter().rect_filled(rect, 2.0, palette.accent_muted);
+                        }
+
+                        // Kind badge (left gutter).
+                        if let Some(kind) = &suggestion.kind {
+                            let (badge, color) = kind_badge(kind);
+                            if !badge.is_empty() {
+                                ui.painter().text(
+                                    egui::pos2(rect.min.x + 5.0, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    badge,
+                                    egui::FontId::monospace(12.0),
+                                    color,
                                 );
                             }
+                        }
 
-                            // Kind badge (left gutter).
-                            if let Some(kind) = &suggestion.kind {
-                                let (badge, color) = kind_badge(kind);
-                                if !badge.is_empty() {
-                                    ui.painter().text(
-                                        egui::pos2(rect.min.x + 5.0, rect.center().y),
-                                        egui::Align2::LEFT_CENTER,
-                                        badge,
-                                        egui::FontId::monospace(12.0),
-                                        color,
-                                    );
-                                }
-                            }
-
-                            ui.painter().text(
-                                egui::pos2(rect.min.x + BADGE_W, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                &suggestion.label,
-                                egui::FontId::monospace(13.0),
-                                egui::Color32::from_rgb(212, 212, 212),
+                        let mut job = egui::text::LayoutJob::default();
+                        for (ci, ch) in suggestion.label.chars().enumerate() {
+                            let matched = suggestion.match_indices.contains(&ci);
+                            job.append(
+                                &ch.to_string(),
+                                0.0,
+                                egui::text::TextFormat {
+                                    font_id: egui::FontId::monospace(13.0),
+                                    color: if matched { palette.accent } else { palette.text },
+                                    ..Default::default()
+                                },
                             );
                         }
-                    });
+                        let galley = ui.fonts(|f| f.layout_job(job));
+                        let text_pos = egui::pos2(
+                            rect.min.x + BADGE_W,
+                            rect.center().y - galley.size().y / 2.0,
+                        );
+                        ui.painter().galley(text_pos, galley, palette.text);
+                    }
+                });
             });
     }
 }

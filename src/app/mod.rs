@@ -642,6 +642,7 @@ impl eframe::App for CodingUnicorns {
                             .map(|i| crate::editor::autocomplete::Suggestion {
                                 label: i.label,
                                 kind: Some(i.kind),
+                                match_indices: vec![],
                             })
                             .collect();
                         self.editor.autocomplete.set_lsp_suggestions(suggestions);
