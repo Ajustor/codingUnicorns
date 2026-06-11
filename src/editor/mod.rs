@@ -2105,6 +2105,15 @@ impl Editor {
                 let last_visible = first_visible + visible_count;
                 self.update_word_occurrences(first_visible, last_visible);
 
+                // Compute the active indent block (for guide highlighting)
+                let active_block = {
+                    let lines: Vec<String> = (0..self.buffer.num_lines())
+                        .map(|i| self.buffer.line(i))
+                        .collect();
+                    let (cr, _) = self.cursor.position();
+                    active_indent_block(&lines, cr, self.detected_indent_size.max(1), self.detected_indent_spaces)
+                };
+
                 // Iterate visible lines, skipping folded content
                 let mut line_idx = first_visible;
                 while line_idx < total_lines
@@ -2573,15 +2582,15 @@ impl Editor {
                             if gx < x_start || gx > rect.max.x {
                                 continue;
                             }
+                            let guide_color = match active_block {
+                                Some((lvl, s, e)) if g == lvl && line_idx >= s && line_idx <= e => {
+                                    palette.accent_muted
+                                }
+                                _ => egui::Color32::from_rgba_unmultiplied(130, 130, 145, 50),
+                            };
                             painter.line_segment(
                                 [egui::pos2(gx, y), egui::pos2(gx, y + line_height)],
-                                egui::Stroke::new(
-                                    1.0,
-                                    // Subtle guide: faint, non-premultiplied so it stays
-                                    // discreet on the dark background (the old premultiplied
-                                    // value rendered much brighter/harsher than intended).
-                                    egui::Color32::from_rgba_unmultiplied(130, 130, 145, 50),
-                                ),
+                                egui::Stroke::new(1.0, guide_color),
                             );
                         }
                     }
@@ -3212,5 +3221,54 @@ impl Editor {
                 // Render autocomplete popup on top of editor content.
                 self.autocomplete.show(ui.ctx(), palette, spacing);
             });
+    }
+}
+
+/// Returns `(level, start_row, end_row)` of the indentation block enclosing `cursor_row`,
+/// where `level` is the 1-based indent depth of the cursor line. `None` when the cursor
+/// line has no indentation (level 0).
+pub(crate) fn active_indent_block(
+    lines: &[String],
+    cursor_row: usize,
+    indent_size: usize,
+    spaces: bool,
+) -> Option<(usize, usize, usize)> {
+    let ind = |s: &str| -> usize {
+        let size = indent_size.max(1);
+        if spaces {
+            s.chars().take_while(|&c| c == ' ').count() / size
+        } else {
+            s.chars().take_while(|&c| c == '\t').count()
+        }
+    };
+    let level = ind(lines.get(cursor_row)?);
+    if level == 0 {
+        return None;
+    }
+    let mut start = cursor_row;
+    while start > 0 && ind(&lines[start - 1]) >= level {
+        start -= 1;
+    }
+    let mut end = cursor_row;
+    while end + 1 < lines.len() && ind(&lines[end + 1]) >= level {
+        end += 1;
+    }
+    Some((level, start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_indent_block_spans_the_enclosing_block() {
+        let lines = vec![
+            "fn x() {".to_string(),
+            "    a();".to_string(),
+            "    b();".to_string(),
+            "}".to_string(),
+        ];
+        let got = active_indent_block(&lines, 1, 4, true);
+        assert_eq!(got, Some((1, 1, 2)));
     }
 }
