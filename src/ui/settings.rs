@@ -162,16 +162,17 @@ impl SettingsPanel {
             // ═══════════════════════════════════════════════════════════════
             if setting_matches(&q, &[
                 "theme", "color", "background", "foreground", "accent",
-                "dark", "monokai", "solarized", "preset",
+                "dark", "monokai", "solarized", "light", "preset",
             ]) {
                 section_heading(ui, "Theme");
 
-                if setting_matches(&q, &["theme", "preset", "dark", "monokai", "solarized"]) {
+                if setting_matches(&q, &["theme", "preset", "dark", "monokai", "solarized", "light"]) {
                     const PRESETS: &[ThemePreset] = &[
                         ThemePreset { name: "dark",           label: "Dark",      bg: [30,30,30],   fg: [212,212,212], accent: [0,122,204] },
                         ThemePreset { name: "monokai",        label: "Monokai",   bg: [39,40,34],   fg: [248,248,242], accent: [166,226,46] },
                         ThemePreset { name: "solarized-dark", label: "Solarized", bg: [0,43,54],    fg: [131,148,150], accent: [38,139,210] },
                         ThemePreset { name: "one-dark",       label: "One Dark",  bg: [40,44,52],   fg: [171,178,191], accent: [97,175,239] },
+                        ThemePreset { name: "light",          label: "Light",     bg: [246,246,246], fg: [40,40,40],   accent: [0,103,184] },
                     ];
                     ui.horizontal(|ui| {
                         for preset in PRESETS {
