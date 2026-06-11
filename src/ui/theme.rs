@@ -26,6 +26,78 @@ pub(crate) fn on(c: Color32) -> Color32 {
     }
 }
 
+/// Semantic colours derived from the 3-colour `config::Theme` seed.
+/// Single source of truth for UI rendering. `Copy` so renderers can take it by value.
+#[derive(Clone, Copy)]
+pub struct Palette {
+    // Surfaces (depth hierarchy)
+    pub bg: Color32,
+    pub surface: Color32,
+    pub surface_raised: Color32,
+    pub overlay: Color32,
+    pub border: Color32,
+    pub border_strong: Color32,
+    // Text
+    pub text: Color32,
+    pub text_muted: Color32,
+    pub text_faint: Color32,
+    // Accent
+    pub accent: Color32,
+    pub accent_hover: Color32,
+    pub accent_muted: Color32,
+    pub on_accent: Color32,
+    // Semantic
+    pub error: Color32,
+    pub warning: Color32,
+    pub info: Color32,
+    pub success: Color32,
+    pub hint: Color32,
+    // Git
+    pub git_added: Color32,
+    pub git_modified: Color32,
+    pub git_removed: Color32,
+    // Editor
+    pub line_highlight: Color32,
+    pub selection: Color32,
+    pub selection_inactive: Color32,
+}
+
+impl Palette {
+    pub fn from_theme(theme: &crate::config::Theme) -> Self {
+        let bg = Color32::from_rgb(theme.background[0], theme.background[1], theme.background[2]);
+        let fg = Color32::from_rgb(theme.foreground[0], theme.foreground[1], theme.foreground[2]);
+        let accent = Color32::from_rgb(theme.accent[0], theme.accent[1], theme.accent[2]);
+        let toward = if is_dark(bg) { Color32::WHITE } else { Color32::BLACK };
+        let alpha = |c: Color32, a: u8| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+        Self {
+            bg,
+            surface: mix(bg, toward, 0.04),
+            surface_raised: mix(bg, toward, 0.08),
+            overlay: Color32::from_rgba_unmultiplied(0, 0, 0, 150),
+            border: mix(bg, toward, 0.14),
+            border_strong: mix(bg, toward, 0.25),
+            text: fg,
+            text_muted: mix(fg, bg, 0.40),
+            text_faint: mix(fg, bg, 0.65),
+            accent,
+            accent_hover: mix(accent, toward, 0.15),
+            accent_muted: alpha(accent, 48),
+            on_accent: on(accent),
+            error: Color32::from_rgb(229, 83, 75),
+            warning: Color32::from_rgb(229, 181, 67),
+            info: Color32::from_rgb(86, 156, 214),
+            success: Color32::from_rgb(80, 200, 120),
+            hint: mix(fg, bg, 0.40),
+            git_added: Color32::from_rgb(80, 200, 80),
+            git_modified: Color32::from_rgb(80, 150, 255),
+            git_removed: Color32::from_rgb(220, 80, 80),
+            line_highlight: mix(bg, toward, 0.06),
+            selection: alpha(accent, 95),
+            selection_inactive: alpha(accent, 45),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +124,36 @@ mod tests {
     fn on_picks_contrasting_text() {
         assert_eq!(on(Color32::from_rgb(0, 122, 204)), Color32::WHITE);
         assert_eq!(on(Color32::from_rgb(166, 226, 46)), Color32::from_rgb(20, 20, 20));
+    }
+
+    fn dark_theme() -> crate::config::Theme {
+        crate::config::Theme {
+            name: "dark".into(),
+            background: [30, 30, 30],
+            foreground: [212, 212, 212],
+            accent: [0, 122, 204],
+        }
+    }
+
+    #[test]
+    fn dark_palette_preserves_current_look() {
+        let p = Palette::from_theme(&dark_theme());
+        assert_eq!(p.surface.r(), 39);
+        assert_eq!(p.text_muted.r(), 139);
+        assert_eq!(p.on_accent, Color32::WHITE);
+        assert_eq!(p.selection.a(), 95);
+    }
+
+    #[test]
+    fn light_background_lifts_surfaces_downward() {
+        let light = crate::config::Theme {
+            name: "light".into(),
+            background: [246, 246, 246],
+            foreground: [40, 40, 40],
+            accent: [0, 103, 184],
+        };
+        let p = Palette::from_theme(&light);
+        assert!(p.surface.r() < p.bg.r());
+        assert!(p.border.r() < p.surface.r());
     }
 }
