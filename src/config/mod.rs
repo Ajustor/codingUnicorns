@@ -268,6 +268,8 @@ pub struct EditorConfig {
     pub show_gitignored: bool,
     #[serde(default = "default_true")]
     pub show_minimap: bool,
+    #[serde(default = "default_true")]
+    pub highlight_current_line: bool,
 }
 
 fn default_true() -> bool {
@@ -298,6 +300,7 @@ impl Default for Config {
                 auto_close_brackets: true,
                 show_gitignored: false,
                 show_minimap: true,
+                highlight_current_line: true,
             },
             font: FontConfig {
                 size: 14.0,

@@ -51,6 +51,7 @@ impl SettingsPanel {
                 "font", "size", "tab", "indent", "spaces", "tabs",
                 "line numbers", "word wrap", "auto-save", "auto-close", "brackets",
                 "gitignore", "hidden", "files", "editor", "minimap", "overview",
+                "current line", "highlight",
             ]) {
                 section_heading(ui, "Editor");
 
@@ -100,6 +101,10 @@ impl SettingsPanel {
 
                 if setting_matches(&q, &["minimap", "overview", "visualizer", "map"]) {
                     changed |= checkbox(ui, &mut config.editor.show_minimap, "Minimap");
+                }
+
+                if setting_matches(&q, &["current", "line", "highlight", "cursor"]) {
+                    changed |= checkbox(ui, &mut config.editor.highlight_current_line, "Highlight current line");
                 }
 
                 if setting_matches(&q, &["gitignore", "ignored", "hidden", "files", "tree"]) {
