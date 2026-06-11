@@ -98,6 +98,24 @@ impl Palette {
     }
 }
 
+/// Spacing + corner-rounding scale. Replaces scattered magic numbers. `Copy`.
+#[derive(Clone, Copy)]
+pub struct Spacing {
+    pub xs: f32,
+    pub sm: f32,
+    pub md: f32,
+    pub lg: f32,
+    pub round_sm: f32,
+    pub round_md: f32,
+    pub round_lg: f32,
+}
+
+impl Default for Spacing {
+    fn default() -> Self {
+        Self { xs: 2.0, sm: 4.0, md: 8.0, lg: 12.0, round_sm: 4.0, round_md: 6.0, round_lg: 8.0 }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
