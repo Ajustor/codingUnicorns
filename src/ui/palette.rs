@@ -69,6 +69,22 @@ impl PaletteCommand {
             Self::RestartLsp => "",
         }
     }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::ToggleTerminal => "open close integrated shell console",
+            Self::ToggleClaude => "ai assistant chat panel",
+            Self::ToggleSidebar => "explorer file tree side panel",
+            Self::GoToLine => "jump navigate to line number",
+            Self::SaveFile => "write persist current document",
+            Self::NewFile => "create blank document",
+            Self::OpenFolder => "open workspace project directory",
+            Self::OpenSettings => "preferences configuration options theme",
+            Self::Find => "search text in current file",
+            Self::FindReplace => "search and substitute replace text",
+            Self::RestartLsp => "restart language server diagnostics",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -164,11 +180,9 @@ impl CommandPalette {
         self.entries.clear();
         if commands_only {
             for cmd in PaletteCommand::all() {
+                let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
-                    || self
-                        .matcher
-                        .fuzzy_match(cmd.label(), &effective_query)
-                        .is_some()
+                    || self.matcher.fuzzy_match(&haystack, &effective_query).is_some()
                 {
                     self.entries.push(PaletteEntry::Command(cmd.clone()));
                 }
@@ -197,11 +211,9 @@ impl CommandPalette {
             }
             // Commands at the bottom
             for cmd in PaletteCommand::all() {
+                let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
-                    || self
-                        .matcher
-                        .fuzzy_match(cmd.label(), &effective_query)
-                        .is_some()
+                    || self.matcher.fuzzy_match(&haystack, &effective_query).is_some()
                 {
                     self.entries.push(PaletteEntry::Command(cmd.clone()));
                 }
