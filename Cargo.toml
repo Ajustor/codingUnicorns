@@ -20,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 notify = "7"
 git2 = "0.20"
-portable-pty = "0.8"
+portable-pty = "0.9"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
