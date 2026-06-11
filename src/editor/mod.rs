@@ -350,6 +350,8 @@ impl Editor {
         plugin_manager: &crate::plugin::manager::PluginManager,
         lsp_hover: Option<String>,
         breakpoint_lines: &std::collections::HashSet<usize>,
+        palette: crate::ui::theme::Palette,
+        spacing: crate::ui::theme::Spacing,
     ) {
         // Find / Replace bar (floating overlay)
         if self.show_find {
@@ -564,8 +566,9 @@ impl Editor {
             config.theme.accent[1],
             config.theme.accent[2],
         );
-        let line_num_color =
-            egui::Color32::from_rgb(fg_color.r() / 2, fg_color.g() / 2, fg_color.b() / 2);
+        let line_num_color = palette.text_muted;
+        let line_num_color_active = palette.text;
+        let (cur_row_for_gutter, _) = self.cursor.position();
         let cursor_color = accent_color;
         let find_highlight = egui::Color32::from_rgba_premultiplied(255, 200, 0, 35);
         let find_highlight_active = egui::Color32::from_rgba_premultiplied(255, 200, 0, 80);
@@ -2168,7 +2171,7 @@ impl Editor {
                                 egui::Align2::RIGHT_CENTER,
                                 (line_idx + 1).to_string(),
                                 font_id.clone(),
-                                line_num_color,
+                                if line_idx == cur_row_for_gutter { line_num_color_active } else { line_num_color },
                             );
                         }
                         line_idx = fold_end + 1;
@@ -2184,7 +2187,7 @@ impl Editor {
                             egui::Align2::RIGHT_CENTER,
                             (line_idx + 1).to_string(),
                             font_id.clone(),
-                            line_num_color,
+                            if line_idx == cur_row_for_gutter { line_num_color_active } else { line_num_color },
                         );
                     }
 
