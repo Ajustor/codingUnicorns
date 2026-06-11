@@ -24,34 +24,36 @@ pub fn confirm_dialog(
     title: &str,
     message: &str,
 ) -> Option<bool> {
-    let mut result = None;
-    egui::Area::new(egui::Id::new("confirm_scrim"))
-        .order(egui::Order::Background)
-        .show(ctx, |ui| {
-            let r = ctx.screen_rect();
-            ui.painter().rect_filled(r, 0.0, palette.overlay);
+    // egui::Modal renders a dimming, input-blocking backdrop, so clicks/keys can't
+    // reach the editor or file tree behind it — a real modal, unlike a bare Window.
+    let modal = egui::Modal::new(egui::Id::new("confirm_modal")).show(ctx, |ui| {
+        ui.set_max_width(360.0);
+        ui.heading(title);
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(message).color(palette.text));
+        ui.add_space(12.0);
+        let mut choice: Option<bool> = None;
+        ui.horizontal(|ui| {
+            if ui.button("Cancel").clicked() {
+                choice = Some(false);
+            }
+            // White on the red `error` fill stays readable on every theme
+            // (on_accent would be near-black on light-accent presets).
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("Delete").color(egui::Color32::WHITE))
+                        .fill(palette.error),
+                )
+                .clicked()
+            {
+                choice = Some(true);
+            }
         });
-    egui::Window::new(title)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.label(egui::RichText::new(message).color(palette.text));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    result = Some(false);
-                }
-                if ui
-                    .add(egui::Button::new(egui::RichText::new("Delete").color(palette.on_accent))
-                        .fill(palette.error))
-                    .clicked()
-                {
-                    result = Some(true);
-                }
-            });
-        });
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        choice
+    });
+    let mut result = modal.inner;
+    // Backdrop click or Escape → treat as cancel.
+    if result.is_none() && modal.should_close() {
         result = Some(false);
     }
     result

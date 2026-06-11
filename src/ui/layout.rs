@@ -1034,14 +1034,6 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         &breadcrumb_symbols,
                         breadcrumb_line,
                     );
-                    {
-                        let (cur_row, _) = app.editor.cursor.position();
-                        app.editor.current_symbol = app
-                            .outline_symbols
-                            .iter()
-                            .rfind(|s| s.line as usize <= cur_row)
-                            .map(|s| s.name.clone());
-                    }
                     app.editor.workspace_path = app.workspace_path.clone();
                     let lsp_hover = app.lsp_hover_result.take();
                     let bp_lines: std::collections::HashSet<usize> = app
@@ -1251,75 +1243,18 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     || !app.editor.buffer.to_string().is_empty()
                 {
                     // ── Breadcrumbs bar ───────────────────────────────────────────
-                    if let Some(ref path) = app.editor.current_path.clone() {
-                        let crumb_height = 22.0;
-                        let (crumb_rect, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), crumb_height),
-                            egui::Sense::hover(),
-                        );
-                        let crumb_bg = egui::Color32::from_rgb(
-                            app.config.theme.background[0].saturating_add(12),
-                            app.config.theme.background[1].saturating_add(12),
-                            app.config.theme.background[2].saturating_add(12),
-                        );
-                        ui.painter().rect_filled(crumb_rect, 0.0, crumb_bg);
-                        let mut crumb_ui = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(crumb_rect)
-                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        );
-                        crumb_ui.add_space(8.0);
-                        // Show up to last 3 path components
-                        let components: Vec<String> = path
-                            .components()
-                            .map(|c| c.as_os_str().to_string_lossy().to_string())
-                            .filter(|s| !s.is_empty() && s != "/")
-                            .collect();
-                        let shown: Vec<&str> = components
-                            .iter()
-                            .rev()
-                            .take(3)
-                            .rev()
-                            .map(|s| s.as_str())
-                            .collect();
-                        for (i, part) in shown.iter().enumerate() {
-                            if i > 0 {
-                                crumb_ui.label(
-                                    egui::RichText::new(" › ")
-                                        .color(egui::Color32::from_gray(90))
-                                        .size(11.0),
-                                );
-                            }
-                            crumb_ui.label(
-                                egui::RichText::new(*part)
-                                    .color(egui::Color32::from_gray(160))
-                                    .size(11.0),
-                            );
-                        }
-                        // Current symbol
-                        if let Some(ref sym) = app.editor.current_symbol.clone() {
-                            crumb_ui.label(
-                                egui::RichText::new(" › ")
-                                    .color(egui::Color32::from_gray(90))
-                                    .size(11.0),
-                            );
-                            crumb_ui.label(
-                                egui::RichText::new(sym.as_str())
-                                    .color(egui::Color32::from_rgb(180, 200, 255))
-                                    .size(11.0),
-                            );
-                        }
-                    }
-
-                    // Update current symbol from outline
-                    {
-                        let (cur_row, _) = app.editor.cursor.position();
-                        app.editor.current_symbol = app
-                            .outline_symbols
-                            .iter()
-                            .rfind(|s| s.line as usize <= cur_row)
-                            .map(|s| s.name.clone());
-                    }
+                    let breadcrumb_path = app.editor.current_path.clone();
+                    let breadcrumb_workspace = app.workspace_path.clone();
+                    let breadcrumb_symbols = app.outline_symbols.clone();
+                    let breadcrumb_line = app.editor.cursor.position().0 as u32;
+                    crate::ui::breadcrumbs::render(
+                        ui,
+                        app.palette,
+                        breadcrumb_path.as_deref(),
+                        breadcrumb_workspace.as_deref(),
+                        &breadcrumb_symbols,
+                        breadcrumb_line,
+                    );
 
                     app.editor.workspace_path = app.workspace_path.clone();
                     let lsp_hover = app.lsp_hover_result.take();

@@ -147,8 +147,6 @@ pub struct Editor {
     /// O(file) recompute every frame on files that have no foldable regions).
     fold_regions_version: i32,
     // ── Breadcrumbs ─────────────────────────────────────────────────────────
-    /// Current symbol name at cursor (populated by app from outline).
-    pub current_symbol: Option<String>,
     /// Set true for one frame after an explicit Ctrl+S save, so the app can toast.
     pub just_saved: bool,
     // ── Cursor blink ────────────────────────────────────────────────────────
@@ -244,7 +242,6 @@ impl Editor {
             folded_lines: std::collections::HashSet::new(),
             fold_regions: Vec::new(),
             fold_regions_version: -1,
-            current_symbol: None,
             just_saved: false,
             line_diff: Vec::new(),
             line_diff_path: None,
@@ -288,7 +285,6 @@ impl Editor {
         self.folded_lines.clear();
         self.fold_regions.clear();
         self.fold_regions_version = -1;
-        self.current_symbol = None;
         self.hover_tooltip_anchor = None;
         self.hover_popup_rect = None;
         self.word_occurrences.clear();
@@ -2114,11 +2110,14 @@ impl Editor {
 
                 // Compute the active indent block (for guide highlighting)
                 let active_block = {
-                    let lines: Vec<String> = (0..self.buffer.num_lines())
-                        .map(|i| self.buffer.line(i))
-                        .collect();
                     let (cr, _) = self.cursor.position();
-                    active_indent_block(&lines, cr, self.detected_indent_size.max(1), self.detected_indent_spaces)
+                    active_indent_block(
+                        self.buffer.num_lines(),
+                        cr,
+                        self.detected_indent_size.max(1),
+                        self.detected_indent_spaces,
+                        |i| self.buffer.line(i),
+                    )
                 };
 
                 // Iterate visible lines, skipping folded content
@@ -2285,16 +2284,22 @@ impl Editor {
                     if line_idx == cur_row {
                         let has_diag = self.diagnostics.iter().any(|d| d.line as usize == line_idx);
                         if has_diag && config.editor.line_numbers {
+                            // Pick the most severe diagnostic on the line (Error > Warning > Info/Hint).
                             let sev_color = self
                                 .diagnostics
                                 .iter()
                                 .filter(|d| d.line as usize == line_idx)
+                                .min_by_key(|d| match d.severity {
+                                    crate::lsp::client::DiagSeverity::Error => 0,
+                                    crate::lsp::client::DiagSeverity::Warning => 1,
+                                    crate::lsp::client::DiagSeverity::Info => 2,
+                                    _ => 3,
+                                })
                                 .map(|d| match d.severity {
                                     crate::lsp::client::DiagSeverity::Error => palette.error,
                                     crate::lsp::client::DiagSeverity::Warning => palette.warning,
                                     _ => palette.info,
                                 })
-                                .next()
                                 .unwrap_or(palette.warning);
                             painter.text(
                                 egui::pos2(
@@ -3235,10 +3240,11 @@ impl Editor {
 /// where `level` is the 1-based indent depth of the cursor line. `None` when the cursor
 /// line has no indentation (level 0).
 pub(crate) fn active_indent_block(
-    lines: &[String],
+    num_lines: usize,
     cursor_row: usize,
     indent_size: usize,
     spaces: bool,
+    line_at: impl Fn(usize) -> String,
 ) -> Option<(usize, usize, usize)> {
     let ind = |s: &str| -> usize {
         let size = indent_size.max(1);
@@ -3248,16 +3254,21 @@ pub(crate) fn active_indent_block(
             s.chars().take_while(|&c| c == '\t').count()
         }
     };
-    let level = ind(lines.get(cursor_row)?);
+    if cursor_row >= num_lines {
+        return None;
+    }
+    let level = ind(&line_at(cursor_row));
     if level == 0 {
         return None;
     }
+    // Scan outward from the cursor row only as far as the block extends — cost is
+    // proportional to block size, not file size (no full-buffer materialization).
     let mut start = cursor_row;
-    while start > 0 && ind(&lines[start - 1]) >= level {
+    while start > 0 && ind(&line_at(start - 1)) >= level {
         start -= 1;
     }
     let mut end = cursor_row;
-    while end + 1 < lines.len() && ind(&lines[end + 1]) >= level {
+    while end + 1 < num_lines && ind(&line_at(end + 1)) >= level {
         end += 1;
     }
     Some((level, start, end))
@@ -3275,7 +3286,7 @@ mod tests {
             "    b();".to_string(),
             "}".to_string(),
         ];
-        let got = active_indent_block(&lines, 1, 4, true);
+        let got = active_indent_block(lines.len(), 1, 4, true, |i| lines[i].clone());
         assert_eq!(got, Some((1, 1, 2)));
     }
 }
