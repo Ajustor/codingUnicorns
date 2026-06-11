@@ -214,7 +214,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 }
             };
             app.status_bar
-                .show(ui, &app.editor, &app.git_status, lsp_status);
+                .show(ui, &app.editor, &app.git_status, lsp_status, app.palette);
         });
 
     if app.show_terminal {
