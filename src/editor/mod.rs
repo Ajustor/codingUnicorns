@@ -2214,8 +2214,8 @@ impl Editor {
                             .copied()
                             .unwrap_or(DIFF_UNCHANGED);
                         let bar_color = match diff_status {
-                            DIFF_ADDED => Some(egui::Color32::from_rgb(80, 200, 80)),
-                            DIFF_MODIFIED => Some(egui::Color32::from_rgb(80, 150, 255)),
+                            DIFF_ADDED => Some(palette.git_added),
+                            DIFF_MODIFIED => Some(palette.git_modified),
                             _ => None,
                         };
                         if let Some(color) = bar_color {
@@ -2269,6 +2269,17 @@ impl Editor {
                     if line_idx == cur_row {
                         let has_diag = self.diagnostics.iter().any(|d| d.line as usize == line_idx);
                         if has_diag && config.editor.line_numbers {
+                            let sev_color = self
+                                .diagnostics
+                                .iter()
+                                .filter(|d| d.line as usize == line_idx)
+                                .map(|d| match d.severity {
+                                    crate::lsp::client::DiagSeverity::Error => palette.error,
+                                    crate::lsp::client::DiagSeverity::Warning => palette.warning,
+                                    _ => palette.info,
+                                })
+                                .next()
+                                .unwrap_or(palette.warning);
                             painter.text(
                                 egui::pos2(
                                     rect.min.x + blame_extra_width + 2.0,
@@ -2277,7 +2288,7 @@ impl Editor {
                                 egui::Align2::LEFT_CENTER,
                                 "💡",
                                 egui::FontId::proportional(11.0),
-                                egui::Color32::from_rgb(255, 220, 50),
+                                sev_color,
                             );
                         }
                     }
@@ -2697,13 +2708,9 @@ impl Editor {
                             };
                             let x_diag_end = (x_diag_start + diag_width).min(rect.right());
                             let color = match diag.severity {
-                                crate::lsp::client::DiagSeverity::Error => {
-                                    egui::Color32::from_rgb(255, 80, 80)
-                                }
-                                crate::lsp::client::DiagSeverity::Warning => {
-                                    egui::Color32::from_rgb(255, 200, 0)
-                                }
-                                _ => egui::Color32::from_rgb(100, 150, 255),
+                                crate::lsp::client::DiagSeverity::Error => palette.error,
+                                crate::lsp::client::DiagSeverity::Warning => palette.warning,
+                                _ => palette.info,
                             };
                             let amp = 1.5_f32;
                             let period = 4.0_f32;
