@@ -131,6 +131,7 @@ impl CommandPalette {
         ctx: &egui::Context,
         _file_tree: &mut FileTree,
         workspace: &mut Option<PathBuf>,
+        palette: crate::ui::theme::Palette,
     ) -> (Option<PathBuf>, Option<PaletteCommand>) {
         // Load file cache once when palette opens (cached_files is cleared in toggle()).
         if self.cached_files.is_empty() {
@@ -303,7 +304,7 @@ impl CommandPalette {
                                     let resp = ui.selectable_label(
                                         is_selected,
                                         egui::RichText::new(label)
-                                            .color(egui::Color32::from_rgb(180, 200, 255)),
+                                            .color(palette.accent),
                                     );
                                     if is_selected {
                                         resp.scroll_to_me(None);

@@ -400,7 +400,7 @@ impl Editor {
                         }
                         // Case-sensitive toggle (Aa)
                         let cs_color = if self.find_case_sensitive {
-                            egui::Color32::from_rgb(100, 180, 255)
+                            palette.accent
                         } else {
                             egui::Color32::GRAY
                         };
@@ -417,7 +417,7 @@ impl Editor {
                         }
                         // Regex toggle (.*)
                         let re_color = if self.find_use_regex {
-                            egui::Color32::from_rgb(100, 180, 255)
+                            palette.accent
                         } else {
                             egui::Color32::GRAY
                         };
@@ -3008,7 +3008,7 @@ impl Editor {
                             .constrain(true)
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::new()
-                                    .fill(egui::Color32::from_rgb(30, 30, 30))
+                                    .fill(palette.surface_raised)
                                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(75)))
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::same(10))
@@ -3134,7 +3134,7 @@ impl Editor {
                             .constrain(true)
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::new()
-                                    .fill(egui::Color32::from_rgb(36, 26, 26))
+                                    .fill(palette.surface_raised)
                                     .stroke(egui::Stroke::new(1.5, border_color))
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::symmetric(10, 6))
@@ -3184,7 +3184,7 @@ impl Editor {
                             .constrain(true)
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::new()
-                                    .fill(egui::Color32::from_rgb(25, 40, 60))
+                                    .fill(palette.surface_raised)
                                     .stroke(egui::Stroke::new(
                                         1.0,
                                         egui::Color32::from_rgb(80, 130, 200),
