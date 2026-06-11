@@ -1111,6 +1111,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         &app.plugin_manager,
                         lsp_hover,
                         &bp_lines,
+                        app.palette,
+                        app.spacing,
                     );
                 } else {
                     welcome_screen(&mut left_ui);
@@ -1187,6 +1189,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             &app.plugin_manager,
                             None,
                             &no_bp,
+                            app.palette,
+                            app.spacing,
                         );
                     }
                 }
@@ -1382,7 +1386,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         })
                         .unwrap_or_default();
                     app.editor
-                        .show(ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines);
+                        .show(ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines, app.palette, app.spacing);
                 } else {
                     welcome_screen(ui);
                 }
