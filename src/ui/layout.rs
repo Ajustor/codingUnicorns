@@ -1,6 +1,5 @@
 use crate::app::file_ops::is_image_file;
 use crate::app::CodingUnicorns;
-use crate::config::Config;
 use crate::terminal::Terminal;
 use crate::ui::run_panel::RunPanelAction;
 use crate::ui::statusbar::LspStatus;
@@ -21,7 +20,9 @@ pub enum SidebarTab {
 }
 
 pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
-    ctx.set_visuals(dark_visuals(&app.config));
+    let (palette, spacing) = crate::ui::theme::apply_theme(ctx, &app.config);
+    app.palette = palette;
+    app.spacing = spacing;
 
     // ── Auto-save (2-second inactivity) ──────────────────────────────────────
     if app.editor.content_version != app.last_edit_version_seen {
@@ -1432,43 +1433,3 @@ fn find_free_path(parent: &std::path::Path, base: &str, _is_dir: bool) -> std::p
     parent.join(base) // fallback
 }
 
-fn dark_visuals(config: &Config) -> egui::Visuals {
-    let mut v = egui::Visuals::dark();
-    let bg = egui::Color32::from_rgb(
-        config.theme.background[0],
-        config.theme.background[1],
-        config.theme.background[2],
-    );
-    let fg = egui::Color32::from_rgb(
-        config.theme.foreground[0],
-        config.theme.foreground[1],
-        config.theme.foreground[2],
-    );
-    let accent = egui::Color32::from_rgb(
-        config.theme.accent[0],
-        config.theme.accent[1],
-        config.theme.accent[2],
-    );
-    v.panel_fill = egui::Color32::from_rgb(
-        config.theme.background[0].saturating_add(7),
-        config.theme.background[1].saturating_add(7),
-        config.theme.background[2].saturating_add(7),
-    );
-    v.window_fill = bg;
-    v.override_text_color = Some(fg);
-    v.selection.bg_fill =
-        egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 80);
-    v.selection.stroke = egui::Stroke::new(1.0, accent);
-    v.hyperlink_color = accent;
-    v.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(
-        config.theme.background[0].saturating_add(15),
-        config.theme.background[1].saturating_add(15),
-        config.theme.background[2].saturating_add(15),
-    );
-    v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(
-        config.theme.background[0].saturating_add(30),
-        config.theme.background[1].saturating_add(30),
-        config.theme.background[2].saturating_add(30),
-    );
-    v
-}
