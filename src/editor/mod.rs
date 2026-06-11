@@ -2178,6 +2178,21 @@ impl Editor {
                         continue;
                     }
 
+                    // Current-line highlight (suppressed while a selection is active, to avoid noise).
+                    let (hl_row, _) = self.cursor.position();
+                    let selection_active = sel_range.is_some()
+                        || self.extra_cursors.iter().any(|c| c.selection_range().is_some());
+                    if config.editor.highlight_current_line && line_idx == hl_row && !selection_active {
+                        painter.rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(rect.min.x, y),
+                                egui::pos2(rect.max.x, y + line_height),
+                            ),
+                            0.0,
+                            palette.line_highlight,
+                        );
+                    }
+
                     if config.editor.line_numbers {
                         painter.text(
                             egui::pos2(
