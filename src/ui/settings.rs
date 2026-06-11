@@ -408,12 +408,33 @@ fn keybinding_group(
     rebinding: &mut Option<String>,
     changed: &mut bool,
 ) {
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new(title).strong().size(12.0).color(egui::Color32::from_rgb(180, 180, 180)));
-    ui.add_space(2.0);
-    for (label, binding) in bindings.iter_mut() {
-        keybinding_row(ui, label, binding, rebinding, changed);
-    }
+    // Center the whole group (title + table) as a fixed-width column on screen.
+    let col_w = 440.0_f32;
+    let pad = ((ui.available_width() - col_w) / 2.0).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(pad);
+        ui.vertical(|ui| {
+            ui.set_max_width(col_w);
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(title)
+                    .strong()
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(180, 180, 180)),
+            );
+            ui.add_space(4.0);
+            egui::Grid::new(format!("kb_grid_{title}"))
+                .num_columns(2)
+                .striped(true)
+                .spacing(egui::vec2(24.0, 7.0))
+                .min_col_width(190.0)
+                .show(ui, |ui| {
+                    for (label, binding) in bindings.iter_mut() {
+                        keybinding_row(ui, label, binding, rebinding, changed);
+                    }
+                });
+        });
+    });
 }
 
 fn keybinding_row(
@@ -423,43 +444,42 @@ fn keybinding_row(
     rebinding: &mut Option<String>,
     changed: &mut bool,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).size(12.0));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let is_rebinding = rebinding.as_deref() == Some(label);
-            if is_rebinding {
-                ui.label(
-                    egui::RichText::new("Press a key...")
-                        .color(egui::Color32::from_rgb(255, 200, 0))
-                        .monospace()
-                        .size(11.0),
-                );
-                ui.input(|i| {
-                    for event in &i.events {
-                        if let egui::Event::Key { key, modifiers, pressed: true, .. } = event {
-                            binding.key = format!("{key:?}");
-                            binding.ctrl = modifiers.ctrl;
-                            binding.shift = modifiers.shift;
-                            binding.alt = modifiers.alt;
-                            *rebinding = None;
-                            *changed = true;
-                        }
+    // Column 1: action label.
+    ui.label(egui::RichText::new(label).size(12.0));
+    // Column 2: the shortcut (click to rebind).
+    let is_rebinding = rebinding.as_deref() == Some(label);
+    if is_rebinding {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Press a key...")
+                    .color(egui::Color32::from_rgb(255, 200, 0))
+                    .monospace()
+                    .size(11.0),
+            );
+            ui.input(|i| {
+                for event in &i.events {
+                    if let egui::Event::Key { key, modifiers, pressed: true, .. } = event {
+                        binding.key = format!("{key:?}");
+                        binding.ctrl = modifiers.ctrl;
+                        binding.shift = modifiers.shift;
+                        binding.alt = modifiers.alt;
+                        *rebinding = None;
+                        *changed = true;
                     }
-                });
-                if ui.small_button("Cancel").clicked() {
-                    *rebinding = None;
                 }
-            } else {
-                let btn = egui::Button::new(
-                    egui::RichText::new(binding.display()).monospace().size(10.0),
-                )
-                .min_size(egui::vec2(80.0, 0.0));
-                if ui.add(btn).on_hover_text("Click to rebind").clicked() {
-                    *rebinding = Some(label.to_string());
-                }
+            });
+            if ui.small_button("Cancel").clicked() {
+                *rebinding = None;
             }
         });
-    });
+    } else {
+        let btn = egui::Button::new(egui::RichText::new(binding.display()).monospace().size(10.0))
+            .min_size(egui::vec2(80.0, 0.0));
+        if ui.add(btn).on_hover_text("Click to rebind").clicked() {
+            *rebinding = Some(label.to_string());
+        }
+    }
+    ui.end_row();
 }
 
 /// Returns true if any keyword matches the search query (empty query matches all).

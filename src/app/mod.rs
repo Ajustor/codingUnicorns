@@ -119,6 +119,9 @@ pub struct CodingUnicorns {
     pub show_code_actions_menu: bool,
     pub code_actions_pos: egui::Pos2,
     pub code_actions_last_request: Option<std::time::Instant>,
+    /// True when the code-actions menu should open as soon as the LSP responds — set only on
+    /// an explicit Ctrl+. request, so the menu never pops up on its own (e.g. while typing).
+    pub code_actions_show_pending: bool,
     /// Pending signature help request id.
     pub pending_signature_id: Option<u64>,
     /// Pending LSP formatting request id.
@@ -284,6 +287,7 @@ impl CodingUnicorns {
             show_code_actions_menu: false,
             code_actions_pos: egui::Pos2::ZERO,
             code_actions_last_request: None,
+            code_actions_show_pending: false,
             pending_signature_id: None,
             pending_format_id: None,
             last_edit_version_seen: 0,
@@ -689,9 +693,11 @@ impl eframe::App for CodingUnicorns {
                 } else if Some(id) == self.pending_code_actions_id {
                     self.code_actions = LspClient::parse_code_actions(&response);
                     self.pending_code_actions_id = None;
-                    if !self.code_actions.is_empty() {
+                    // Only pop the menu when the user explicitly asked (Ctrl+.), never on its own.
+                    if self.code_actions_show_pending && !self.code_actions.is_empty() {
                         self.show_code_actions_menu = true;
                     }
+                    self.code_actions_show_pending = false;
                 } else if Some(id) == self.pending_signature_id {
                     self.editor.signature_help_text = LspClient::parse_signature_help(&response);
                     self.pending_signature_id = None;
@@ -855,25 +861,6 @@ impl eframe::App for CodingUnicorns {
             }
         }
 
-        // Auto-trigger code actions when cursor line has diagnostics.
-        {
-            let (cur_row, _) = self.editor.cursor.position();
-            let has_diag = self
-                .editor
-                .diagnostics
-                .iter()
-                .any(|d| d.line as usize == cur_row);
-            let should_request = has_diag
-                && self.pending_code_actions_id.is_none()
-                && self
-                    .code_actions_last_request
-                    .map(|t| t.elapsed() > std::time::Duration::from_secs(1))
-                    .unwrap_or(true);
-            if should_request {
-                self.request_code_actions_at_cursor();
-            }
-        }
-
         // Reload blame data when path changes.
         if self.editor.show_blame {
             let current_path = self.editor.current_path.clone();
@@ -901,7 +888,9 @@ impl eframe::App for CodingUnicorns {
             self.start_rename();
         }
         if want_code_actions {
-            self.show_code_actions_menu = true;
+            // Explicit request (Ctrl+.): fetch fresh actions; the menu opens when they arrive.
+            self.code_actions_show_pending = true;
+            self.request_code_actions_at_cursor();
         }
         if want_blame {
             self.editor.show_blame = !self.editor.show_blame;

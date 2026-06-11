@@ -19,6 +19,14 @@ mod ui;
 
 use app::CodingUnicorns;
 
+// On Windows, stop a child process (notably the integrated terminal's shell) from popping a
+// blocking OS "Application Error" modal when its loader hits a critical error. The error mode is
+// inherited by spawned children, so the terminal can surface failures in-panel instead.
+#[cfg(windows)]
+extern "system" {
+    fn SetErrorMode(u_mode: u32) -> u32;
+}
+
 /// Path of the crash log: `<config_dir>/coding-unicorns/crash.log`.
 fn crash_log_path() -> std::path::PathBuf {
     let mut path = dirs_next::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -135,6 +143,12 @@ fn main() -> eframe::Result<()> {
 
     install_panic_logger();
     env_logger::init();
+
+    // SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+    #[cfg(windows)]
+    unsafe {
+        SetErrorMode(0x0001 | 0x0002 | 0x8000);
+    }
 
     let args: Vec<String> = std::env::args().collect();
     let initial_path = args.get(1).map(std::path::PathBuf::from);

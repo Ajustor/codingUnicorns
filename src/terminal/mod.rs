@@ -189,7 +189,7 @@ impl Terminal {
         Some((rx, writer, child))
     }
 
-    fn update(&mut self) {
+    pub fn update(&mut self) {
         let mut got_bytes = false;
         if let Some(rx) = &self.rx {
             while let Ok(chunk) = rx.try_recv() {
@@ -201,6 +201,25 @@ impl Terminal {
         }
         if got_bytes {
             self.needs_scroll = true;
+        }
+        // Reply to any terminal queries the shell/ConPTY emitted (e.g. the `ESC[6n`
+        // cursor-position request). Without this the shell stalls and never prompts.
+        if !self.performer.responses.is_empty() {
+            if let Some(w) = &mut self.writer {
+                let resp = std::mem::take(&mut self.performer.responses);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(std::env::temp_dir().join("cu_csi.txt"))
+                {
+                    use std::io::Write as _;
+                    let _ = writeln!(f, "FLUSH {} bytes: {:?}", resp.len(), String::from_utf8_lossy(&resp));
+                }
+                let _ = w.write_all(&resp);
+                let _ = w.flush();
+            } else {
+                self.performer.responses.clear();
+            }
         }
     }
 
