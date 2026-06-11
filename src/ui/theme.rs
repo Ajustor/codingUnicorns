@@ -116,6 +116,38 @@ impl Default for Spacing {
     }
 }
 
+/// Rebuild the palette + spacing from config, push the matching egui `Visuals`
+/// and UI `text_styles` into the context, and return them for renderers to read.
+/// Called once per frame at the top of `layout::render`; cost is negligible.
+pub fn apply_theme(ctx: &egui::Context, config: &crate::config::Config) -> (Palette, Spacing) {
+    let p = Palette::from_theme(&config.theme);
+    let spacing = Spacing::default();
+
+    let mut v = if is_dark(p.bg) { egui::Visuals::dark() } else { egui::Visuals::light() };
+    v.panel_fill = p.surface;
+    v.window_fill = p.surface_raised;
+    v.extreme_bg_color = p.bg;
+    v.override_text_color = Some(p.text);
+    v.hyperlink_color = p.accent;
+    v.selection.bg_fill = p.selection;
+    v.selection.stroke = egui::Stroke::new(1.0, p.accent);
+    v.widgets.inactive.weak_bg_fill = p.surface;
+    v.widgets.hovered.weak_bg_fill = p.border;
+    v.widgets.active.weak_bg_fill = p.border_strong;
+    v.window_stroke = egui::Stroke::new(1.0, p.border);
+    ctx.set_visuals(v);
+
+    ctx.style_mut(|style| {
+        use egui::{FontFamily, FontId, TextStyle};
+        style.text_styles.insert(TextStyle::Small, FontId::new(12.0, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Body, FontId::new(13.0, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional));
+    });
+
+    (p, spacing)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

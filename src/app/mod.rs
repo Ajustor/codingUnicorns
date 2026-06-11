@@ -54,6 +54,8 @@ pub struct CodingUnicorns {
     pub terminals: Vec<Terminal>,
     pub active_terminal: usize,
     pub status_bar: StatusBar,
+    pub palette: crate::ui::theme::Palette,
+    pub spacing: crate::ui::theme::Spacing,
     pub command_palette: CommandPalette,
     pub shortcuts_help: ShortcutsHelp,
     pub settings_panel: SettingsPanel,
@@ -211,6 +213,7 @@ impl CodingUnicorns {
             }
         }
 
+        let palette = crate::ui::theme::Palette::from_theme(&config.theme);
         let mut app = Self {
             config,
             keybinds,
@@ -228,6 +231,8 @@ impl CodingUnicorns {
             terminals: vec![Terminal::new(&shell_override)],
             active_terminal: 0,
             status_bar: StatusBar::new(),
+            palette,
+            spacing: crate::ui::theme::Spacing::default(),
             command_palette: CommandPalette::new(),
             shortcuts_help: ShortcutsHelp::new(),
             settings_panel: SettingsPanel::new(),
