@@ -119,6 +119,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 ui.separator();
                 if ui.button("Save              Ctrl+S").clicked() {
                     let _ = app.editor.save();
+                    app.toast("Saved");
                     ui.close_menu();
                 }
                 ui.separator();
@@ -1367,6 +1368,28 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             Some(false) => app.pending_delete = None,
             None => {}
         }
+    }
+
+    // Toast on explicit Ctrl+S save (handled inside the editor, signalled via a flag).
+    {
+        let mut saved = false;
+        if app.editor.just_saved {
+            app.editor.just_saved = false;
+            saved = true;
+        }
+        if let Some(e2) = app.editor2.as_mut() {
+            if e2.just_saved {
+                e2.just_saved = false;
+                saved = true;
+            }
+        }
+        if saved {
+            app.toast("Saved");
+        }
+    }
+
+    if crate::ui::widgets::render_toasts(ctx, app.palette, app.spacing, &mut app.toasts) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
 }
 

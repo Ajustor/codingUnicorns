@@ -56,3 +56,47 @@ pub fn confirm_dialog(
     }
     result
 }
+
+pub struct Toast {
+    pub message: String,
+    pub born: std::time::Instant,
+}
+
+const TOAST_TTL_MS: u128 = 2000;
+const TOAST_FADE_MS: u128 = 400;
+
+/// Draw active toasts bottom-centre and drop expired ones. Returns true if any remain
+/// (so the caller can request a repaint).
+pub fn render_toasts(ctx: &egui::Context, palette: Palette, spacing: Spacing, toasts: &mut Vec<Toast>) -> bool {
+    toasts.retain(|t| t.born.elapsed().as_millis() < TOAST_TTL_MS);
+    if toasts.is_empty() {
+        return false;
+    }
+    egui::Area::new(egui::Id::new("toasts"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -48.0])
+        .show(ctx, |ui| {
+            for t in toasts.iter() {
+                let elapsed = t.born.elapsed().as_millis();
+                let remaining = TOAST_TTL_MS.saturating_sub(elapsed);
+                let a = if remaining < TOAST_FADE_MS {
+                    (remaining as f32 / TOAST_FADE_MS as f32 * 255.0) as u8
+                } else {
+                    255
+                };
+                popup_frame(palette, spacing).show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(&t.message)
+                            .color(egui::Color32::from_rgba_unmultiplied(
+                                palette.text.r(),
+                                palette.text.g(),
+                                palette.text.b(),
+                                a,
+                            )),
+                    );
+                });
+                ui.add_space(spacing.sm);
+            }
+        });
+    true
+}
