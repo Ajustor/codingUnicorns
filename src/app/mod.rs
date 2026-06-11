@@ -1062,7 +1062,7 @@ impl eframe::App for CodingUnicorns {
         if self.command_palette.is_open() {
             let (opened_file, cmd) =
                 self.command_palette
-                    .show(ctx, &mut self.file_tree, &mut self.workspace_path);
+                    .show(ctx, &mut self.file_tree, &mut self.workspace_path, self.palette);
             if let Some(path) = opened_file {
                 self.open_file(path);
             }
