@@ -346,6 +346,9 @@ impl Editor {
         self.content_version = self.content_version.wrapping_add(1);
     }
 
+    // Render entry point: the parameter list is wide because it threads shared
+    // services + the theme palette/spacing into one draw call.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
