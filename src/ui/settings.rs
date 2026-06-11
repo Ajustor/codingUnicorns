@@ -3,6 +3,9 @@ pub struct SettingsPanel {
     rebinding: Option<String>,
     search_query: String,
     search_focused: bool,
+    /// Cached shell list — `list_available_shells()` spawns `where`/`which`
+    /// subprocesses, so it must NOT run every frame. Computed once, lazily.
+    available_shells: Option<Vec<(String, String)>>,
 }
 
 impl SettingsPanel {
@@ -12,6 +15,7 @@ impl SettingsPanel {
             rebinding: None,
             search_query: String::new(),
             search_focused: false,
+            available_shells: None,
         }
     }
 
@@ -122,7 +126,11 @@ impl SettingsPanel {
                 section_heading(ui, "Terminal");
 
                 if setting_matches(&q, &["shell", "terminal", "pwsh", "powershell", "cmd", "bash", "zsh"]) {
-                    let available = crate::terminal::list_available_shells();
+                    // Cached: avoid re-spawning `where`/`which` every frame (a major
+                    // source of lag on this page when egui repaints on hover/scroll).
+                    let available = self
+                        .available_shells
+                        .get_or_insert_with(crate::terminal::list_available_shells);
                     ui.label("Shell");
                     ui.add_space(2.0);
 
@@ -135,7 +143,7 @@ impl SettingsPanel {
                     }
 
                     // One button per detected shell
-                    for (name, path) in &available {
+                    for (name, path) in available.iter() {
                         let is_selected = config.shell == *path;
                         let label = if is_selected {
                             format!("{name} (current)")
