@@ -2404,12 +2404,7 @@ impl Editor {
                                         egui::pos2(occ_ex - self.scroll_offset.x, y + line_height),
                                     ),
                                     2.0,
-                                    egui::Color32::from_rgba_premultiplied(
-                                        accent_color.r(),
-                                        accent_color.g(),
-                                        accent_color.b(),
-                                        15,
-                                    ),
+                                    palette.accent_muted,
                                 );
                             }
                         }
@@ -2446,12 +2441,7 @@ impl Editor {
                                         egui::pos2(ex, y + line_height),
                                     ),
                                     0.0,
-                                    egui::Color32::from_rgba_premultiplied(
-                                        accent_color.r(),
-                                        accent_color.g(),
-                                        accent_color.b(),
-                                        60,
-                                    ),
+                                    palette.selection,
                                 );
                             }
                         }
@@ -2497,12 +2487,7 @@ impl Editor {
                                             egui::pos2(ex, y + line_height),
                                         ),
                                         0.0,
-                                        egui::Color32::from_rgba_premultiplied(
-                                            accent_color.r(),
-                                            accent_color.g(),
-                                            accent_color.b(),
-                                            60,
-                                        ),
+                                        palette.selection,
                                     );
                                 }
                             }
