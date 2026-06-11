@@ -9,3 +9,4 @@ pub mod search;
 pub mod settings;
 pub mod shortcuts;
 pub mod statusbar;
+pub mod theme;
