@@ -568,12 +568,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             match action {
                                 FileTreeAction::OpenFile(path) => app.open_file(path),
                                 FileTreeAction::Delete(path) => {
-                                    if path.is_dir() {
-                                        let _ = std::fs::remove_dir_all(&path);
-                                    } else {
-                                        let _ = std::fs::remove_file(&path);
-                                    }
-                                    app.file_tree.reload_children();
+                                    app.pending_delete = Some(path);
                                 }
                                 FileTreeAction::Rename(old_path, new_name) => {
                                     if let Some(parent) = old_path.parent() {
@@ -1347,6 +1342,32 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 }
             }
         });
+
+    if let Some(path) = app.pending_delete.clone() {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let kind = if path.is_dir() { "folder" } else { "file" };
+        match crate::ui::widgets::confirm_dialog(
+            ctx,
+            app.palette,
+            "Confirm delete",
+            &format!("Delete {kind} \"{name}\"? This cannot be undone."),
+        ) {
+            Some(true) => {
+                if path.is_dir() {
+                    let _ = std::fs::remove_dir_all(&path);
+                } else {
+                    let _ = std::fs::remove_file(&path);
+                }
+                app.file_tree.reload_children();
+                app.pending_delete = None;
+            }
+            Some(false) => app.pending_delete = None,
+            None => {}
+        }
+    }
 }
 
 fn welcome_screen(ui: &mut egui::Ui) {
