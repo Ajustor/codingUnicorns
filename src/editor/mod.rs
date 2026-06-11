@@ -3203,7 +3203,7 @@ impl Editor {
                 }
 
                 // Render autocomplete popup on top of editor content.
-                self.autocomplete.show(ui.ctx());
+                self.autocomplete.show(ui.ctx(), palette, spacing);
             });
     }
 }
