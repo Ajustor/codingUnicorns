@@ -1,3 +1,4 @@
+pub mod breadcrumbs;
 pub mod debugger;
 pub mod minimap;
 pub mod git_panel;
