@@ -150,6 +150,8 @@ pub struct CodingUnicorns {
     pub image_texture: Option<(egui::TextureHandle, egui::Vec2)>,
     /// Path queued for deletion — held until the confirmation dialog resolves.
     pub pending_delete: Option<std::path::PathBuf>,
+    /// Transient toast notifications (shown bottom-centre, fade out after 2 s).
+    pub toasts: Vec<crate::ui::widgets::Toast>,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -297,6 +299,7 @@ impl CodingUnicorns {
             pending_image: None,
             image_texture: None,
             pending_delete: None,
+            toasts: Vec::new(),
         };
 
         if let Some(path) = initial_path {
@@ -343,6 +346,13 @@ impl CodingUnicorns {
         }
 
         app
+    }
+
+    pub fn toast(&mut self, message: impl Into<String>) {
+        self.toasts.push(crate::ui::widgets::Toast {
+            message: message.into(),
+            born: std::time::Instant::now(),
+        });
     }
 }
 
@@ -820,6 +830,7 @@ impl eframe::App for CodingUnicorns {
                             let insert_spaces = self.editor.detected_indent_spaces;
                             self.pending_format_id =
                                 Some(client.request_formatting(&uri, tab_size, insert_spaces));
+                            self.toast("Formatted");
                         }
                     }
                 }
@@ -1078,6 +1089,7 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::GoToLine => self.editor.show_goto_line = true,
                     PaletteCommand::SaveFile => {
                         let _ = self.editor.save();
+                        self.toast("Saved");
                     }
                     PaletteCommand::NewFile => self.open_new_file(),
                     PaletteCommand::OpenFolder => {
@@ -1098,6 +1110,7 @@ impl eframe::App for CodingUnicorns {
                         if let Some(path) = self.editor.current_path.clone() {
                             self.ensure_lsp_for_file(&path);
                         }
+                        self.toast("LSP restarted");
                     }
                 }
             }

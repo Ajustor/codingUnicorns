@@ -149,6 +149,8 @@ pub struct Editor {
     // ── Breadcrumbs ─────────────────────────────────────────────────────────
     /// Current symbol name at cursor (populated by app from outline).
     pub current_symbol: Option<String>,
+    /// Set true for one frame after an explicit Ctrl+S save, so the app can toast.
+    pub just_saved: bool,
     // ── Cursor blink ────────────────────────────────────────────────────────
     /// Epoch-ms of the last cursor movement / keypress, used to reset blink.
     cursor_blink_epoch: std::time::Instant,
@@ -243,6 +245,7 @@ impl Editor {
             fold_regions: Vec::new(),
             fold_regions_version: -1,
             current_symbol: None,
+            just_saved: false,
             line_diff: Vec::new(),
             line_diff_path: None,
             format_request_pending: false,
@@ -1321,6 +1324,7 @@ impl Editor {
                                         // Save
                                         egui::Key::S if modifiers.ctrl => {
                                             let _ = self.save();
+                                            self.just_saved = true;
                                         }
 
                                         // Undo
