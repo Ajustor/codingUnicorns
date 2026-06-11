@@ -148,6 +148,8 @@ pub struct CodingUnicorns {
     pub pending_image: Option<ImageData>,
     /// Cached egui texture + original pixel size for the currently-displayed image.
     pub image_texture: Option<(egui::TextureHandle, egui::Vec2)>,
+    /// Path queued for deletion — held until the confirmation dialog resolves.
+    pub pending_delete: Option<std::path::PathBuf>,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -294,6 +296,7 @@ impl CodingUnicorns {
             split_ratio: 0.5,
             pending_image: None,
             image_texture: None,
+            pending_delete: None,
         };
 
         if let Some(path) = initial_path {
