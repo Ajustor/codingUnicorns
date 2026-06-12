@@ -204,7 +204,7 @@ impl CommandPalette {
                         Some((score, p.clone()))
                     })
                     .collect();
-                scored.sort_by(|a, b| b.0.cmp(&a.0));
+                scored.sort_by_key(|b| std::cmp::Reverse(b.0));
                 for (_, p) in scored.into_iter().take(20) {
                     self.entries.push(PaletteEntry::File(p));
                 }

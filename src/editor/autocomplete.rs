@@ -76,7 +76,7 @@ impl Autocomplete {
 
         // Highest score first. `sort_by` is stable, so ties keep insertion order
         // (keywords before buffer words).
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|b| std::cmp::Reverse(b.0));
         scored.truncate(50);
 
         self.suggestions = scored

@@ -370,7 +370,7 @@ impl LspClient {
                     .map(|a| a.len())
                     .unwrap_or(1)
                     .max(1);
-                let items: Vec<Value> = std::iter::repeat(Value::Null).take(n).collect();
+                let items: Vec<Value> = std::iter::repeat_n(Value::Null, n).collect();
                 json!({ "jsonrpc": "2.0", "id": id, "result": items })
             }
             _ => json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),

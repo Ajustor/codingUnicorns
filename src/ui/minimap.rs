@@ -89,7 +89,7 @@ pub fn render(
     // ── Fold regions (background bands showing code blocks) ────────────
     // Sort by size (largest first) so smaller nested regions draw on top.
     let mut sorted_regions: Vec<(usize, usize)> = data.fold_regions.to_vec();
-    sorted_regions.sort_by(|a, b| (b.1 - b.0).cmp(&(a.1 - a.0)));
+    sorted_regions.sort_by_key(|b| std::cmp::Reverse(b.1 - b.0));
 
     // Compute nesting depth per region for color variation.
     for &(start, end) in &sorted_regions {
