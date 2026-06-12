@@ -357,17 +357,13 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     app.show_terminal = false;
                 }
 
-                // Drain EVERY terminal's PTY each frame (not just the visible one) so none
-                // stalls waiting on an unanswered query like ESC[6n — fixes 2nd+ terminals.
-                for term in app.terminals.iter_mut() {
-                    term.update();
-                }
-                // Terminal content
+                // PTYs are pumped centrally every frame in `App::update` (even when this
+                // panel is hidden), so the active terminal is already drained here.
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 if let Some(term) = app.terminals.get_mut(app.active_terminal) {
                     term.show_content(ui, &app.config);
-                    // Keep the UI repainting while the terminal is visible so PTY output is
-                    // drained promptly (and queries like ESC[6n are answered).
+                    // Keep the UI repainting at full rate while the panel is visible so
+                    // live output appears promptly.
                     ui.ctx().request_repaint();
                 }
             });

@@ -5,6 +5,7 @@ mod app;
 mod config;
 pub mod dap;
 mod editor;
+mod fonts;
 pub mod extension;
 mod filetree;
 mod git;
@@ -172,29 +173,12 @@ fn main() -> eframe::Result<()> {
         "Coding Unicorns",
         options,
         Box::new(|cc| {
-            // Load Phosphor icon font so sidebar icons render correctly
-            let mut fonts = egui::FontDefinitions::default();
-            egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-
-            // Add Symbola as a fallback so emoji and symbols (🦄, ●, ⚙, etc.) render correctly
-            fonts.font_data.insert(
-                "Symbola".to_owned(),
-                egui::FontData::from_static(include_bytes!("../assets/Symbola.ttf")).into(),
-            );
-            fonts
-                .families
-                .get_mut(&egui::FontFamily::Proportional)
-                .unwrap()
-                .push("Symbola".to_owned());
-            fonts
-                .families
-                .get_mut(&egui::FontFamily::Monospace)
-                .unwrap()
-                .push("Symbola".to_owned());
-
-            cc.egui_ctx.set_fonts(fonts);
-
-            Ok(Box::new(CodingUnicorns::new(cc, initial_path)))
+            let app = CodingUnicorns::new(cc, initial_path);
+            // Build the font set (Phosphor + Symbola, plus the user's chosen
+            // monospace font if configured) and install it.
+            cc.egui_ctx
+                .set_fonts(fonts::build_font_definitions(app.config.font.path.as_deref()));
+            Ok(Box::new(app))
         }),
     )
 }

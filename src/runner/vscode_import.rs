@@ -172,7 +172,11 @@ fn synth_command(typ: &str, program: Option<&str>) -> Option<String> {
         "python" | "debugpy" => Some(format!("python {}", program.unwrap_or("${file}"))),
         "node" | "pwa-node" => Some(format!("node {}", program.unwrap_or("${file}"))),
         "go" => Some(format!("go run {}", program.unwrap_or("."))),
-        // Types compilés / divers : on exécute directement le programme s'il existe.
+        // .NET : `program` est une .dll compilée, non exécutable directement
+        // par un shell — il faut la lancer via `dotnet <dll>`.
+        "coreclr" | "dotnet" => Some(format!("dotnet {}", program.unwrap_or("run"))),
+        // Types compilés natifs (lldb/cppdbg → .exe) / divers : on exécute
+        // directement le programme s'il existe.
         _ => program.map(|p| p.to_string()),
     }
 }
@@ -335,6 +339,26 @@ mod tests {
         assert_eq!(specs[0].0, "Dbg");
         assert_eq!(specs[0].1.adapter_cmd, "python");
         assert_eq!(specs[0].1.adapter_args, vec!["-m", "debugpy.adapter"]);
+    }
+
+    #[test]
+    fn launch_dotnet_coreclr_synthesizes_dotnet_command() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{ "configurations": [
+                { "name": ".NET Core Launch (web)", "type": "coreclr", "request": "launch",
+                  "program": "${workspaceFolder}/bin/Debug/net8.0/App.dll" }
+            ] }"#,
+        )
+        .unwrap();
+        let (configs, specs) = parse_launch(&json);
+        assert_eq!(configs.len(), 1);
+        // A bare .dll path is not shell-executable; it must be run via `dotnet`.
+        assert_eq!(
+            configs[0].command,
+            "dotnet ${workspaceRoot}/bin/Debug/net8.0/App.dll"
+        );
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].1.adapter_cmd, "netcoredbg");
     }
 
     #[test]

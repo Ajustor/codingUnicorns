@@ -36,14 +36,18 @@ impl CodingUnicorns {
         });
 
         let Some(cfg) = cfg else {
+            self.toast("No debug configuration available for this file or run config.");
             return;
         };
 
         if let Err(e) = self.dap.start_session(&cfg, &workspace, current_file.as_deref()) {
-            self.show_terminal = true;
-            if let Some(term) = self.terminals.get_mut(self.active_terminal) {
-                term.send_input(&format!("echo 'DAP error: {e}'\n"));
-            }
+            // Surface the failure: a missing adapter (e.g. `netcoredbg` not on
+            // PATH) would otherwise fail silently and look like "nothing happens".
+            self.toast(format!(
+                "Debug failed: adapter '{}' could not start ({e}).",
+                cfg.adapter_cmd
+            ));
+            return;
         }
         self.show_sidebar = true;
         self.sidebar_tab = SidebarTab::Debug;

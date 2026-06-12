@@ -280,6 +280,10 @@ fn default_true() -> bool {
 pub struct FontConfig {
     pub size: f32,
     pub family: String,
+    /// Path to a custom monospace font file (`.ttf`/`.otf`) used by the editor and
+    /// terminal. `None` keeps the bundled default. Loaded at startup and on change.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 impl Default for Config {
@@ -305,6 +309,7 @@ impl Default for Config {
             font: FontConfig {
                 size: 14.0,
                 family: "monospace".to_string(),
+                path: None,
             },
             keybindings: KeyBindings::default(),
             last_workspace: None,

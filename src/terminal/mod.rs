@@ -21,15 +21,25 @@ pub struct Terminal {
     writer: Option<Box<dyn Write + Send>>,
     parser: Parser,
     _child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    /// The PTY master MUST be kept alive for the lifetime of the terminal. On
+    /// Windows, dropping it closes the pseudoconsole, so the shell produces no
+    /// output and never reaches a prompt. We never touch it after construction.
+    _master: Option<Box<dyn portable_pty::MasterPty + Send>>,
     /// Set to true when new output arrives — triggers a one-shot scroll to bottom.
     needs_scroll: bool,
     /// Whether this terminal has keyboard focus.
     focused: bool,
+    /// Active mouse selection as (anchor_line, anchor_col, head_line, head_col) in
+    /// rendered-line-index space (0 = first scrollback line, then visible rows).
+    /// `None` when nothing is selected.
+    selection: Option<(usize, usize, usize, usize)>,
+    /// True while the primary button is held and dragging out a selection.
+    selecting: bool,
 }
 
 impl Terminal {
     pub fn new(user_shell: &str) -> Self {
-        let (rx, writer, child, shell_name, error) = Self::spawn_shell(user_shell);
+        let (rx, writer, child, master, shell_name, error) = Self::spawn_shell(user_shell);
         let mut parser = Parser::new();
         let mut performer = AnsiPerformer::new();
         let msg = if let Some(err) = error {
@@ -47,8 +57,11 @@ impl Terminal {
             writer,
             parser,
             _child: child,
+            _master: master,
             needs_scroll: true,
             focused: false,
+            selection: None,
+            selecting: false,
         }
     }
 
@@ -58,9 +71,9 @@ impl Terminal {
     pub fn new_command(command: &str, cwd: Option<&std::path::Path>) -> Self {
         let mut parser = Parser::new();
         let mut performer = AnsiPerformer::new();
-        let (rx, writer, child, error) = match Self::try_spawn(command, &[], cwd) {
-            Some((rx, w, c)) => (Some(rx), Some(w), Some(c), None),
-            None => (None, None, None, Some(command.to_string())),
+        let (rx, writer, child, master, error) = match Self::try_spawn(command, &[], cwd) {
+            Some((rx, w, c, m)) => (Some(rx), Some(w), Some(c), Some(m), None),
+            None => (None, None, None, None, Some(command.to_string())),
         };
         let msg = if let Some(err) = error {
             format!("Failed to start `{err}`.\r\nIs it installed and on PATH?\r\n")
@@ -77,8 +90,11 @@ impl Terminal {
             writer,
             parser,
             _child: child,
+            _master: master,
             needs_scroll: true,
             focused: true,
+            selection: None,
+            selecting: false,
         }
     }
 
@@ -87,6 +103,7 @@ impl Terminal {
         Option<Receiver<Vec<u8>>>,
         Option<Box<dyn Write + Send>>,
         Option<Box<dyn portable_pty::Child + Send + Sync>>,
+        Option<Box<dyn portable_pty::MasterPty + Send>>,
         String,
         Option<String>, // error message if all attempts failed
     ) {
@@ -99,7 +116,14 @@ impl Terminal {
 
         // Try spawning the resolved shell
         if let Some(result) = Self::try_spawn(&shell_path, &shell_args, None) {
-            return (Some(result.0), Some(result.1), Some(result.2), shell_name, None);
+            return (
+                Some(result.0),
+                Some(result.1),
+                Some(result.2),
+                Some(result.3),
+                shell_name,
+                None,
+            );
         }
 
         let mut tried = shell_path.clone();
@@ -112,6 +136,7 @@ impl Terminal {
                     Some(result.0),
                     Some(result.1),
                     Some(result.2),
+                    Some(result.3),
                     "cmd".to_string(),
                     None,
                 );
@@ -127,6 +152,7 @@ impl Terminal {
                     Some(result.0),
                     Some(result.1),
                     Some(result.2),
+                    Some(result.3),
                     "sh".to_string(),
                     None,
                 );
@@ -134,7 +160,7 @@ impl Terminal {
             tried.push_str(", /bin/sh");
         }
 
-        (None, None, None, shell_name, Some(tried))
+        (None, None, None, None, shell_name, Some(tried))
     }
 
     #[allow(clippy::type_complexity)]
@@ -146,6 +172,7 @@ impl Terminal {
         Receiver<Vec<u8>>,
         Box<dyn Write + Send>,
         Box<dyn portable_pty::Child + Send + Sync>,
+        Box<dyn portable_pty::MasterPty + Send>,
     )> {
         let pty_system = native_pty_system();
         let size = PtySize {
@@ -169,6 +196,11 @@ impl Terminal {
         let child = pair.slave.spawn_command(cmd).ok()?;
         let reader = pair.master.try_clone_reader().ok()?;
         let writer = pair.master.take_writer().ok()?;
+        // Keep the master alive and hand it back to the caller. Dropping it (as the
+        // old code did by letting `pair` fall out of scope) closes the Windows
+        // pseudoconsole, so the shell emits no output and never prompts. The slave
+        // is intentionally dropped now (recommended, so EOF is seen when the child exits).
+        let master = pair.master;
 
         let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = unbounded();
         std::thread::spawn(move || {
@@ -186,7 +218,7 @@ impl Terminal {
             }
         });
 
-        Some((rx, writer, child))
+        Some((rx, writer, child, master))
     }
 
     pub fn update(&mut self) {
@@ -207,14 +239,6 @@ impl Terminal {
         if !self.performer.responses.is_empty() {
             if let Some(w) = &mut self.writer {
                 let resp = std::mem::take(&mut self.performer.responses);
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(std::env::temp_dir().join("cu_csi.txt"))
-                {
-                    use std::io::Write as _;
-                    let _ = writeln!(f, "FLUSH {} bytes: {:?}", resp.len(), String::from_utf8_lossy(&resp));
-                }
                 let _ = w.write_all(&resp);
                 let _ = w.flush();
             } else {
@@ -259,15 +283,56 @@ impl Terminal {
 
         let term_rect = ui.available_rect_before_wrap();
 
-        let pointer_pos = ui.ctx().input(|i| i.pointer.interact_pos());
-        let any_click = ui.ctx().input(|i| i.pointer.any_click());
+        let mono = egui::FontId::monospace(13.5);
+        let char_w = ui.fonts(|f| f.glyph_width(&mono, 'M')).max(1.0);
+
+        let (pointer_pos, primary_pressed, primary_down, primary_released, any_click) = ui
+            .ctx()
+            .input(|i| {
+                (
+                    i.pointer.interact_pos(),
+                    i.pointer.primary_pressed(),
+                    i.pointer.primary_down(),
+                    i.pointer.primary_released(),
+                    i.pointer.any_click(),
+                )
+            });
         if any_click {
             if let Some(pos) = pointer_pos {
                 self.focused = term_rect.contains(pos);
             }
         }
-
+        // Pressing inside the terminal (including the start of a drag-select) focuses it.
+        if primary_pressed {
+            if let Some(pos) = pointer_pos {
+                if term_rect.contains(pos) {
+                    self.focused = true;
+                }
+            }
+        }
         let focused = self.focused;
+
+        // Normalised selection (start <= end), skipping zero-width selections.
+        let sel_norm = self.selection.and_then(|(a_l, a_c, h_l, h_c)| {
+            if (a_l, a_c) == (h_l, h_c) {
+                None
+            } else if (a_l, a_c) <= (h_l, h_c) {
+                Some((a_l, a_c, h_l, h_c))
+            } else {
+                Some((h_l, h_c, a_l, a_c))
+            }
+        });
+        let last_screen_row = self.last_screen_row();
+        // Cell under the pointer this frame, in rendered-line-index space.
+        let mut pointer_hit: Option<(usize, usize)> = None;
+
+        let row_style = RowStyle {
+            line_height: LINE_HEIGHT,
+            default_fg,
+            term_bg,
+            clip_width: content_width,
+            char_w,
+        };
 
         egui::Frame::new()
             .fill(term_bg)
@@ -283,38 +348,35 @@ impl Terminal {
                 let scroll_out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .id_salt("term_scroll")
+                    .drag_to_scroll(false)
                     .stick_to_bottom(scroll_to_bottom)
                     .show(ui, |ui| {
                         ui.style_mut().spacing.item_spacing.y = 0.0;
 
                         let cursor_row = self.performer.buf.cursor_row;
                         let cursor_col = self.performer.buf.cursor_col;
-
                         let num_rows = self.performer.buf.rows.len();
                         let cursor_row = cursor_row.min(num_rows.saturating_sub(1));
-                        let last_screen_row = self
-                            .performer
-                            .buf
-                            .rows
-                            .iter()
-                            .rposition(|row| {
-                                row.iter()
-                                    .any(|c| c.ch != ' ' || c.fg != DEFAULT_FG || c.bold)
-                            })
-                            .map_or(0, |i| i + 1)
-                            .max(cursor_row + 1)
-                            .min(num_rows);
+
+                        let mut li = 0usize;
+                        let mut hit_test = |rect: egui::Rect, li: usize| {
+                            if let Some(p) = pointer_pos {
+                                if p.y >= rect.top() && p.y < rect.bottom() && p.x >= rect.left() {
+                                    pointer_hit = Some((li, col_at(p.x, rect.left(), char_w)));
+                                }
+                            }
+                        };
 
                         for row in &self.performer.buf.scrollback {
-                            render_row(
+                            let rect = render_row(
                                 ui,
                                 row,
-                                LINE_HEIGHT,
-                                default_fg,
-                                term_bg,
-                                content_width,
+                                row_style,
                                 None,
+                                sel_cols(sel_norm, li, row.len()),
                             );
+                            hit_test(rect, li);
+                            li += 1;
                         }
                         for (i, row) in self.performer.buf.rows[..last_screen_row]
                             .iter()
@@ -325,15 +387,15 @@ impl Terminal {
                             } else {
                                 None
                             };
-                            render_row(
+                            let rect = render_row(
                                 ui,
                                 row,
-                                LINE_HEIGHT,
-                                default_fg,
-                                term_bg,
-                                content_width,
+                                row_style,
                                 cur,
+                                sel_cols(sel_norm, li, row.len()),
                             );
+                            hit_test(rect, li);
+                            li += 1;
                         }
                     });
 
@@ -350,11 +412,34 @@ impl Terminal {
                 }
             });
 
+        // ── Drag selection ─────────────────────────────────────────────────
+        if primary_pressed {
+            if let (Some(pos), Some(hit)) = (pointer_pos, pointer_hit) {
+                if term_rect.contains(pos) {
+                    // Start a fresh selection at the pressed cell.
+                    self.selection = Some((hit.0, hit.1, hit.0, hit.1));
+                    self.selecting = true;
+                }
+            }
+        } else if self.selecting && primary_down {
+            if let (Some((a_l, a_c, _, _)), Some(hit)) = (self.selection, pointer_hit) {
+                self.selection = Some((a_l, a_c, hit.0, hit.1));
+            }
+        }
+        if primary_released {
+            self.selecting = false;
+        }
+
         if focused {
             let mut to_send = String::new();
+            let mut copy_requested = false;
             ui.ctx().input_mut(|i| {
                 i.events.retain(|event| match event {
                     egui::Event::Text(text) => {
+                        to_send.push_str(text);
+                        false
+                    }
+                    egui::Event::Paste(text) => {
                         to_send.push_str(text);
                         false
                     }
@@ -364,7 +449,11 @@ impl Terminal {
                         modifiers,
                         ..
                     } => {
-                        if modifiers.ctrl && !modifiers.alt {
+                        if modifiers.ctrl && modifiers.shift && matches!(key, egui::Key::C) {
+                            // Ctrl+Shift+C copies the selection; plain Ctrl+C stays SIGINT.
+                            copy_requested = true;
+                            false
+                        } else if modifiers.ctrl && !modifiers.alt {
                             let seq: Option<&str> = match key {
                                 egui::Key::A => Some("\x01"),
                                 egui::Key::B => Some("\x02"),
@@ -418,26 +507,92 @@ impl Terminal {
                     _ => true,
                 });
             });
+            if copy_requested {
+                if let Some(text) = self.selected_text() {
+                    if !text.is_empty() {
+                        ui.ctx().copy_text(text);
+                    }
+                }
+            }
             if !to_send.is_empty() {
                 self.send_input(&to_send);
             }
         }
     }
+
+    /// Number of visible rows worth rendering — through the cursor row or the last
+    /// non-blank row, whichever is lower. Kept in sync with the render loop so
+    /// selection line indices match what's drawn.
+    fn last_screen_row(&self) -> usize {
+        let buf = &self.performer.buf;
+        let num_rows = buf.rows.len();
+        let cursor_row = buf.cursor_row.min(num_rows.saturating_sub(1));
+        buf.rows
+            .iter()
+            .rposition(|row| row.iter().any(|c| c.ch != ' ' || c.fg != DEFAULT_FG || c.bold))
+            .map_or(0, |i| i + 1)
+            .max(cursor_row + 1)
+            .min(num_rows)
+    }
+
+    /// The currently selected text (scrollback + visible rows), or `None` if the
+    /// selection is empty. Trailing whitespace is trimmed per line.
+    fn selected_text(&self) -> Option<String> {
+        let (s_l, s_c, e_l, e_c) = match self.selection? {
+            (a_l, a_c, h_l, h_c) if (a_l, a_c) == (h_l, h_c) => return None,
+            (a_l, a_c, h_l, h_c) if (a_l, a_c) <= (h_l, h_c) => (a_l, a_c, h_l, h_c),
+            (a_l, a_c, h_l, h_c) => (h_l, h_c, a_l, a_c),
+        };
+        let buf = &self.performer.buf;
+        let last = self.last_screen_row();
+        let lines: Vec<&Vec<Cell>> = buf
+            .scrollback
+            .iter()
+            .chain(buf.rows[..last].iter())
+            .collect();
+        let mut out = String::new();
+        for li in s_l..=e_l {
+            if let Some(row) = lines.get(li) {
+                if let Some((c0, c1)) = sel_cols(Some((s_l, s_c, e_l, e_c)), li, row.len()) {
+                    let text: String = row[c0..=c1].iter().map(|c| c.ch).collect();
+                    out.push_str(text.trim_end());
+                }
+            }
+            if li != e_l {
+                out.push('\n');
+            }
+        }
+        Some(out)
+    }
 }
 
 // ─── Rendering helper ─────────────────────────────────────────────────────────
 
-fn render_row(
-    ui: &mut egui::Ui,
-    row: &[Cell],
+/// Per-frame constants shared by every rendered row.
+#[derive(Clone, Copy)]
+struct RowStyle {
     line_height: f32,
     default_fg: Color32,
     term_bg: Color32,
     clip_width: f32,
+    char_w: f32,
+}
+
+fn render_row(
+    ui: &mut egui::Ui,
+    row: &[Cell],
+    style: RowStyle,
     cursor_col: Option<usize>,
-) {
+    sel_cols: Option<(usize, usize)>,
+) -> egui::Rect {
+    let RowStyle {
+        line_height,
+        default_fg,
+        term_bg,
+        clip_width,
+        char_w,
+    } = style;
     let font_id = egui::FontId::monospace(13.5);
-    let char_w = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
 
     let last = row
         .iter()
@@ -446,6 +601,21 @@ fn render_row(
 
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(clip_width, line_height), egui::Sense::hover());
+
+    // Selection highlight, painted behind text and cursor.
+    if let Some((c0, c1)) = sel_cols {
+        let x0 = rect.left() + c0 as f32 * char_w;
+        let x1 = rect.left() + (c1 as f32 + 1.0) * char_w;
+        let sel_rect = egui::Rect::from_min_max(
+            egui::pos2(x0.min(rect.right()), rect.top()),
+            egui::pos2(x1.min(rect.right()), rect.bottom()),
+        );
+        ui.painter().rect_filled(
+            sel_rect,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(70, 110, 180, 110),
+        );
+    }
 
     if let Some(col) = cursor_col {
         let prefix: String = row.iter().take(col).map(|c| c.ch).collect();
@@ -471,7 +641,7 @@ fn render_row(
     }
 
     if last == 0 {
-        return;
+        return rect;
     }
 
     let mut job = egui::text::LayoutJob {
@@ -509,4 +679,36 @@ fn render_row(
 
     let galley = ui.fonts(|f| f.layout_job(job));
     ui.painter().galley(rect.left_top(), galley, default_fg);
+    rect
+}
+
+/// Inclusive column range to highlight on rendered line `li` for a normalised
+/// selection `(start_line, start_col, end_line, end_col)`, or `None` if the line
+/// is outside the selection.
+fn sel_cols(
+    sel: Option<(usize, usize, usize, usize)>,
+    li: usize,
+    row_len: usize,
+) -> Option<(usize, usize)> {
+    let (s_l, s_c, e_l, e_c) = sel?;
+    if li < s_l || li > e_l || row_len == 0 {
+        return None;
+    }
+    let last = row_len - 1;
+    let (c0, c1) = if s_l == e_l {
+        (s_c, e_c)
+    } else if li == s_l {
+        (s_c, last)
+    } else if li == e_l {
+        (0, e_c)
+    } else {
+        (0, last)
+    };
+    let c1 = c1.min(last);
+    Some((c0.min(c1), c1))
+}
+
+/// Column index under x-coordinate `x` for a row whose left edge is at `left`.
+fn col_at(x: f32, left: f32, char_w: f32) -> usize {
+    ((x - left) / char_w).floor().max(0.0) as usize
 }

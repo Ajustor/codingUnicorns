@@ -1125,11 +1125,19 @@ impl eframe::App for CodingUnicorns {
 
         self.poll_claude(ctx);
 
-        // Request periodic repaint while terminal is visible (for live output).
-        // Using a short interval instead of immediate repaint avoids burning CPU
-        // at 60+ FPS when the terminal is idle.
-        if self.show_terminal {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        // Pump every terminal's PTY each frame — even when the panel is hidden — so a
+        // freshly-spawned shell's startup query (ESC[6n) is answered immediately and it
+        // reaches a prompt, instead of stalling until the panel is first opened.
+        // (PowerShell blocks on this cursor-position request and never prompts otherwise.)
+        for term in self.terminals.iter_mut() {
+            term.update();
+        }
+        // Keep a low-frequency repaint tick while any terminal is alive so the pump
+        // above keeps running when idle/hidden. When visible, the terminal view also
+        // requests immediate repaints for live output.
+        if !self.terminals.is_empty() {
+            let interval = if self.show_terminal { 100 } else { 150 };
+            ctx.request_repaint_after(std::time::Duration::from_millis(interval));
         }
     }
 }

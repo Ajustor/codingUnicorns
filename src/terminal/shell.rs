@@ -1,5 +1,8 @@
 /// Standard args for PowerShell in an embedded terminal.
-const PS_ARGS: &[&str] = &["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"];
+/// NOTE: we deliberately do NOT pass `-NoProfile` — loading the user's profile is
+/// what initialises their real prompt (e.g. oh-my-posh), aliases and functions, so
+/// the embedded terminal matches the shell they use outside the editor.
+const PS_ARGS: &[&str] = &["-NoLogo", "-ExecutionPolicy", "Bypass"];
 
 /// A shell candidate with its path, arguments, and a human-readable name.
 struct ShellCandidate {

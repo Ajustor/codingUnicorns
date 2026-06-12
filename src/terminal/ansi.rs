@@ -41,16 +41,6 @@ impl Perform for AnsiPerformer {
         let n0 = ns.first().copied().unwrap_or(0);
         let n1 = ns.get(1).copied().unwrap_or(0);
         // TEMP DEBUG — log only DSR queries (ESC[5n / ESC[6n) to keep noise low.
-        if action == 'n' {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(std::env::temp_dir().join("cu_csi.txt"))
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "DSR query 'n' {ns:?}");
-            }
-        }
         match action {
             'A' => self.buf.move_cursor('A', n0.max(1) as usize),
             'B' => self.buf.move_cursor('B', n0.max(1) as usize),

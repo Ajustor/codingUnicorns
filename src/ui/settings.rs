@@ -71,6 +71,53 @@ impl SettingsPanel {
                     ui.add_space(4.0);
                 }
 
+                if setting_matches(&q, &["font", "family", "typeface", "nerd"]) {
+                    ui.horizontal(|ui| {
+                        ui.label("Editor & terminal font");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Default").clicked() && config.font.path.is_some() {
+                                config.font.path = None;
+                                changed = true;
+                                ui.ctx()
+                                    .set_fonts(crate::fonts::build_font_definitions(None));
+                            }
+                            if ui.button("Browse…").clicked() {
+                                if let Some(file) = rfd::FileDialog::new()
+                                    .add_filter("Fonts", &["ttf", "otf"])
+                                    .pick_file()
+                                {
+                                    let p = file.to_string_lossy().to_string();
+                                    ui.ctx().set_fonts(
+                                        crate::fonts::build_font_definitions(Some(&p)),
+                                    );
+                                    config.font.path = Some(p);
+                                    changed = true;
+                                }
+                            }
+                        });
+                    });
+                    let current = config
+                        .font
+                        .path
+                        .as_deref()
+                        .and_then(|p| std::path::Path::new(p).file_name())
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Default (bundled)".to_string());
+                    ui.label(
+                        egui::RichText::new(format!("  {current}"))
+                            .size(11.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "  Pick a .ttf/.otf (e.g. a Nerd Font) so oh-my-posh glyphs render.",
+                        )
+                        .size(10.0)
+                        .color(egui::Color32::GRAY),
+                    );
+                    ui.add_space(4.0);
+                }
+
                 if setting_matches(&q, &["tab", "size", "indent"]) {
                     ui.horizontal(|ui| {
                         ui.label("Tab size");
