@@ -3,12 +3,16 @@ use vte::{Params, Perform};
 
 pub(super) struct AnsiPerformer {
     pub(super) buf: ScreenBuffer,
+    /// Bytes to write back to the PTY in answer to terminal queries (e.g. the
+    /// cursor-position report that replies to `ESC[6n`). Drained by `Terminal::update`.
+    pub(super) responses: Vec<u8>,
 }
 
 impl AnsiPerformer {
     pub(super) fn new() -> Self {
         Self {
             buf: ScreenBuffer::new(200, 50),
+            responses: Vec::new(),
         }
     }
 }
@@ -38,6 +42,17 @@ impl Perform for AnsiPerformer {
             .collect();
         let n0 = ns.first().copied().unwrap_or(0);
         let n1 = ns.get(1).copied().unwrap_or(0);
+        // TEMP DEBUG — log only DSR queries (ESC[5n / ESC[6n) to keep noise low.
+        if action == 'n' {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(std::env::temp_dir().join("cu_csi.txt"))
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "DSR query 'n' {ns:?}");
+            }
+        }
         match action {
             'A' => self.buf.move_cursor('A', n0.max(1) as usize),
             'B' => self.buf.move_cursor('B', n0.max(1) as usize),
@@ -47,6 +62,18 @@ impl Perform for AnsiPerformer {
             'J' => self.buf.erase_display(n0),
             'K' => self.buf.erase_line(n0),
             'm' => self.buf.set_sgr(&ns),
+            'n' => {
+                // Device Status Report. ConPTY sends `ESC[6n` during startup and waits for a
+                // cursor-position reply; without it, shells like PowerShell never print a prompt.
+                if n0 == 6 {
+                    let row = self.buf.cursor_row + 1;
+                    let col = self.buf.cursor_col + 1;
+                    self.responses
+                        .extend_from_slice(format!("\x1b[{row};{col}R").as_bytes());
+                } else if n0 == 5 {
+                    self.responses.extend_from_slice(b"\x1b[0n");
+                }
+            }
             'l' | 'h' => {}
             _ => {}
         }

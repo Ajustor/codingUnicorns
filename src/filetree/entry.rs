@@ -37,27 +37,43 @@ impl FileEntry {
         }
     }
 
-    /// Reload this directory's children and recursively reload any expanded subdirectories.
+    /// Reload this directory's children, preserving the expansion state of the
+    /// whole subtree (at every depth). The full set of expanded paths is captured
+    /// BEFORE reloading — otherwise `load_children` wipes the subtree and nested
+    /// folders would collapse.
     pub fn reload_recursive(&mut self, repo: Option<&git2::Repository>, show_gitignored: bool) {
         if !self.is_dir {
             return;
         }
-        // Remember which subdirectories were expanded.
-        let expanded: std::collections::HashSet<PathBuf> = self
-            .children
-            .iter()
-            .filter(|c| c.is_dir && c.is_expanded)
-            .map(|c| c.path.clone())
-            .collect();
-
+        let mut expanded = std::collections::HashSet::new();
+        self.collect_expanded(&mut expanded);
         self.load_children(repo, show_gitignored);
+        self.restore_expanded(&expanded, repo, show_gitignored);
+    }
 
-        // Re-expand and recursively reload previously expanded children.
+    /// Collect the paths of all expanded directories in this subtree.
+    fn collect_expanded(&self, set: &mut std::collections::HashSet<PathBuf>) {
+        for child in &self.children {
+            if child.is_dir && child.is_expanded {
+                set.insert(child.path.clone());
+                child.collect_expanded(set);
+            }
+        }
+    }
+
+    /// Re-expand (and load) every directory in this freshly-reloaded subtree whose
+    /// path was previously expanded.
+    fn restore_expanded(
+        &mut self,
+        expanded: &std::collections::HashSet<PathBuf>,
+        repo: Option<&git2::Repository>,
+        show_gitignored: bool,
+    ) {
         for child in &mut self.children {
             if child.is_dir && expanded.contains(&child.path) {
                 child.is_expanded = true;
                 child.load_children(repo, show_gitignored);
-                child.reload_recursive(repo, show_gitignored);
+                child.restore_expanded(expanded, repo, show_gitignored);
             }
         }
     }

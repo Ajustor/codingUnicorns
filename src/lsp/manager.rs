@@ -62,6 +62,12 @@ impl LspManager {
         self.clients.get(ext)
     }
 
+    /// True if any client is doing background work (drives a periodic repaint so
+    /// the "loading" status updates without user interaction).
+    pub fn any_busy(&self) -> bool {
+        self.clients.values().any(|c| c.is_busy())
+    }
+
     /// Poll all active clients and return their pending responses.
     /// Also drives crash detection + auto-restart for disconnected clients.
     /// Returns `(responses, reconnected_exts)` where `reconnected_exts` is the

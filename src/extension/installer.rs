@@ -833,7 +833,117 @@ fn install_deps(
         }
     }
 
+    // .NET global tools (`dotnet tool update --global <pkg>` — installs if missing,
+    // and is idempotent unlike `install`, so re-installing a module never errors).
+    if !deps.dotnet.is_empty() {
+        for pkg in &deps.dotnet {
+            let (name, version) = split_pkg_version(pkg);
+            let step = match version {
+                Some(v) => format!("dotnet tool update --global {name} --version {v}"),
+                None => format!("dotnet tool update --global {name}"),
+            };
+            progress(step);
+            let mut cmd = shell_command("dotnet");
+            cmd.args(["tool", "update", "--global", name]);
+            if let Some(v) = version {
+                cmd.args(["--version", v]);
+            }
+            match cmd.output() {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => errors.push(format!(
+                    "dotnet tool {name}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                        .chars()
+                        .take(200)
+                        .collect::<String>()
+                )),
+                Err(e) => errors.push(format!("dotnet not found: {e}")),
+            }
+        }
+    }
+
     errors
+}
+
+/// Split a dependency spec of the form `name@version` into `(name, Some(version))`,
+/// or `(name, None)` when no version is pinned.
+fn split_pkg_version(pkg: &str) -> (&str, Option<&str>) {
+    match pkg.split_once('@') {
+        Some((n, v)) => (n, Some(v)),
+        None => (pkg, None),
+    }
+}
+
+/// Human-readable list of the external dependencies a module installed, e.g.
+/// `["csharp-ls (dotnet)", "python-lsp-server (pip)"]`. Used by the uninstall
+/// dialog to tell the user what would be removed. Empty when the module has none.
+pub fn dependency_summary(deps: &super::manifest::Dependencies) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in &deps.npm {
+        out.push(format!("{} (npm)", split_pkg_version(p).0));
+    }
+    for p in &deps.pip {
+        out.push(format!("{} (pip)", split_pkg_version(p).0));
+    }
+    for p in &deps.cargo {
+        out.push(format!("{} (cargo)", split_pkg_version(p).0));
+    }
+    for p in &deps.go {
+        out.push(format!("{} (go)", p));
+    }
+    for p in &deps.dotnet {
+        out.push(format!("{} (dotnet tool)", split_pkg_version(p).0));
+    }
+    out
+}
+
+/// Remove the external dependencies a module installed. Best-effort and
+/// idempotent — missing packages are not treated as errors. Returns a list of
+/// human-readable error strings for failures the caller may want to surface.
+///
+/// `go` tools are skipped: `go install` leaves a bare binary in `GOBIN` with no
+/// reliable uninstall command, so removing it would require guessing the path.
+pub fn uninstall_deps(deps: &super::manifest::Dependencies) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for pkg in &deps.npm {
+        let name = split_pkg_version(pkg).0;
+        run_uninstall(&mut errors, "npm", "npm", &["uninstall", "-g", name]);
+    }
+    for pkg in &deps.pip {
+        let name = split_pkg_version(pkg).0;
+        run_uninstall(&mut errors, "pip3", "pip3", &["uninstall", "-y", name]);
+    }
+    for pkg in &deps.cargo {
+        let name = split_pkg_version(pkg).0;
+        run_uninstall(&mut errors, "cargo", "cargo", &["uninstall", name]);
+    }
+    for pkg in &deps.dotnet {
+        let name = split_pkg_version(pkg).0;
+        run_uninstall(
+            &mut errors,
+            "dotnet",
+            "dotnet",
+            &["tool", "uninstall", "--global", name],
+        );
+    }
+
+    errors
+}
+
+/// Run a single uninstall command, recording a short error on failure.
+fn run_uninstall(errors: &mut Vec<String>, label: &str, program: &str, args: &[&str]) {
+    match shell_command(program).args(args).output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => errors.push(format!(
+            "{label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .take(200)
+                .collect::<String>()
+        )),
+        Err(e) => errors.push(format!("{label} not found: {e}")),
+    }
 }
 
 /// Copy a library file to the destination, handling the case where the destination

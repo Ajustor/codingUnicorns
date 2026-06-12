@@ -51,13 +51,7 @@ impl CodingUnicorns {
             self.ensure_lsp_for_file(&path);
             // Notify LSP server that a file was opened.
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                let lang_id = match ext {
-                    "rs" => "rust",
-                    "ts" | "tsx" => "typescript",
-                    "js" | "jsx" => "javascript",
-                    "py" => "python",
-                    _ => ext,
-                };
+                let lang_id = super::lsp_ops::language_id_for_ext(ext);
                 let uri = format!("file://{}", path.display());
                 if let Some(client) = self.lsp.get_mut(ext) {
                     client.did_open(&uri, lang_id, &content);

@@ -5,6 +5,9 @@ use crate::git::GitStatus;
 pub enum LspStatus {
     Inactive,
     Connecting,
+    /// Connected but the server is still doing background work (e.g. csharp-ls
+    /// loading the solution) — not yet able to answer fully.
+    Loading,
     Ready,
     Error,
 }
@@ -16,13 +19,20 @@ impl StatusBar {
         Self {}
     }
 
-    pub fn show(&self, ui: &mut egui::Ui, editor: &Editor, git: &GitStatus, lsp_status: LspStatus) {
-        let bg = egui::Color32::from_rgb(0, 122, 204);
+    pub fn show(
+        &self,
+        ui: &mut egui::Ui,
+        editor: &Editor,
+        git: &GitStatus,
+        lsp_status: LspStatus,
+        palette: crate::ui::theme::Palette,
+    ) {
+        let bg = palette.accent;
         egui::Frame::new().fill(bg).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!("⎇ {}", git.branch))
-                        .color(egui::Color32::WHITE)
+                        .color(palette.on_accent)
                         .small(),
                 );
                 ui.separator();
@@ -35,7 +45,7 @@ impl StatusBar {
                     let modified = if editor.is_modified { " ●" } else { "" };
                     ui.label(
                         egui::RichText::new(format!("{}{}", name, modified))
-                            .color(egui::Color32::WHITE)
+                            .color(palette.on_accent)
                             .small(),
                     );
                     ui.separator();
@@ -43,7 +53,7 @@ impl StatusBar {
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("txt");
                     ui.label(
                         egui::RichText::new(ext.to_uppercase())
-                            .color(egui::Color32::WHITE)
+                            .color(palette.on_accent)
                             .small(),
                     );
                     ui.separator();
@@ -56,7 +66,7 @@ impl StatusBar {
                     };
                     ui.label(
                         egui::RichText::new(indent_label)
-                            .color(egui::Color32::WHITE)
+                            .color(palette.on_accent)
                             .small(),
                     );
                     ui.separator();
@@ -66,7 +76,7 @@ impl StatusBar {
                     let (row, col) = editor.cursor.position();
                     ui.label(
                         egui::RichText::new(format!("Ln {}, Col {}", row + 1, col + 1))
-                            .color(egui::Color32::WHITE)
+                            .color(palette.on_accent)
                             .small(),
                     );
                     ui.separator();
@@ -77,15 +87,25 @@ impl StatusBar {
                         LspStatus::Connecting => {
                             ui.label(
                                 egui::RichText::new("⬤ LSP")
-                                    .color(egui::Color32::from_rgb(255, 165, 0))
+                                    .color(palette.warning)
                                     .small(),
-                            );
+                            )
+                            .on_hover_text("Connecting to language server…");
+                            ui.separator();
+                        }
+                        LspStatus::Loading => {
+                            ui.label(
+                                egui::RichText::new("⬤ LSP loading…")
+                                    .color(palette.warning)
+                                    .small(),
+                            )
+                            .on_hover_text("Language server is loading the project (indexing)…");
                             ui.separator();
                         }
                         LspStatus::Ready => {
                             ui.label(
                                 egui::RichText::new("⬤ LSP")
-                                    .color(egui::Color32::from_rgb(80, 220, 100))
+                                    .color(palette.success)
                                     .small(),
                             );
                             ui.separator();
@@ -93,7 +113,7 @@ impl StatusBar {
                         LspStatus::Error => {
                             ui.label(
                                 egui::RichText::new("⬤ LSP")
-                                    .color(egui::Color32::from_rgb(220, 60, 60))
+                                    .color(palette.error)
                                     .small(),
                             );
                             ui.separator();

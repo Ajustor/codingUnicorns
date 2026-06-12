@@ -65,6 +65,18 @@ pub struct Editor {
     pub workspace_path: Option<std::path::PathBuf>,
     /// Monotonically increasing counter bumped on every edit; used to detect changes for LSP didChange.
     pub content_version: i32,
+    /// Debounce state for full-document re-highlighting: the content_version we're
+    /// waiting to tokenize, and when it last changed. Avoids re-tokenizing huge
+    /// files on every keystroke (which lags the UI).
+    pub hl_pending_version: i32,
+    pub hl_pending_at: Option<std::time::Instant>,
+    /// True while a run of typed characters is being coalesced into a single undo
+    /// step. Reset by any non-text key so each typing burst is one undo unit.
+    coalescing_typing: bool,
+    /// Cached longest line length (chars) + the content_version it was computed for.
+    /// Avoids an O(file) max-width scan every frame for the horizontal scrollbar.
+    max_line_chars: usize,
+    max_line_chars_version: i32,
     /// Set when an LSP hover request has been fired; cleared when the response arrives.
     pub hover_lsp_request_pending: bool,
     /// Cursor row when the LSP hover request was triggered.
@@ -131,9 +143,12 @@ pub struct Editor {
     pub folded_lines: std::collections::HashSet<usize>,
     /// Cached (start, end) foldable region list.
     fold_regions: Vec<(usize, usize)>,
+    /// content_version for which `fold_regions` was last computed (avoids an
+    /// O(file) recompute every frame on files that have no foldable regions).
+    fold_regions_version: i32,
     // ── Breadcrumbs ─────────────────────────────────────────────────────────
-    /// Current symbol name at cursor (populated by app from outline).
-    pub current_symbol: Option<String>,
+    /// Set true for one frame after an explicit Ctrl+S save, so the app can toast.
+    pub just_saved: bool,
     // ── Cursor blink ────────────────────────────────────────────────────────
     /// Epoch-ms of the last cursor movement / keypress, used to reset blink.
     cursor_blink_epoch: std::time::Instant,
@@ -151,6 +166,20 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// The currently selected text, if any.
+    pub fn selected_text_pub(&self) -> Option<String> {
+        let ((sr, sc), (er, ec)) = self.cursor.selection_range()?;
+        let start = self.buffer.char_index(sr, sc);
+        let end = self.buffer.char_index(er, ec);
+        Some(self.buffer.rope_slice(start, end))
+    }
+
+    /// The 1-based inclusive line range of the selection, if any.
+    pub fn selection_line_range_pub(&self) -> Option<(usize, usize)> {
+        let ((sr, _), (er, _)) = self.cursor.selection_range()?;
+        Some((sr + 1, er + 1))
+    }
+
     pub fn new() -> Self {
         Self {
             buffer: Buffer::new(),
@@ -179,6 +208,11 @@ impl Editor {
             hover_signature: None,
             workspace_path: None,
             content_version: 0,
+            hl_pending_version: -1,
+            hl_pending_at: None,
+            coalescing_typing: false,
+            max_line_chars: 0,
+            max_line_chars_version: -1,
             hover_lsp_request_pending: false,
             hover_row: 0,
             hover_col: 0,
@@ -207,7 +241,8 @@ impl Editor {
             bracket_match: None,
             folded_lines: std::collections::HashSet::new(),
             fold_regions: Vec::new(),
-            current_symbol: None,
+            fold_regions_version: -1,
+            just_saved: false,
             line_diff: Vec::new(),
             line_diff_path: None,
             format_request_pending: false,
@@ -249,11 +284,18 @@ impl Editor {
         self.signature_help_request_pending = false;
         self.folded_lines.clear();
         self.fold_regions.clear();
-        self.current_symbol = None;
+        self.fold_regions_version = -1;
         self.hover_tooltip_anchor = None;
         self.hover_popup_rect = None;
         self.word_occurrences.clear();
         self.word_occurrences_version = -1;
+        // Invalidate the minimap cache too — content_version resets to 0 on every
+        // load, so without this the new file can collide with the previous file's
+        // cached version and the minimap shows a stale ("ghost") overview.
+        self.minimap_lines.clear();
+        self.minimap_lines_version = -1;
+        self.coalescing_typing = false;
+        self.max_line_chars_version = -1;
         // Detect indentation style from file content
         let (spaces, size) = detect_indent(&content);
         self.detected_indent_spaces = spaces;
@@ -264,6 +306,20 @@ impl Editor {
         if let Some(name) = lang {
             self.highlighter.set_language_from_filename(&name);
         }
+    }
+
+    /// Longest line length (chars), cached and recomputed only when the content
+    /// changes — used to size the horizontal scrollbar and clamp horizontal scroll.
+    /// Avoids an allocating O(file) scan every frame.
+    fn cached_max_line_chars(&mut self) -> usize {
+        if self.max_line_chars_version != self.content_version {
+            self.max_line_chars = (0..self.buffer.num_lines())
+                .map(|i| self.buffer.line_char_len_fast(i))
+                .max()
+                .unwrap_or(0);
+            self.max_line_chars_version = self.content_version;
+        }
+        self.max_line_chars
     }
 
     pub fn save(&mut self) -> anyhow::Result<()> {
@@ -286,6 +342,9 @@ impl Editor {
         self.content_version = self.content_version.wrapping_add(1);
     }
 
+    // Render entry point: the parameter list is wide because it threads shared
+    // services + the theme palette/spacing into one draw call.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -293,6 +352,8 @@ impl Editor {
         plugin_manager: &crate::plugin::manager::PluginManager,
         lsp_hover: Option<String>,
         breakpoint_lines: &std::collections::HashSet<usize>,
+        palette: crate::ui::theme::Palette,
+        spacing: crate::ui::theme::Spacing,
     ) {
         // Find / Replace bar (floating overlay)
         if self.show_find {
@@ -341,7 +402,7 @@ impl Editor {
                         }
                         // Case-sensitive toggle (Aa)
                         let cs_color = if self.find_case_sensitive {
-                            egui::Color32::from_rgb(100, 180, 255)
+                            palette.accent
                         } else {
                             egui::Color32::GRAY
                         };
@@ -358,7 +419,7 @@ impl Editor {
                         }
                         // Regex toggle (.*)
                         let re_color = if self.find_use_regex {
-                            egui::Color32::from_rgb(100, 180, 255)
+                            palette.accent
                         } else {
                             egui::Color32::GRAY
                         };
@@ -507,8 +568,9 @@ impl Editor {
             config.theme.accent[1],
             config.theme.accent[2],
         );
-        let line_num_color =
-            egui::Color32::from_rgb(fg_color.r() / 2, fg_color.g() / 2, fg_color.b() / 2);
+        let line_num_color = palette.text_muted;
+        let line_num_color_active = palette.text;
+        let (cur_row_for_gutter, _) = self.cursor.position();
         let cursor_color = accent_color;
         let find_highlight = egui::Color32::from_rgba_premultiplied(255, 200, 0, 35);
         let find_highlight_active = egui::Color32::from_rgba_premultiplied(255, 200, 0, 80);
@@ -746,11 +808,15 @@ impl Editor {
                 }
 
                 // Manage keyboard focus. The editor is the primary keyboard target
-                // unless a modal (find bar, goto-line, autocomplete) is open.
+                // unless a focus-grabbing modal (find bar, goto-line) is open.
+                // The autocomplete popup is NOT excluded: it's a non-focusable hover
+                // Area and the editor itself handles its arrow/Enter navigation, so
+                // the editor must KEEP focus while it's open (otherwise arrow keys
+                // can leak focus away and break completion navigation).
                 // We only REQUEST focus when needed — never re-request when we
                 // already have it, to avoid disrupting egui's key event delivery.
                 let has_focus = response.has_focus();
-                if !has_focus && !self.show_find && !self.show_goto_line && !self.autocomplete.visible {
+                if !has_focus && !self.show_find && !self.show_goto_line {
                     let explicit = std::mem::take(&mut self.focus_requested);
                     if response.clicked()
                         || explicit
@@ -758,6 +824,23 @@ impl Editor {
                     {
                         ui.memory_mut(|m| m.request_focus(response.id));
                     }
+                }
+
+                // Capture Tab + arrow keys so egui's directional focus navigation
+                // doesn't move focus out of the editor (into the file tree / terminal)
+                // when the user presses an arrow key.
+                if has_focus || response.has_focus() {
+                    ui.memory_mut(|m| {
+                        m.set_focus_lock_filter(
+                            response.id,
+                            egui::EventFilter {
+                                tab: true,
+                                horizontal_arrows: true,
+                                vertical_arrows: true,
+                                escape: false,
+                            },
+                        );
+                    });
                 }
 
                 if has_focus || response.has_focus() {
@@ -772,6 +855,12 @@ impl Editor {
                                 egui::Event::Text(text) => {
                                     // Don't insert text when Ctrl is held (shortcuts)
                                     if !i.modifiers.ctrl && !i.modifiers.command {
+                                        // Checkpoint once at the start of a typing run so
+                                        // Ctrl+Z undoes the run (not nothing / not per char).
+                                        if !self.coalescing_typing {
+                                            self.buffer.checkpoint();
+                                            self.coalescing_typing = true;
+                                        }
                                         let auto_close = config.editor.auto_close_brackets;
                                         for ch in text.chars() {
                                             self.insert_char(ch, auto_close);
@@ -798,6 +887,8 @@ impl Editor {
                                     }
                                 }
                                 egui::Event::Paste(text) => {
+                                    self.coalescing_typing = false;
+                                    self.buffer.checkpoint();
                                     let cursor_count = 1 + self.extra_cursors.len();
                                     let lines: Vec<&str> = text.lines().collect();
 
@@ -812,7 +903,6 @@ impl Editor {
                                         }
                                         positions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-                                        self.buffer.checkpoint();
                                         // Insert in reverse order to preserve positions
                                         for (sorted_idx, &(row, col, _)) in
                                             positions.iter().enumerate().rev()
@@ -859,6 +949,9 @@ impl Editor {
                                     modifiers,
                                     ..
                                 } => {
+                                    // Any non-text key ends the current typing run, so
+                                    // the next typed run becomes its own undo step.
+                                    self.coalescing_typing = false;
                                     match key {
                                         egui::Key::Enter if modifiers.ctrl && modifiers.shift => {
                                             self.buffer.checkpoint();
@@ -893,10 +986,12 @@ impl Editor {
                                             }
                                         }
                                         egui::Key::Backspace => {
+                                            self.buffer.checkpoint();
                                             self.delete_char_before();
                                             text_typed = true;
                                         }
                                         egui::Key::Delete => {
+                                            self.buffer.checkpoint();
                                             self.delete_char_after();
                                             text_typed = true;
                                         }
@@ -1228,6 +1323,7 @@ impl Editor {
                                         // Save
                                         egui::Key::S if modifiers.ctrl => {
                                             let _ = self.save();
+                                            self.just_saved = true;
                                         }
 
                                         // Undo
@@ -1688,6 +1784,24 @@ impl Editor {
                     double_click_handled = true;
                 }
 
+                // Triple-click selects the whole line (incl. trailing newline when
+                // there's a line below), like most editors.
+                if response.triple_clicked() {
+                    self.extra_cursors.clear();
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let local = pos - rect.min;
+                        let r = ((local.y + self.scroll_offset.y) / line_height) as usize;
+                        let r = r.min(self.buffer.num_lines().saturating_sub(1));
+                        self.cursor.sel_anchor = Some((r, 0));
+                        if r + 1 < self.buffer.num_lines() {
+                            self.cursor.set_position(r + 1, 0);
+                        } else {
+                            self.cursor.set_position(r, self.buffer.line_len(r));
+                        }
+                    }
+                    double_click_handled = true;
+                }
+
                 if response.drag_started() && !double_click_handled {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let (row, col) = {
@@ -1789,13 +1903,28 @@ impl Editor {
                 }
 
                 if response.hovered() {
+                    // Horizontal scroll bound = longest line width minus the viewport.
+                    let max_x = {
+                        let content_w =
+                            self.cached_max_line_chars() as f32 * char_width + gutter_width + 40.0;
+                        (content_w - rect.width()).max(0.0)
+                    };
                     ui.input(|i| {
-                        self.scroll_offset.y -= i.smooth_scroll_delta.y;
+                        let mut dx = i.smooth_scroll_delta.x;
+                        let mut dy = i.smooth_scroll_delta.y;
+                        // Shift+wheel scrolls horizontally — on Windows the wheel
+                        // delta arrives on the Y axis even with Shift held, so remap.
+                        if i.modifiers.shift && dx == 0.0 {
+                            dx = dy;
+                            dy = 0.0;
+                        }
+                        self.scroll_offset.y -= dy;
                         self.scroll_offset.y = self
                             .scroll_offset
                             .y
                             .max(0.0)
                             .min((total_height - rect.height()).max(0.0));
+                        self.scroll_offset.x = (self.scroll_offset.x - dx).clamp(0.0, max_x);
                     });
                 }
 
@@ -1875,19 +2004,74 @@ impl Editor {
                     self.bracket_match = find_matching_bracket(&self.buffer, cur_row, cur_col);
                 }
 
-                // Rebuild tree-sitter highlight cache when content changes.
-                if self.highlighter.needs_update(self.content_version) {
-                    let source = self.buffer.to_string();
-                    self.highlighter.highlight_document(
-                        &source,
-                        self.content_version,
-                        Some(plugin_manager),
-                    );
+                // Rebuild the highlight cache when content changes.
+                //
+                // Very large files (> VIEWPORT_THRESHOLD lines): tokenizing the whole
+                // document each edit/frame lags badly, so only tokenize the visible
+                // window (± MARGIN lines) and re-tokenize when scrolling out of it.
+                // Smaller files tokenize the whole document (accurate), debounced so
+                // typing in a moderately large file stays smooth.
+                const VIEWPORT_THRESHOLD: usize = 4000;
+                let total_lines_hl = self.buffer.num_lines();
+                if total_lines_hl > VIEWPORT_THRESHOLD {
+                    let vis_start = first_visible;
+                    let vis_end = (first_visible + visible_count).min(total_lines_hl);
+                    if self
+                        .highlighter
+                        .viewport_stale(self.content_version, vis_start, vis_end)
+                    {
+                        const MARGIN: usize = 100;
+                        let start = vis_start.saturating_sub(MARGIN);
+                        let end = (vis_end + MARGIN).min(total_lines_hl);
+                        let window: String = (start..end)
+                            .map(|r| self.buffer.line(r))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        self.highlighter.highlight_viewport(
+                            &window,
+                            start,
+                            total_lines_hl,
+                            self.content_version,
+                            (start, end),
+                            Some(plugin_manager),
+                        );
+                    }
+                } else if self.highlighter.needs_update(self.content_version) {
+                    // Debounce full re-tokenization for moderately large files.
+                    let ready = if total_lines_hl > 2000 {
+                        if self.hl_pending_version != self.content_version {
+                            self.hl_pending_version = self.content_version;
+                            self.hl_pending_at = Some(std::time::Instant::now());
+                        }
+                        let elapsed_ok = self
+                            .hl_pending_at
+                            .map(|t| t.elapsed() >= std::time::Duration::from_millis(150))
+                            .unwrap_or(true);
+                        if !elapsed_ok {
+                            response
+                                .ctx
+                                .request_repaint_after(std::time::Duration::from_millis(150));
+                        }
+                        elapsed_ok
+                    } else {
+                        true
+                    };
+                    if ready {
+                        let source = self.buffer.to_string();
+                        self.highlighter.highlight_document(
+                            &source,
+                            self.content_version,
+                            Some(plugin_manager),
+                        );
+                    }
                 }
 
-                // Fold regions: recompute if dirty (on every content change)
-                if self.fold_regions.is_empty() || self.content_version % 30 == 0 {
+                // Fold regions: recompute only when the content changed — NOT every
+                // frame. (The old `is_empty()` check recomputed on every frame for
+                // files with no foldable regions, an O(file) per-frame cost.)
+                if self.fold_regions_version != self.content_version {
                     self.fold_regions = compute_fold_regions(&self.buffer);
+                    self.fold_regions_version = self.content_version;
                 }
 
                 // Build fold map: start_line → end_line for O(1) lookup
@@ -1923,6 +2107,18 @@ impl Editor {
                 // Update word occurrence highlights
                 let last_visible = first_visible + visible_count;
                 self.update_word_occurrences(first_visible, last_visible);
+
+                // Compute the active indent block (for guide highlighting)
+                let active_block = {
+                    let (cr, _) = self.cursor.position();
+                    active_indent_block(
+                        self.buffer.num_lines(),
+                        cr,
+                        self.detected_indent_size.max(1),
+                        self.detected_indent_spaces,
+                        |i| self.buffer.line(i),
+                    )
+                };
 
                 // Iterate visible lines, skipping folded content
                 let mut line_idx = first_visible;
@@ -1990,11 +2186,26 @@ impl Editor {
                                 egui::Align2::RIGHT_CENTER,
                                 (line_idx + 1).to_string(),
                                 font_id.clone(),
-                                line_num_color,
+                                if line_idx == cur_row_for_gutter { line_num_color_active } else { line_num_color },
                             );
                         }
                         line_idx = fold_end + 1;
                         continue;
+                    }
+
+                    // Current-line highlight (suppressed while a selection is active, to avoid noise).
+                    let (hl_row, _) = self.cursor.position();
+                    let selection_active = sel_range.is_some()
+                        || self.extra_cursors.iter().any(|c| c.selection_range().is_some());
+                    if config.editor.highlight_current_line && line_idx == hl_row && !selection_active {
+                        painter.rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(rect.min.x, y),
+                                egui::pos2(rect.max.x, y + line_height),
+                            ),
+                            0.0,
+                            palette.line_highlight,
+                        );
                     }
 
                     if config.editor.line_numbers {
@@ -2006,7 +2217,7 @@ impl Editor {
                             egui::Align2::RIGHT_CENTER,
                             (line_idx + 1).to_string(),
                             font_id.clone(),
-                            line_num_color,
+                            if line_idx == cur_row_for_gutter { line_num_color_active } else { line_num_color },
                         );
                     }
 
@@ -2018,8 +2229,8 @@ impl Editor {
                             .copied()
                             .unwrap_or(DIFF_UNCHANGED);
                         let bar_color = match diff_status {
-                            DIFF_ADDED => Some(egui::Color32::from_rgb(80, 200, 80)),
-                            DIFF_MODIFIED => Some(egui::Color32::from_rgb(80, 150, 255)),
+                            DIFF_ADDED => Some(palette.git_added),
+                            DIFF_MODIFIED => Some(palette.git_modified),
                             _ => None,
                         };
                         if let Some(color) = bar_color {
@@ -2073,6 +2284,23 @@ impl Editor {
                     if line_idx == cur_row {
                         let has_diag = self.diagnostics.iter().any(|d| d.line as usize == line_idx);
                         if has_diag && config.editor.line_numbers {
+                            // Pick the most severe diagnostic on the line (Error > Warning > Info/Hint).
+                            let sev_color = self
+                                .diagnostics
+                                .iter()
+                                .filter(|d| d.line as usize == line_idx)
+                                .min_by_key(|d| match d.severity {
+                                    crate::lsp::client::DiagSeverity::Error => 0,
+                                    crate::lsp::client::DiagSeverity::Warning => 1,
+                                    crate::lsp::client::DiagSeverity::Info => 2,
+                                    _ => 3,
+                                })
+                                .map(|d| match d.severity {
+                                    crate::lsp::client::DiagSeverity::Error => palette.error,
+                                    crate::lsp::client::DiagSeverity::Warning => palette.warning,
+                                    _ => palette.info,
+                                })
+                                .unwrap_or(palette.warning);
                             painter.text(
                                 egui::pos2(
                                     rect.min.x + blame_extra_width + 2.0,
@@ -2081,7 +2309,7 @@ impl Editor {
                                 egui::Align2::LEFT_CENTER,
                                 "💡",
                                 egui::FontId::proportional(11.0),
-                                egui::Color32::from_rgb(255, 220, 50),
+                                sev_color,
                             );
                         }
                     }
@@ -2197,12 +2425,7 @@ impl Editor {
                                         egui::pos2(occ_ex - self.scroll_offset.x, y + line_height),
                                     ),
                                     2.0,
-                                    egui::Color32::from_rgba_premultiplied(
-                                        accent_color.r(),
-                                        accent_color.g(),
-                                        accent_color.b(),
-                                        15,
-                                    ),
+                                    palette.accent_muted,
                                 );
                             }
                         }
@@ -2239,12 +2462,7 @@ impl Editor {
                                         egui::pos2(ex, y + line_height),
                                     ),
                                     0.0,
-                                    egui::Color32::from_rgba_premultiplied(
-                                        accent_color.r(),
-                                        accent_color.g(),
-                                        accent_color.b(),
-                                        60,
-                                    ),
+                                    palette.selection,
                                 );
                             }
                         }
@@ -2290,12 +2508,7 @@ impl Editor {
                                             egui::pos2(ex, y + line_height),
                                         ),
                                         0.0,
-                                        egui::Color32::from_rgba_premultiplied(
-                                            accent_color.r(),
-                                            accent_color.g(),
-                                            accent_color.b(),
-                                            60,
-                                        ),
+                                        palette.selection,
                                     );
                                 }
                             }
@@ -2371,18 +2584,25 @@ impl Editor {
                         };
                         let guides = leading / ind_size;
                         for g in 1..=guides {
-                            let gx =
-                                x_start + (g * ind_size) as f32 * char_width - self.scroll_offset.x;
+                            // Nudge guides half a character to the left so they sit at
+                            // the indent boundary rather than under the first glyph.
+                            let gx = x_start + (g * ind_size) as f32 * char_width
+                                - self.scroll_offset.x
+                                - char_width * 0.5
+                                - 2.0;
                             // clamp to visible text area
                             if gx < x_start || gx > rect.max.x {
                                 continue;
                             }
+                            let guide_color = match active_block {
+                                Some((lvl, s, e)) if g == lvl && line_idx >= s && line_idx <= e => {
+                                    palette.accent_muted
+                                }
+                                _ => egui::Color32::from_rgba_unmultiplied(130, 130, 145, 50),
+                            };
                             painter.line_segment(
                                 [egui::pos2(gx, y), egui::pos2(gx, y + line_height)],
-                                egui::Stroke::new(
-                                    1.0,
-                                    egui::Color32::from_rgba_premultiplied(80, 80, 90, 50),
-                                ),
+                                egui::Stroke::new(1.0, guide_color),
                             );
                         }
                     }
@@ -2441,8 +2661,14 @@ impl Editor {
                         );
                     }
                     let galley = ui.fonts(|f| f.layout_job(job));
-                    painter.galley(
-                        egui::pos2(x_start, y + line_height * 0.15),
+                    // Clip to the content area (right of the gutter) so horizontally
+                    // scrolled text doesn't draw over the line-number gutter.
+                    let text_clip = egui::Rect::from_min_max(
+                        egui::pos2(x_start, rect.min.y),
+                        egui::pos2(rect.max.x, rect.max.y),
+                    );
+                    painter.with_clip_rect(text_clip).galley(
+                        egui::pos2(x_start - self.scroll_offset.x, y + line_height * 0.15),
                         galley,
                         fg_color,
                     );
@@ -2488,13 +2714,9 @@ impl Editor {
                             };
                             let x_diag_end = (x_diag_start + diag_width).min(rect.right());
                             let color = match diag.severity {
-                                crate::lsp::client::DiagSeverity::Error => {
-                                    egui::Color32::from_rgb(255, 80, 80)
-                                }
-                                crate::lsp::client::DiagSeverity::Warning => {
-                                    egui::Color32::from_rgb(255, 200, 0)
-                                }
-                                _ => egui::Color32::from_rgb(100, 150, 255),
+                                crate::lsp::client::DiagSeverity::Error => palette.error,
+                                crate::lsp::client::DiagSeverity::Warning => palette.warning,
+                                _ => palette.info,
                             };
                             let amp = 1.5_f32;
                             let period = 4.0_f32;
@@ -2531,10 +2753,7 @@ impl Editor {
                 // ── Horizontal scrollbar ─────────────────────────────────────────
                 {
                     let scrollbar_h = 8.0_f32;
-                    let max_line_chars = (0..self.buffer.num_lines())
-                        .map(|i| self.buffer.line_len(i))
-                        .max()
-                        .unwrap_or(0);
+                    let max_line_chars = self.cached_max_line_chars();
                     let content_w = max_line_chars as f32 * char_width + gutter_width + 40.0;
                     let view_w = rect.width();
                     if content_w > view_w {
@@ -2817,7 +3036,7 @@ impl Editor {
                             .constrain(true)
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::new()
-                                    .fill(egui::Color32::from_rgb(30, 30, 30))
+                                    .fill(palette.surface_raised)
                                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(75)))
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::same(10))
@@ -2943,7 +3162,7 @@ impl Editor {
                             .constrain(true)
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::new()
-                                    .fill(egui::Color32::from_rgb(36, 26, 26))
+                                    .fill(palette.surface_raised)
                                     .stroke(egui::Stroke::new(1.5, border_color))
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::symmetric(10, 6))
@@ -2993,7 +3212,7 @@ impl Editor {
                             .constrain(true)
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::new()
-                                    .fill(egui::Color32::from_rgb(25, 40, 60))
+                                    .fill(palette.surface_raised)
                                     .stroke(egui::Stroke::new(
                                         1.0,
                                         egui::Color32::from_rgb(80, 130, 200),
@@ -3012,7 +3231,62 @@ impl Editor {
                 }
 
                 // Render autocomplete popup on top of editor content.
-                self.autocomplete.show(ui.ctx());
+                self.autocomplete.show(ui.ctx(), palette, spacing);
             });
+    }
+}
+
+/// Returns `(level, start_row, end_row)` of the indentation block enclosing `cursor_row`,
+/// where `level` is the 1-based indent depth of the cursor line. `None` when the cursor
+/// line has no indentation (level 0).
+pub(crate) fn active_indent_block(
+    num_lines: usize,
+    cursor_row: usize,
+    indent_size: usize,
+    spaces: bool,
+    line_at: impl Fn(usize) -> String,
+) -> Option<(usize, usize, usize)> {
+    let ind = |s: &str| -> usize {
+        let size = indent_size.max(1);
+        if spaces {
+            s.chars().take_while(|&c| c == ' ').count() / size
+        } else {
+            s.chars().take_while(|&c| c == '\t').count()
+        }
+    };
+    if cursor_row >= num_lines {
+        return None;
+    }
+    let level = ind(&line_at(cursor_row));
+    if level == 0 {
+        return None;
+    }
+    // Scan outward from the cursor row only as far as the block extends — cost is
+    // proportional to block size, not file size (no full-buffer materialization).
+    let mut start = cursor_row;
+    while start > 0 && ind(&line_at(start - 1)) >= level {
+        start -= 1;
+    }
+    let mut end = cursor_row;
+    while end + 1 < num_lines && ind(&line_at(end + 1)) >= level {
+        end += 1;
+    }
+    Some((level, start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_indent_block_spans_the_enclosing_block() {
+        let lines = vec![
+            "fn x() {".to_string(),
+            "    a();".to_string(),
+            "    b();".to_string(),
+            "}".to_string(),
+        ];
+        let got = active_indent_block(lines.len(), 1, 4, true, |i| lines[i].clone());
+        assert_eq!(got, Some((1, 1, 2)));
     }
 }

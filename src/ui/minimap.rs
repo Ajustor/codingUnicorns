@@ -164,6 +164,10 @@ pub fn render(
         (code_alpha * 200.0) as u8,
     );
 
+    // When the file has far more lines than the minimap has pixels (scale < 1px
+    // per line), draw at most one rect per pixel row — otherwise we'd emit tens of
+    // thousands of overlapping rects per frame and lag. No effect on small files.
+    let mut last_drawn_y = f32::NEG_INFINITY;
     for (i, line) in data.lines.iter().enumerate() {
         if line.blank {
             continue;
@@ -172,6 +176,10 @@ pub fn render(
         if y + line_h < minimap_rect.min.y || y > minimap_rect.max.y {
             continue;
         }
+        if y - last_drawn_y < 1.0 {
+            continue; // already drew a line on this pixel row
+        }
+        last_drawn_y = y;
         let x_offset = line.indent as f32 * char_px;
         let w = (line.content_len as f32 * char_px).min(content_w - x_offset).max(2.0);
         painter.rect_filled(
