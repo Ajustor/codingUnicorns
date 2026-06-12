@@ -852,39 +852,39 @@ impl Editor {
 
                         for event in &i.events {
                             match event {
-                                egui::Event::Text(text) => {
-                                    // Don't insert text when Ctrl is held (shortcuts)
-                                    if !i.modifiers.ctrl && !i.modifiers.command {
-                                        // Checkpoint once at the start of a typing run so
-                                        // Ctrl+Z undoes the run (not nothing / not per char).
-                                        if !self.coalescing_typing {
-                                            self.buffer.checkpoint();
-                                            self.coalescing_typing = true;
-                                        }
-                                        let auto_close = config.editor.auto_close_brackets;
-                                        for ch in text.chars() {
-                                            self.insert_char(ch, auto_close);
-                                            // Signature help: trigger on '(' or ','
-                                            if ch == '(' || ch == ',' {
-                                                let (row, col) = self.cursor.position();
-                                                self.signature_help_request_pending = true;
-                                                self.signature_help_row = row as u32;
-                                                self.signature_help_col = col as u32;
-                                            }
-                                            // Clear signature help on ')'
-                                            if ch == ')' {
-                                                self.signature_help_text = None;
-                                            }
-                                            // LSP completion: auto-trigger on '.' (member access)
-                                            if ch == '.' {
-                                                let (row, col) = self.cursor.position();
-                                                self.completion_request_pending = true;
-                                                self.completion_trigger_row = row;
-                                                self.completion_trigger_col = col;
-                                            }
-                                        }
-                                        text_typed = true;
+                                // Don't insert text when Ctrl is held (shortcuts)
+                                egui::Event::Text(text)
+                                    if !i.modifiers.ctrl && !i.modifiers.command =>
+                                {
+                                    // Checkpoint once at the start of a typing run so
+                                    // Ctrl+Z undoes the run (not nothing / not per char).
+                                    if !self.coalescing_typing {
+                                        self.buffer.checkpoint();
+                                        self.coalescing_typing = true;
                                     }
+                                    let auto_close = config.editor.auto_close_brackets;
+                                    for ch in text.chars() {
+                                        self.insert_char(ch, auto_close);
+                                        // Signature help: trigger on '(' or ','
+                                        if ch == '(' || ch == ',' {
+                                            let (row, col) = self.cursor.position();
+                                            self.signature_help_request_pending = true;
+                                            self.signature_help_row = row as u32;
+                                            self.signature_help_col = col as u32;
+                                        }
+                                        // Clear signature help on ')'
+                                        if ch == ')' {
+                                            self.signature_help_text = None;
+                                        }
+                                        // LSP completion: auto-trigger on '.' (member access)
+                                        if ch == '.' {
+                                            let (row, col) = self.cursor.position();
+                                            self.completion_request_pending = true;
+                                            self.completion_trigger_row = row;
+                                            self.completion_trigger_col = col;
+                                        }
+                                    }
+                                    text_typed = true;
                                 }
                                 egui::Event::Paste(text) => {
                                     self.coalescing_typing = false;
@@ -3280,7 +3280,7 @@ mod tests {
 
     #[test]
     fn active_indent_block_spans_the_enclosing_block() {
-        let lines = vec![
+        let lines = [
             "fn x() {".to_string(),
             "    a();".to_string(),
             "    b();".to_string(),

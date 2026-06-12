@@ -11,24 +11,6 @@ pub(crate) fn enclosing_symbol(symbols: &[DocumentSymbol], cursor_line: u32) -> 
         .map(|s| s.name.as_str())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::lsp::client::DocumentSymbol;
-
-    fn sym(name: &str, line: u32) -> DocumentSymbol {
-        DocumentSymbol { name: name.to_string(), kind: "Function".into(), line }
-    }
-
-    #[test]
-    fn picks_nearest_symbol_at_or_above_cursor() {
-        let syms = vec![sym("alpha", 0), sym("beta", 10), sym("gamma", 20)];
-        assert_eq!(enclosing_symbol(&syms, 14), Some("beta"));
-        assert_eq!(enclosing_symbol(&syms, 0), Some("alpha"));
-        assert_eq!(enclosing_symbol(&[], 5), None);
-    }
-}
-
 /// Render a thin breadcrumb bar: workspace-relative path › enclosing symbol. Display-only.
 pub fn render(
     ui: &mut egui::Ui,
@@ -66,4 +48,22 @@ pub fn render(
                 }
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::client::DocumentSymbol;
+
+    fn sym(name: &str, line: u32) -> DocumentSymbol {
+        DocumentSymbol { name: name.to_string(), kind: "Function".into(), line }
+    }
+
+    #[test]
+    fn picks_nearest_symbol_at_or_above_cursor() {
+        let syms = vec![sym("alpha", 0), sym("beta", 10), sym("gamma", 20)];
+        assert_eq!(enclosing_symbol(&syms, 14), Some("beta"));
+        assert_eq!(enclosing_symbol(&syms, 0), Some("alpha"));
+        assert_eq!(enclosing_symbol(&[], 5), None);
+    }
 }

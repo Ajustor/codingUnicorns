@@ -26,10 +26,8 @@ impl Perform for AnsiPerformer {
         match byte {
             b'\n' => self.buf.line_feed(),
             b'\r' => self.buf.carriage_return(),
-            b'\x08' => {
-                if self.buf.cursor_col > 0 {
-                    self.buf.cursor_col -= 1;
-                }
+            b'\x08' if self.buf.cursor_col > 0 => {
+                self.buf.cursor_col -= 1;
             }
             _ => {}
         }
