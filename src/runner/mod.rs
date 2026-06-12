@@ -133,11 +133,15 @@ impl RunManager {
         let config = self.active_config()?;
         let resolved = config.resolve(workspace, current_file);
 
+        // Terminate with `\r` (carriage return) — that's what the interactive
+        // terminal sends for Enter; a bare `\n` does NOT submit in PowerShell.
+        // Send `cd` and the command as two separate lines instead of `cd && cmd`,
+        // since Windows PowerShell 5.1 (the default shell) doesn't support `&&`.
         if resolved.cwd.is_empty() {
-            Some(format!("{}\n", resolved.command))
+            Some(format!("{}\r", resolved.command))
         } else {
             Some(format!(
-                "cd {} && {}\n",
+                "cd {}\r{}\r",
                 shell_escape(&resolved.cwd),
                 resolved.command
             ))

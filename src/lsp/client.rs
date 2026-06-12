@@ -66,6 +66,9 @@ pub struct LspClient {
     restart_attempts: u32,
     /// Channel through which a background reconnect thread sends the new inner.
     reconnect_rx: Option<mpsc::Receiver<LspClientInner>>,
+    /// Number of in-flight server work-done progresses (solution load, indexing…).
+    /// > 0 means the server is busy and not yet ready to answer fully.
+    work_done_active: u32,
 }
 
 impl LspClient {
@@ -79,7 +82,14 @@ impl LspClient {
             last_crash_time: None,
             restart_attempts: 0,
             reconnect_rx: None,
+            work_done_active: 0,
         }
+    }
+
+    /// True while the server has at least one active work-done progress
+    /// (e.g. csharp-ls loading the MSBuild solution).
+    pub fn is_busy(&self) -> bool {
+        self.work_done_active > 0
     }
 
     fn next_id(inner: &mut LspClientInner) -> u64 {
@@ -89,57 +99,83 @@ impl LspClient {
     }
 
     /// Spawn the LSP server process and perform the initialize handshake.
+    ///
+    /// Non-blocking: the (potentially slow) handshake runs on a background thread so
+    /// the UI never freezes while a server like rust-analyzer or csharp-ls boots.
+    /// `poll()` installs the client and flips `is_connected` once it's ready; the app
+    /// treats that as a (re)connect and re-opens the current file so diagnostics flow.
     pub fn start(&mut self, command: &str, args: &[&str], workspace: &Path) -> anyhow::Result<()> {
+        let cmd = command.to_string();
+        let args_vec: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let workspace = workspace.to_path_buf();
         // Save restart info for auto-reconnect.
-        self.restart_cmd = Some((
-            command.to_string(),
-            args.iter().map(|s| s.to_string()).collect(),
-            workspace.to_path_buf(),
-        ));
-        let workspace_str = workspace.to_string_lossy();
-        let mut transport = LspTransport::spawn(command, args, &workspace_str)?;
+        self.restart_cmd = Some((cmd.clone(), args_vec.clone(), workspace.clone()));
+        self.reconnect_rx = Some(Self::spawn_handshake(cmd, args_vec, workspace));
+        Ok(())
+    }
 
-        let id = 1u64;
-        transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "initialize",
-            "params": {
-                "processId": std::process::id(),
-                "rootUri": format!("file://{}", workspace.display()),
-                "capabilities": {
-                    "textDocument": {
-                        "hover": { "contentFormat": ["plaintext", "markdown"] },
-                        "completion": { "completionItem": { "snippetSupport": false } },
-                        "publishDiagnostics": {}
+    /// Spawn the server and run the `initialize`/`initialized` handshake on a
+    /// background thread, delivering the ready `LspClientInner` through the returned
+    /// channel. Shared by the initial start and the crash auto-restart path.
+    fn spawn_handshake(
+        cmd: String,
+        args: Vec<String>,
+        workspace: PathBuf,
+    ) -> mpsc::Receiver<LspClientInner> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let workspace_str = workspace.to_string_lossy().to_string();
+            let Ok(mut transport) = LspTransport::spawn(&cmd, &args_ref, &workspace_str) else {
+                return;
+            };
+            let id = 1u64;
+            if transport
+                .send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "initialize",
+                    "params": {
+                        "processId": std::process::id(),
+                        "rootUri": format!("file://{}", workspace.display()),
+                        "capabilities": {
+                            "textDocument": {
+                                "hover": { "contentFormat": ["plaintext", "markdown"] },
+                                "completion": { "completionItem": { "snippetSupport": false } },
+                                "publishDiagnostics": {}
+                            }
+                        }
+                    }
+                }))
+                .is_err()
+            {
+                return;
+            }
+            // Block (not busy-poll) on the reader channel; slow servers still connect.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while std::time::Instant::now() < deadline {
+                if let Ok(msg) = transport
+                    .receiver
+                    .recv_timeout(std::time::Duration::from_millis(200))
+                {
+                    if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                        let _ = transport.send(&json!({
+                            "jsonrpc": "2.0",
+                            "method": "initialized",
+                            "params": {}
+                        }));
+                        let inner = LspClientInner {
+                            transport,
+                            next_id: id + 1,
+                            pending: HashMap::new(),
+                        };
+                        let _ = tx.send(inner);
+                        return;
                     }
                 }
             }
-        }))?;
-
-        // Wait up to 5 s for the initialize response.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            if let Ok(msg) = transport.receiver.try_recv() {
-                if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                    transport.send(&json!({
-                        "jsonrpc": "2.0",
-                        "method": "initialized",
-                        "params": {}
-                    }))?;
-                    self.is_connected = true;
-                    break;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-
-        self.inner = Some(LspClientInner {
-            transport,
-            next_id: id + 1,
-            pending: HashMap::new(),
         });
-        Ok(())
+        rx
     }
 
     /// Notify the server that a file was opened.
@@ -239,6 +275,7 @@ impl LspClient {
                 self.restart_attempts = 0;
                 self.reconnect_rx = None;
                 self.last_crash_time = None;
+                self.work_done_active = 0;
             }
         }
 
@@ -248,12 +285,39 @@ impl LspClient {
         let mut results = Vec::new();
 
         while let Ok(msg) = inner.transport.receiver.try_recv() {
-            if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
-                results.push((id, msg));
-            } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
-                if method == "textDocument/publishDiagnostics" {
+            let id = msg.get("id").and_then(|v| v.as_u64());
+            let method = msg.get("method").and_then(|v| v.as_str());
+            match (id, method) {
+                // Server→client REQUEST (has both id and method): must respond, or
+                // servers like csharp-ls stall and never answer our own requests.
+                (Some(id), Some(method)) => {
+                    let resp = Self::server_request_response(method, id, &msg);
+                    let _ = inner.transport.send(&resp);
+                }
+                // Response to one of our requests (id, no method).
+                (Some(id), None) => {
+                    results.push((id, msg));
+                }
+                // Notification (method, no id).
+                (None, Some("textDocument/publishDiagnostics")) => {
                     Self::process_diagnostics_msg(&mut self.diagnostics, &msg);
                 }
+                // Work-done progress — track busy state (solution load / indexing).
+                (None, Some("$/progress")) => {
+                    let kind = msg
+                        .get("params")
+                        .and_then(|p| p.get("value"))
+                        .and_then(|v| v.get("kind"))
+                        .and_then(|k| k.as_str());
+                    match kind {
+                        Some("begin") => self.work_done_active += 1,
+                        Some("end") => {
+                            self.work_done_active = self.work_done_active.saturating_sub(1)
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -262,6 +326,7 @@ impl LspClient {
         if self.is_connected && !inner.transport.is_alive.load(Ordering::Relaxed) {
             self.is_connected = false;
             self.last_crash_time = Some(std::time::Instant::now());
+            self.work_done_active = 0;
         }
 
         results
@@ -286,60 +351,30 @@ impl LspClient {
         };
 
         self.restart_attempts += 1;
-        let (tx, rx) = mpsc::channel();
-        self.reconnect_rx = Some(rx);
-
-        std::thread::spawn(move || {
-            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let workspace_str = workspace.to_string_lossy().to_string();
-            let Ok(mut transport) = LspTransport::spawn(&cmd, &args_ref, &workspace_str) else {
-                return;
-            };
-            let id = 1u64;
-            if transport
-                .send(&json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "method": "initialize",
-                    "params": {
-                        "processId": std::process::id(),
-                        "rootUri": format!("file://{}", workspace.display()),
-                        "capabilities": {
-                            "textDocument": {
-                                "hover": { "contentFormat": ["plaintext", "markdown"] },
-                                "completion": { "completionItem": { "snippetSupport": false } },
-                                "publishDiagnostics": {}
-                            }
-                        }
-                    }
-                }))
-                .is_err()
-            {
-                return;
-            }
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while std::time::Instant::now() < deadline {
-                if let Ok(msg) = transport.receiver.try_recv() {
-                    if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                        let _ = transport.send(&json!({
-                            "jsonrpc": "2.0",
-                            "method": "initialized",
-                            "params": {}
-                        }));
-                        let inner = LspClientInner {
-                            transport,
-                            next_id: id + 1,
-                            pending: HashMap::new(),
-                        };
-                        let _ = tx.send(inner);
-                        return;
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        });
+        self.reconnect_rx = Some(Self::spawn_handshake(cmd, args, workspace));
 
         false
+    }
+
+    /// Build a reply to a server→client request so the server doesn't stall.
+    /// `workspace/configuration` must return one entry per requested item (null =
+    /// use defaults); everything else (registerCapability, workDoneProgress/create,
+    /// *​/refresh, …) is acked with a null result.
+    fn server_request_response(method: &str, id: u64, msg: &Value) -> Value {
+        match method {
+            "workspace/configuration" => {
+                let n = msg
+                    .get("params")
+                    .and_then(|p| p.get("items"))
+                    .and_then(|i| i.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(1)
+                    .max(1);
+                let items: Vec<Value> = std::iter::repeat(Value::Null).take(n).collect();
+                json!({ "jsonrpc": "2.0", "id": id, "result": items })
+            }
+            _ => json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),
+        }
     }
 
     fn process_diagnostics_msg(store: &mut HashMap<String, Vec<Diagnostic>>, msg: &Value) {

@@ -22,6 +22,7 @@ use crate::ui::settings::SettingsPanel;
 use crate::ui::shortcuts::ShortcutsHelp;
 use crate::ui::statusbar::StatusBar;
 
+mod claude_ops;
 mod debug_ops;
 pub mod file_ops;
 mod lsp_ops;
@@ -30,6 +31,12 @@ mod workspace_search;
 
 pub struct CodingUnicorns {
     pub config: Config,
+    /// Central registry for app-command shortcuts. Owns ONLY the chords that
+    /// were previously hardcoded raw (Ctrl+Shift+I = toggle Claude,
+    /// Ctrl+Shift+P = command palette in command-mode). Built-ins driven by
+    /// `config.keybindings` (toggle sidebar/terminal, command palette, settings,
+    /// shortcuts help) stay on that path to avoid double-handling.
+    pub keybinds: crate::keybinds::KeybindingRegistry,
     pub tab_manager: TabManager,
     pub editor: Editor,
     pub file_tree: FileTree,
@@ -47,11 +54,28 @@ pub struct CodingUnicorns {
     pub terminals: Vec<Terminal>,
     pub active_terminal: usize,
     pub status_bar: StatusBar,
+    pub palette: crate::ui::theme::Palette,
+    pub spacing: crate::ui::theme::Spacing,
     pub command_palette: CommandPalette,
     pub shortcuts_help: ShortcutsHelp,
     pub settings_panel: SettingsPanel,
     pub sidebar_tab: SidebarTab,
     pub show_terminal: bool,
+    pub show_claude: bool,
+    pub claude_session: claude::session::ClaudeSession,
+    pub claude_panel: claude::panel::ClaudePanel,
+    pub claude_turn: Option<claude::process::Turn>,
+    pub claude_perm: Option<claude::permission::PermissionListener>,
+    pub claude_pending: Option<claude::permission::PermissionRequest>,
+    /// Optional model override set via the `/model` slash command (transient).
+    pub claude_model: Option<String>,
+    /// Active Claude account label (e.g. "user@x · team"), fetched lazily.
+    pub claude_account: Option<String>,
+    /// In-flight account fetch (background `claude auth status`).
+    pub claude_account_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// Markdown preview (source | rendered split) toggle + render cache.
+    pub show_md_preview: bool,
+    pub md_cache: egui_commonmark::CommonMarkCache,
     pub show_sidebar: bool,
     pub sidebar_width: f32,
     pub terminal_height: f32,
@@ -95,6 +119,9 @@ pub struct CodingUnicorns {
     pub show_code_actions_menu: bool,
     pub code_actions_pos: egui::Pos2,
     pub code_actions_last_request: Option<std::time::Instant>,
+    /// True when the code-actions menu should open as soon as the LSP responds — set only on
+    /// an explicit Ctrl+. request, so the menu never pops up on its own (e.g. while typing).
+    pub code_actions_show_pending: bool,
     /// Pending signature help request id.
     pub pending_signature_id: Option<u64>,
     /// Pending LSP formatting request id.
@@ -124,6 +151,10 @@ pub struct CodingUnicorns {
     pub pending_image: Option<ImageData>,
     /// Cached egui texture + original pixel size for the currently-displayed image.
     pub image_texture: Option<(egui::TextureHandle, egui::Vec2)>,
+    /// Path queued for deletion — held until the confirmation dialog resolves.
+    pub pending_delete: Option<std::path::PathBuf>,
+    /// Transient toast notifications (shown bottom-centre, fade out after 2 s).
+    pub toasts: Vec<crate::ui::widgets::Toast>,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -158,8 +189,41 @@ impl CodingUnicorns {
         }
         let initial_terminal_height = config.terminal_height;
         let shell_override = config.shell.clone();
+
+        // Central registry for app-command shortcuts. We register ONLY the
+        // commands that were previously handled by HARDCODED raw chords; the
+        // others remain on `config.keybindings` (registering them here too would
+        // toggle twice and cancel out). See the `keybinds` field doc.
+        let mut keybinds = crate::keybinds::KeybindingRegistry::new();
+        {
+            use crate::keybinds::Chord;
+            for (id, chord, desc) in [
+                (
+                    "toggle_claude",
+                    Chord::ctrl_shift(egui::Key::I),
+                    "Toggle Claude panel",
+                ),
+                (
+                    "command_palette_commands",
+                    Chord::ctrl_shift(egui::Key::P),
+                    "Command palette (commands)",
+                ),
+                (
+                    "toggle_md_preview",
+                    Chord::ctrl_shift(egui::Key::V),
+                    "Toggle Markdown preview",
+                ),
+            ] {
+                if let Some(other) = keybinds.register(id, chord, desc) {
+                    log::warn!("keybinding conflict: '{id}' shares {chord} with '{other}'");
+                }
+            }
+        }
+
+        let palette = crate::ui::theme::Palette::from_theme(&config.theme);
         let mut app = Self {
             config,
+            keybinds,
             tab_manager: TabManager::new(),
             editor: Editor::new(),
             file_tree: FileTree::new(),
@@ -174,11 +238,24 @@ impl CodingUnicorns {
             terminals: vec![Terminal::new(&shell_override)],
             active_terminal: 0,
             status_bar: StatusBar::new(),
+            palette,
+            spacing: crate::ui::theme::Spacing::default(),
             command_palette: CommandPalette::new(),
             shortcuts_help: ShortcutsHelp::new(),
             settings_panel: SettingsPanel::new(),
             sidebar_tab: SidebarTab::default(),
             show_terminal: true,
+            show_claude: false,
+            claude_session: claude::session::ClaudeSession::new(),
+            claude_panel: claude::panel::ClaudePanel::new(),
+            claude_turn: None,
+            claude_perm: None,
+            claude_pending: None,
+            claude_model: None,
+            claude_account: None,
+            claude_account_rx: None,
+            show_md_preview: false,
+            md_cache: egui_commonmark::CommonMarkCache::default(),
             show_sidebar: true,
             sidebar_width: 220.0,
             terminal_height: initial_terminal_height,
@@ -210,6 +287,7 @@ impl CodingUnicorns {
             show_code_actions_menu: false,
             code_actions_pos: egui::Pos2::ZERO,
             code_actions_last_request: None,
+            code_actions_show_pending: false,
             pending_signature_id: None,
             pending_format_id: None,
             last_edit_version_seen: 0,
@@ -224,6 +302,8 @@ impl CodingUnicorns {
             split_ratio: 0.5,
             pending_image: None,
             image_texture: None,
+            pending_delete: None,
+            toasts: Vec::new(),
         };
 
         if let Some(path) = initial_path {
@@ -251,13 +331,32 @@ impl CodingUnicorns {
                     // Read directly to avoid a redundant config save on startup.
                     if let Ok(content) = std::fs::read_to_string(&file_path) {
                         app.tab_manager.open(file_path.clone(), content.clone());
-                        app.editor.set_content(content, Some(file_path));
+                        app.editor
+                            .set_content(content.clone(), Some(file_path.clone()));
+                        // Start the LSP for the restored file (mirrors open_file).
+                        // Without this, resuming a session leaves the LSP cold.
+                        app.ensure_lsp_for_file(&file_path);
+                        if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
+                            let lang_id = lsp_ops::language_id_for_ext(ext);
+                            let uri = format!("file://{}", file_path.display());
+                            if let Some(client) = app.lsp.get_mut(ext) {
+                                client.did_open(&uri, lang_id, &content);
+                            }
+                        }
+                        app.last_lsp_content_version = 0;
                     }
                 }
             }
         }
 
         app
+    }
+
+    pub fn toast(&mut self, message: impl Into<String>) {
+        self.toasts.push(crate::ui::widgets::Toast {
+            message: message.into(),
+            born: std::time::Instant::now(),
+        });
     }
 }
 
@@ -340,7 +439,6 @@ impl eframe::App for CodingUnicorns {
             want_open_file,
             want_new,
             want_palette,
-            want_palette_commands,
             want_terminal,
             want_sidebar,
             want_help,
@@ -363,7 +461,6 @@ impl eframe::App for CodingUnicorns {
                 self.config.keybindings.open_file.matches(i),
                 self.config.keybindings.new_file.matches(i),
                 self.config.keybindings.command_palette.matches(i),
-                i.key_pressed(egui::Key::P) && i.modifiers.ctrl && i.modifiers.shift,
                 self.config.keybindings.toggle_terminal.matches(i),
                 self.config.keybindings.toggle_sidebar.matches(i),
                 self.config.keybindings.shortcuts_help.matches(i),
@@ -393,6 +490,20 @@ impl eframe::App for CodingUnicorns {
             )
         });
 
+        // App-command shortcuts owned by the central registry. These chords were
+        // previously hardcoded raw; the registry is now their single source.
+        // (Commands driven by `config.keybindings` are handled above and must NOT
+        // be registered/routed here, or they would toggle twice.)
+        let registry_cmd = ctx.input(|i| self.keybinds.triggered(i).map(|s| s.to_string()));
+        if let Some(cmd) = registry_cmd {
+            match cmd.as_str() {
+                "toggle_claude" => self.show_claude = !self.show_claude,
+                "command_palette_commands" => self.command_palette.toggle_commands(),
+                "toggle_md_preview" => self.show_md_preview = !self.show_md_preview,
+                _ => {}
+            }
+        }
+
         if want_open_folder {
             self.folder_pending = Some(self.trigger_open_folder());
         }
@@ -402,9 +513,7 @@ impl eframe::App for CodingUnicorns {
         if want_new {
             self.open_new_file();
         }
-        if want_palette_commands {
-            self.command_palette.toggle_commands();
-        } else if want_palette {
+        if want_palette {
             self.command_palette.toggle();
         }
         if want_terminal {
@@ -506,6 +615,10 @@ impl eframe::App for CodingUnicorns {
 
         // Poll all LSP clients for incoming messages (also drives auto-restart).
         let (lsp_responses, reconnected_exts) = self.lsp.poll_all();
+        // Keep updating the "LSP loading…" status while a server is busy.
+        if self.lsp.any_busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
         // Re-open the current file on any reconnected LSP server so it receives diagnostics.
         if !reconnected_exts.is_empty() {
             if let Some(ref path) = self.editor.current_path.clone() {
@@ -517,7 +630,7 @@ impl eframe::App for CodingUnicorns {
                 if reconnected_exts.contains(&ext) {
                     let uri = format!("file://{}", path.display());
                     let content = self.editor.buffer.to_string();
-                    let lang_id = ext.as_str();
+                    let lang_id = lsp_ops::language_id_for_ext(&ext);
                     if let Some(client) = self.lsp.get_mut(&ext) {
                         client.did_open(&uri, lang_id, &content);
                     }
@@ -541,9 +654,15 @@ impl eframe::App for CodingUnicorns {
                 } else if Some(id) == self.pending_completion_id {
                     let items = LspClient::parse_completions(&response);
                     if !items.is_empty() {
-                        self.editor
-                            .autocomplete
-                            .set_lsp_suggestions(items.iter().map(|i| i.label.clone()).collect());
+                        let suggestions = items
+                            .into_iter()
+                            .map(|i| crate::editor::autocomplete::Suggestion {
+                                label: i.label,
+                                kind: Some(i.kind),
+                                match_indices: vec![],
+                            })
+                            .collect();
+                        self.editor.autocomplete.set_lsp_suggestions(suggestions);
                     }
                     self.pending_completion_id = None;
                 } else if Some(id) == self.pending_symbols_id {
@@ -574,9 +693,11 @@ impl eframe::App for CodingUnicorns {
                 } else if Some(id) == self.pending_code_actions_id {
                     self.code_actions = LspClient::parse_code_actions(&response);
                     self.pending_code_actions_id = None;
-                    if !self.code_actions.is_empty() {
+                    // Only pop the menu when the user explicitly asked (Ctrl+.), never on its own.
+                    if self.code_actions_show_pending && !self.code_actions.is_empty() {
                         self.show_code_actions_menu = true;
                     }
+                    self.code_actions_show_pending = false;
                 } else if Some(id) == self.pending_signature_id {
                     self.editor.signature_help_text = LspClient::parse_signature_help(&response);
                     self.pending_signature_id = None;
@@ -656,6 +777,7 @@ impl eframe::App for CodingUnicorns {
         // Handle Ctrl+Space LSP completion request from the editor.
         if self.editor.completion_request_pending {
             self.editor.completion_request_pending = false;
+            let mut lsp_sent = false;
             if let Some(path) = self.editor.current_path.clone() {
                 let row = self.editor.completion_trigger_row;
                 let col = self.editor.completion_trigger_col;
@@ -665,9 +787,15 @@ impl eframe::App for CodingUnicorns {
                             let uri = format!("file://{}", path.display());
                             self.pending_completion_id =
                                 Some(client.request_completions(&uri, row as u32, col as u32));
+                            lsp_sent = true;
                         }
                     }
                 }
+            }
+            // No LSP server connected for this file type — fall back to the local
+            // buffer-word + keyword autocomplete so Ctrl+Space still assists typing.
+            if !lsp_sent {
+                self.editor.trigger_local_completion();
             }
         }
 
@@ -708,6 +836,7 @@ impl eframe::App for CodingUnicorns {
                             let insert_spaces = self.editor.detected_indent_spaces;
                             self.pending_format_id =
                                 Some(client.request_formatting(&uri, tab_size, insert_spaces));
+                            self.toast("Formatted");
                         }
                     }
                 }
@@ -729,25 +858,6 @@ impl eframe::App for CodingUnicorns {
                         }
                     }
                 }
-            }
-        }
-
-        // Auto-trigger code actions when cursor line has diagnostics.
-        {
-            let (cur_row, _) = self.editor.cursor.position();
-            let has_diag = self
-                .editor
-                .diagnostics
-                .iter()
-                .any(|d| d.line as usize == cur_row);
-            let should_request = has_diag
-                && self.pending_code_actions_id.is_none()
-                && self
-                    .code_actions_last_request
-                    .map(|t| t.elapsed() > std::time::Duration::from_secs(1))
-                    .unwrap_or(true);
-            if should_request {
-                self.request_code_actions_at_cursor();
             }
         }
 
@@ -778,7 +888,9 @@ impl eframe::App for CodingUnicorns {
             self.start_rename();
         }
         if want_code_actions {
-            self.show_code_actions_menu = true;
+            // Explicit request (Ctrl+.): fetch fresh actions; the menu opens when they arrive.
+            self.code_actions_show_pending = true;
+            self.request_code_actions_at_cursor();
         }
         if want_blame {
             self.editor.show_blame = !self.editor.show_blame;
@@ -867,16 +979,38 @@ impl eframe::App for CodingUnicorns {
 
         // Handle pending extension uninstall: unload plugin DLL first, then delete files.
         if let Some(id) = self.extensions_panel.pending_uninstall.take() {
-            // Find the extensions list for this module so we can unload its plugin.
-            let exts: Vec<String> = self
-                .extension_registry
-                .installed
-                .iter()
-                .find(|e| e.manifest.extension.id == id)
-                .map(|e| e.manifest.capabilities.languages.clone())
-                .unwrap_or_default();
+            let remove_deps =
+                std::mem::take(&mut self.extensions_panel.pending_uninstall_remove_deps);
+            // Collect what we need from the manifest before the registry entry is
+            // removed: the languages (to unload the plugin) and, if requested, the
+            // dependencies (to uninstall the LSP server + tooling it pulled in).
+            let (exts, deps) = {
+                let installed = self
+                    .extension_registry
+                    .installed
+                    .iter()
+                    .find(|e| e.manifest.extension.id == id);
+                let exts = installed
+                    .map(|e| e.manifest.capabilities.languages.clone())
+                    .unwrap_or_default();
+                let deps = if remove_deps {
+                    installed.map(|e| e.manifest.dependencies.clone())
+                } else {
+                    None
+                };
+                (exts, deps)
+            };
             // Drop the plugin (releases the DLL lock on Windows).
             self.plugin_manager.unload_by_extensions(&exts);
+            // Remove external dependencies off the UI thread — npm/pip/dotnet
+            // uninstall can take several seconds.
+            if let Some(deps) = deps {
+                std::thread::spawn(move || {
+                    for e in crate::extension::installer::uninstall_deps(&deps) {
+                        log::warn!("Dependency uninstall: {e}");
+                    }
+                });
+            }
             // Now safe to delete the files.
             if let Err(e) = self.extension_registry.uninstall(&id) {
                 log::error!("Uninstall failed: {e}");
@@ -931,7 +1065,7 @@ impl eframe::App for CodingUnicorns {
         if self.command_palette.is_open() {
             let (opened_file, cmd) =
                 self.command_palette
-                    .show(ctx, &mut self.file_tree, &mut self.workspace_path);
+                    .show(ctx, &mut self.file_tree, &mut self.workspace_path, self.palette);
             if let Some(path) = opened_file {
                 self.open_file(path);
             }
@@ -939,10 +1073,12 @@ impl eframe::App for CodingUnicorns {
                 use crate::ui::palette::PaletteCommand;
                 match cmd {
                     PaletteCommand::ToggleTerminal => self.show_terminal = !self.show_terminal,
+                    PaletteCommand::ToggleClaude => self.show_claude = !self.show_claude,
                     PaletteCommand::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
                     PaletteCommand::GoToLine => self.editor.show_goto_line = true,
                     PaletteCommand::SaveFile => {
                         let _ = self.editor.save();
+                        self.toast("Saved");
                     }
                     PaletteCommand::NewFile => self.open_new_file(),
                     PaletteCommand::OpenFolder => {
@@ -963,6 +1099,7 @@ impl eframe::App for CodingUnicorns {
                         if let Some(path) = self.editor.current_path.clone() {
                             self.ensure_lsp_for_file(&path);
                         }
+                        self.toast("LSP restarted");
                     }
                 }
             }
@@ -985,6 +1122,8 @@ impl eframe::App for CodingUnicorns {
         // Module picker modal (rendered on top of everything)
         self.extensions_panel
             .show_picker_modal(ctx, &mut self.extension_registry);
+
+        self.poll_claude(ctx);
 
         // Request periodic repaint while terminal is visible (for live output).
         // Using a short interval instead of immediate repaint avoids burning CPU

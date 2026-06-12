@@ -1,3 +1,4 @@
+pub mod breadcrumbs;
 pub mod debugger;
 pub mod minimap;
 pub mod git_panel;
@@ -9,3 +10,5 @@ pub mod search;
 pub mod settings;
 pub mod shortcuts;
 pub mod statusbar;
+pub mod theme;
+pub mod widgets;

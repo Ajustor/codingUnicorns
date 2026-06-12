@@ -231,10 +231,20 @@ pub struct Config {
     /// When empty, auto-detects the best available shell.
     #[serde(default)]
     pub shell: String,
+    /// Command used to launch Claude Code (default "claude").
+    #[serde(default = "default_claude_binary")]
+    pub claude_binary: String,
+    /// Auto-approve read-only tools (Read/Glob/Grep) without a prompt.
+    #[serde(default = "default_true")]
+    pub claude_auto_allow_read: bool,
 }
 
 fn default_terminal_height() -> f32 {
     200.0
+}
+
+fn default_claude_binary() -> String {
+    "claude".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +268,8 @@ pub struct EditorConfig {
     pub show_gitignored: bool,
     #[serde(default = "default_true")]
     pub show_minimap: bool,
+    #[serde(default = "default_true")]
+    pub highlight_current_line: bool,
 }
 
 fn default_true() -> bool {
@@ -288,6 +300,7 @@ impl Default for Config {
                 auto_close_brackets: true,
                 show_gitignored: false,
                 show_minimap: true,
+                highlight_current_line: true,
             },
             font: FontConfig {
                 size: 14.0,
@@ -298,6 +311,8 @@ impl Default for Config {
             last_file: None,
             terminal_height: default_terminal_height(),
             shell: String::new(),
+            claude_binary: default_claude_binary(),
+            claude_auto_allow_read: true,
         }
     }
 }

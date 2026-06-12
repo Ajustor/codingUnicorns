@@ -9,6 +9,7 @@ const _FILETREE_USED: () = ();
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaletteCommand {
     ToggleTerminal,
+    ToggleClaude,
     ToggleSidebar,
     GoToLine,
     SaveFile,
@@ -24,6 +25,7 @@ impl PaletteCommand {
     fn all() -> &'static [PaletteCommand] {
         &[
             PaletteCommand::ToggleTerminal,
+            PaletteCommand::ToggleClaude,
             PaletteCommand::ToggleSidebar,
             PaletteCommand::GoToLine,
             PaletteCommand::SaveFile,
@@ -39,6 +41,7 @@ impl PaletteCommand {
     pub fn label(&self) -> &'static str {
         match self {
             Self::ToggleTerminal => "Toggle Terminal",
+            Self::ToggleClaude => "Toggle Claude panel",
             Self::ToggleSidebar => "Toggle Sidebar",
             Self::GoToLine => "Go to Line…",
             Self::SaveFile => "Save File",
@@ -54,6 +57,7 @@ impl PaletteCommand {
     pub fn shortcut(&self) -> &'static str {
         match self {
             Self::ToggleTerminal => "Ctrl+`",
+            Self::ToggleClaude => "Ctrl+Shift+I",
             Self::ToggleSidebar => "Ctrl+B",
             Self::GoToLine => "Ctrl+G",
             Self::SaveFile => "Ctrl+S",
@@ -63,6 +67,22 @@ impl PaletteCommand {
             Self::Find => "Ctrl+F",
             Self::FindReplace => "Ctrl+H",
             Self::RestartLsp => "",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::ToggleTerminal => "open close integrated shell console",
+            Self::ToggleClaude => "ai assistant chat panel",
+            Self::ToggleSidebar => "explorer file tree side panel",
+            Self::GoToLine => "jump navigate to line number",
+            Self::SaveFile => "write persist current document",
+            Self::NewFile => "create blank document",
+            Self::OpenFolder => "open workspace project directory",
+            Self::OpenSettings => "preferences configuration options theme",
+            Self::Find => "search text in current file",
+            Self::FindReplace => "search and substitute replace text",
+            Self::RestartLsp => "restart language server diagnostics",
         }
     }
 }
@@ -127,6 +147,7 @@ impl CommandPalette {
         ctx: &egui::Context,
         _file_tree: &mut FileTree,
         workspace: &mut Option<PathBuf>,
+        palette: crate::ui::theme::Palette,
     ) -> (Option<PathBuf>, Option<PaletteCommand>) {
         // Load file cache once when palette opens (cached_files is cleared in toggle()).
         if self.cached_files.is_empty() {
@@ -159,11 +180,9 @@ impl CommandPalette {
         self.entries.clear();
         if commands_only {
             for cmd in PaletteCommand::all() {
+                let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
-                    || self
-                        .matcher
-                        .fuzzy_match(cmd.label(), &effective_query)
-                        .is_some()
+                    || self.matcher.fuzzy_match(&haystack, &effective_query).is_some()
                 {
                     self.entries.push(PaletteEntry::Command(cmd.clone()));
                 }
@@ -192,11 +211,9 @@ impl CommandPalette {
             }
             // Commands at the bottom
             for cmd in PaletteCommand::all() {
+                let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
-                    || self
-                        .matcher
-                        .fuzzy_match(cmd.label(), &effective_query)
-                        .is_some()
+                    || self.matcher.fuzzy_match(&haystack, &effective_query).is_some()
                 {
                     self.entries.push(PaletteEntry::Command(cmd.clone()));
                 }
@@ -299,7 +316,7 @@ impl CommandPalette {
                                     let resp = ui.selectable_label(
                                         is_selected,
                                         egui::RichText::new(label)
-                                            .color(egui::Color32::from_rgb(180, 200, 255)),
+                                            .color(palette.accent),
                                     );
                                     if is_selected {
                                         resp.scroll_to_me(None);

@@ -1,6 +1,5 @@
 use crate::app::file_ops::is_image_file;
 use crate::app::CodingUnicorns;
-use crate::config::Config;
 use crate::terminal::Terminal;
 use crate::ui::run_panel::RunPanelAction;
 use crate::ui::statusbar::LspStatus;
@@ -21,7 +20,9 @@ pub enum SidebarTab {
 }
 
 pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
-    ctx.set_visuals(dark_visuals(&app.config));
+    let (palette, spacing) = crate::ui::theme::apply_theme(ctx, &app.config);
+    app.palette = palette;
+    app.spacing = spacing;
 
     // ── Auto-save (2-second inactivity) ──────────────────────────────────────
     if app.editor.content_version != app.last_edit_version_seen {
@@ -118,6 +119,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 ui.separator();
                 if ui.button("Save              Ctrl+S").clicked() {
                     let _ = app.editor.save();
+                    app.toast("Saved");
                     ui.close_menu();
                 }
                 ui.separator();
@@ -137,6 +139,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 }
                 if ui.button("Command Palette  Ctrl+P").clicked() {
                     app.command_palette.toggle();
+                    ui.close_menu();
+                }
+                if ui.button("Markdown Preview  Ctrl+Shift+V").clicked() {
+                    app.show_md_preview = !app.show_md_preview;
                     ui.close_menu();
                 }
                 ui.separator();
@@ -159,11 +165,33 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("⎇ {}", app.git_status.branch))
-                        .color(egui::Color32::from_rgb(150, 200, 150))
-                        .small(),
-                );
+                // Markdown preview toggle — shown only when the current file can be
+                // previewed. (Replaces the branch label here; the branch is still in
+                // the bottom status bar.)
+                let can_preview = app
+                    .editor
+                    .current_path
+                    .as_ref()
+                    .and_then(|p| p.extension())
+                    .and_then(|e| e.to_str())
+                    .map(|e| matches!(e.to_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"))
+                    .unwrap_or(false);
+                if can_preview {
+                    let color = if app.show_md_preview {
+                        egui::Color32::from_rgb(120, 170, 255)
+                    } else {
+                        egui::Color32::from_gray(200)
+                    };
+                    let btn = egui::Button::new(egui::RichText::new("👁 Preview").small().color(color))
+                        .frame(false);
+                    if ui
+                        .add(btn)
+                        .on_hover_text("Toggle Markdown preview (Ctrl+Shift+V)")
+                        .clicked()
+                    {
+                        app.show_md_preview = !app.show_md_preview;
+                    }
+                }
             });
         });
     });
@@ -181,12 +209,13 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .unwrap_or("");
                 match app.lsp.get(ext) {
                     None => LspStatus::Inactive,
-                    Some(c) if c.is_connected => LspStatus::Ready,
-                    Some(_) => LspStatus::Connecting,
+                    Some(c) if !c.is_connected => LspStatus::Connecting,
+                    Some(c) if c.is_busy() => LspStatus::Loading,
+                    Some(_) => LspStatus::Ready,
                 }
             };
             app.status_bar
-                .show(ui, &app.editor, &app.git_status, lsp_status);
+                .show(ui, &app.editor, &app.git_status, lsp_status, app.palette);
         });
 
     if app.show_terminal {
@@ -328,10 +357,18 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     app.show_terminal = false;
                 }
 
+                // Drain EVERY terminal's PTY each frame (not just the visible one) so none
+                // stalls waiting on an unanswered query like ESC[6n — fixes 2nd+ terminals.
+                for term in app.terminals.iter_mut() {
+                    term.update();
+                }
                 // Terminal content
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 if let Some(term) = app.terminals.get_mut(app.active_terminal) {
                     term.show_content(ui, &app.config);
+                    // Keep the UI repainting while the terminal is visible so PTY output is
+                    // drained promptly (and queries like ESC[6n are answered).
+                    ui.ctx().request_repaint();
                 }
             });
 
@@ -540,12 +577,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             match action {
                                 FileTreeAction::OpenFile(path) => app.open_file(path),
                                 FileTreeAction::Delete(path) => {
-                                    if path.is_dir() {
-                                        let _ = std::fs::remove_dir_all(&path);
-                                    } else {
-                                        let _ = std::fs::remove_file(&path);
-                                    }
-                                    app.file_tree.reload_children();
+                                    app.pending_delete = Some(path);
                                 }
                                 FileTreeAction::Rename(old_path, new_name) => {
                                     if let Some(parent) = old_path.parent() {
@@ -750,6 +782,84 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             });
     }
 
+    if app.show_claude {
+        egui::SidePanel::right("claude_panel")
+            .resizable(true)
+            .default_width(360.0)
+            .min_width(260.0)
+            .show(ctx, |ui| {
+                let pending = app.claude_pending.as_ref();
+                let account = app.claude_account.as_deref();
+                let action = app.claude_panel.show(ui, &app.claude_session, pending, account);
+                match action {
+                    claude::panel::ClaudeAction::Send(text) => {
+                        if text.starts_with('/') {
+                            app.handle_claude_slash(text);
+                        } else {
+                            app.start_claude_turn(text);
+                        }
+                    }
+                    claude::panel::ClaudeAction::NewConversation => {
+                        app.claude_session.reset();
+                        app.claude_pending = None;
+                        app.claude_turn = None;
+                    }
+                    claude::panel::ClaudeAction::Cancel => {
+                        if let Some(turn) = &mut app.claude_turn {
+                            turn.cancel();
+                        }
+                        app.claude_turn = None;
+                        app.claude_session.running = false;
+                        app.claude_pending = None;
+                    }
+                    claude::panel::ClaudeAction::Permission(decision) => {
+                        if let Some(req) = app.claude_pending.take() {
+                            let _ = req.reply.send(decision);
+                        }
+                    }
+                    claude::panel::ClaudeAction::OpenInteractive => {
+                        // Launch the real interactive `claude` in a terminal tab so
+                        // its built-in commands work, rooted at the workspace.
+                        let cwd = app.workspace_path.clone();
+                        let term = crate::terminal::Terminal::new_command(
+                            &app.config.claude_binary,
+                            cwd.as_deref(),
+                        );
+                        app.terminals.push(term);
+                        app.active_terminal = app.terminals.len() - 1;
+                        app.show_terminal = true;
+                    }
+                    claude::panel::ClaudeAction::None => {}
+                }
+            });
+    }
+
+    // Markdown preview: rendered view on the right, source stays in the editor
+    // (a source | preview split). Only for the current file when it's Markdown.
+    let md_preview = app.show_md_preview
+        && app
+            .editor
+            .current_path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e.to_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"))
+            .unwrap_or(false);
+    if md_preview {
+        SidePanel::right("md_preview")
+            .resizable(true)
+            .default_width(440.0)
+            .min_width(240.0)
+            .show(ctx, |ui| {
+                let md = app.editor.buffer.to_string();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui_commonmark::CommonMarkViewer::new().show(ui, &mut app.md_cache, &md);
+                    });
+            });
+    }
+
     // Use a zero-margin frame so there's no gap/padding around the editor area
     CentralPanel::default()
         .frame(
@@ -906,10 +1016,14 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .unwrap_or(false);
 
                 if active_is_settings {
-                    if app
-                        .settings_panel
-                        .show_inline(&mut left_ui, &mut app.config)
-                    {
+                    // Horizontal breathing room on the settings content.
+                    let settings_changed = egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(28, 0))
+                        .show(&mut left_ui, |ui| {
+                            app.settings_panel.show_inline(ui, &mut app.config)
+                        })
+                        .inner;
+                    if settings_changed {
                         app.config.save();
                         if app.file_tree.show_gitignored != app.config.editor.show_gitignored {
                             app.file_tree.show_gitignored = app.config.editor.show_gitignored;
@@ -920,71 +1034,18 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     || !app.editor.buffer.to_string().is_empty()
                 {
                     // Breadcrumbs
-                    if let Some(ref path) = app.editor.current_path.clone() {
-                        let crumb_height = 22.0;
-                        let (crumb_rect, _) = left_ui.allocate_exact_size(
-                            egui::vec2(left_ui.available_width(), crumb_height),
-                            egui::Sense::hover(),
-                        );
-                        let crumb_bg = egui::Color32::from_rgb(
-                            app.config.theme.background[0].saturating_add(12),
-                            app.config.theme.background[1].saturating_add(12),
-                            app.config.theme.background[2].saturating_add(12),
-                        );
-                        left_ui.painter().rect_filled(crumb_rect, 0.0, crumb_bg);
-                        let mut crumb_ui = left_ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(crumb_rect)
-                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        );
-                        crumb_ui.add_space(8.0);
-                        let components: Vec<String> = path
-                            .components()
-                            .map(|c| c.as_os_str().to_string_lossy().to_string())
-                            .filter(|s| !s.is_empty() && s != "/")
-                            .collect();
-                        let shown: Vec<&str> = components
-                            .iter()
-                            .rev()
-                            .take(3)
-                            .rev()
-                            .map(|s| s.as_str())
-                            .collect();
-                        for (i, part) in shown.iter().enumerate() {
-                            if i > 0 {
-                                crumb_ui.label(
-                                    egui::RichText::new(" › ")
-                                        .color(egui::Color32::from_gray(90))
-                                        .size(11.0),
-                                );
-                            }
-                            crumb_ui.label(
-                                egui::RichText::new(*part)
-                                    .color(egui::Color32::from_gray(160))
-                                    .size(11.0),
-                            );
-                        }
-                        if let Some(ref sym) = app.editor.current_symbol.clone() {
-                            crumb_ui.label(
-                                egui::RichText::new(" › ")
-                                    .color(egui::Color32::from_gray(90))
-                                    .size(11.0),
-                            );
-                            crumb_ui.label(
-                                egui::RichText::new(sym.as_str())
-                                    .color(egui::Color32::from_rgb(180, 200, 255))
-                                    .size(11.0),
-                            );
-                        }
-                    }
-                    {
-                        let (cur_row, _) = app.editor.cursor.position();
-                        app.editor.current_symbol = app
-                            .outline_symbols
-                            .iter()
-                            .rfind(|s| s.line as usize <= cur_row)
-                            .map(|s| s.name.clone());
-                    }
+                    let breadcrumb_path = app.editor.current_path.clone();
+                    let breadcrumb_workspace = app.workspace_path.clone();
+                    let breadcrumb_symbols = app.outline_symbols.clone();
+                    let breadcrumb_line = app.editor.cursor.position().0 as u32;
+                    crate::ui::breadcrumbs::render(
+                        &mut left_ui,
+                        app.palette,
+                        breadcrumb_path.as_deref(),
+                        breadcrumb_workspace.as_deref(),
+                        &breadcrumb_symbols,
+                        breadcrumb_line,
+                    );
                     app.editor.workspace_path = app.workspace_path.clone();
                     let lsp_hover = app.lsp_hover_result.take();
                     let bp_lines: std::collections::HashSet<usize> = app
@@ -1005,6 +1066,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         &app.plugin_manager,
                         lsp_hover,
                         &bp_lines,
+                        app.palette,
+                        app.spacing,
                     );
                 } else {
                     welcome_screen(&mut left_ui);
@@ -1081,6 +1144,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             &app.plugin_manager,
                             None,
                             &no_bp,
+                            app.palette,
+                            app.spacing,
                         );
                     }
                 }
@@ -1125,7 +1190,11 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .unwrap_or(false);
 
                 if active_is_settings {
-                    if app.settings_panel.show_inline(ui, &mut app.config) {
+                    let settings_changed = egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(28, 0))
+                        .show(ui, |ui| app.settings_panel.show_inline(ui, &mut app.config))
+                        .inner;
+                    if settings_changed {
                         app.config.save();
                         if app.file_tree.show_gitignored != app.config.editor.show_gitignored {
                             app.file_tree.show_gitignored = app.config.editor.show_gitignored;
@@ -1190,75 +1259,18 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     || !app.editor.buffer.to_string().is_empty()
                 {
                     // ── Breadcrumbs bar ───────────────────────────────────────────
-                    if let Some(ref path) = app.editor.current_path.clone() {
-                        let crumb_height = 22.0;
-                        let (crumb_rect, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), crumb_height),
-                            egui::Sense::hover(),
-                        );
-                        let crumb_bg = egui::Color32::from_rgb(
-                            app.config.theme.background[0].saturating_add(12),
-                            app.config.theme.background[1].saturating_add(12),
-                            app.config.theme.background[2].saturating_add(12),
-                        );
-                        ui.painter().rect_filled(crumb_rect, 0.0, crumb_bg);
-                        let mut crumb_ui = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(crumb_rect)
-                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        );
-                        crumb_ui.add_space(8.0);
-                        // Show up to last 3 path components
-                        let components: Vec<String> = path
-                            .components()
-                            .map(|c| c.as_os_str().to_string_lossy().to_string())
-                            .filter(|s| !s.is_empty() && s != "/")
-                            .collect();
-                        let shown: Vec<&str> = components
-                            .iter()
-                            .rev()
-                            .take(3)
-                            .rev()
-                            .map(|s| s.as_str())
-                            .collect();
-                        for (i, part) in shown.iter().enumerate() {
-                            if i > 0 {
-                                crumb_ui.label(
-                                    egui::RichText::new(" › ")
-                                        .color(egui::Color32::from_gray(90))
-                                        .size(11.0),
-                                );
-                            }
-                            crumb_ui.label(
-                                egui::RichText::new(*part)
-                                    .color(egui::Color32::from_gray(160))
-                                    .size(11.0),
-                            );
-                        }
-                        // Current symbol
-                        if let Some(ref sym) = app.editor.current_symbol.clone() {
-                            crumb_ui.label(
-                                egui::RichText::new(" › ")
-                                    .color(egui::Color32::from_gray(90))
-                                    .size(11.0),
-                            );
-                            crumb_ui.label(
-                                egui::RichText::new(sym.as_str())
-                                    .color(egui::Color32::from_rgb(180, 200, 255))
-                                    .size(11.0),
-                            );
-                        }
-                    }
-
-                    // Update current symbol from outline
-                    {
-                        let (cur_row, _) = app.editor.cursor.position();
-                        app.editor.current_symbol = app
-                            .outline_symbols
-                            .iter()
-                            .rfind(|s| s.line as usize <= cur_row)
-                            .map(|s| s.name.clone());
-                    }
+                    let breadcrumb_path = app.editor.current_path.clone();
+                    let breadcrumb_workspace = app.workspace_path.clone();
+                    let breadcrumb_symbols = app.outline_symbols.clone();
+                    let breadcrumb_line = app.editor.cursor.position().0 as u32;
+                    crate::ui::breadcrumbs::render(
+                        ui,
+                        app.palette,
+                        breadcrumb_path.as_deref(),
+                        breadcrumb_workspace.as_deref(),
+                        &breadcrumb_symbols,
+                        breadcrumb_line,
+                    );
 
                     app.editor.workspace_path = app.workspace_path.clone();
                     let lsp_hover = app.lsp_hover_result.take();
@@ -1276,12 +1288,60 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         })
                         .unwrap_or_default();
                     app.editor
-                        .show(ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines);
+                        .show(ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines, app.palette, app.spacing);
                 } else {
                     welcome_screen(ui);
                 }
             }
         });
+
+    if let Some(path) = app.pending_delete.clone() {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let kind = if path.is_dir() { "folder" } else { "file" };
+        match crate::ui::widgets::confirm_dialog(
+            ctx,
+            app.palette,
+            "Confirm delete",
+            &format!("Delete {kind} \"{name}\"? This cannot be undone."),
+        ) {
+            Some(true) => {
+                if path.is_dir() {
+                    let _ = std::fs::remove_dir_all(&path);
+                } else {
+                    let _ = std::fs::remove_file(&path);
+                }
+                app.file_tree.reload_children();
+                app.pending_delete = None;
+            }
+            Some(false) => app.pending_delete = None,
+            None => {}
+        }
+    }
+
+    // Toast on explicit Ctrl+S save (handled inside the editor, signalled via a flag).
+    {
+        let mut saved = false;
+        if app.editor.just_saved {
+            app.editor.just_saved = false;
+            saved = true;
+        }
+        if let Some(e2) = app.editor2.as_mut() {
+            if e2.just_saved {
+                e2.just_saved = false;
+                saved = true;
+            }
+        }
+        if saved {
+            app.toast("Saved");
+        }
+    }
+
+    if crate::ui::widgets::render_toasts(ctx, app.palette, app.spacing, &mut app.toasts) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
 }
 
 fn welcome_screen(ui: &mut egui::Ui) {
@@ -1327,43 +1387,3 @@ fn find_free_path(parent: &std::path::Path, base: &str, _is_dir: bool) -> std::p
     parent.join(base) // fallback
 }
 
-fn dark_visuals(config: &Config) -> egui::Visuals {
-    let mut v = egui::Visuals::dark();
-    let bg = egui::Color32::from_rgb(
-        config.theme.background[0],
-        config.theme.background[1],
-        config.theme.background[2],
-    );
-    let fg = egui::Color32::from_rgb(
-        config.theme.foreground[0],
-        config.theme.foreground[1],
-        config.theme.foreground[2],
-    );
-    let accent = egui::Color32::from_rgb(
-        config.theme.accent[0],
-        config.theme.accent[1],
-        config.theme.accent[2],
-    );
-    v.panel_fill = egui::Color32::from_rgb(
-        config.theme.background[0].saturating_add(7),
-        config.theme.background[1].saturating_add(7),
-        config.theme.background[2].saturating_add(7),
-    );
-    v.window_fill = bg;
-    v.override_text_color = Some(fg);
-    v.selection.bg_fill =
-        egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 80);
-    v.selection.stroke = egui::Stroke::new(1.0, accent);
-    v.hyperlink_color = accent;
-    v.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(
-        config.theme.background[0].saturating_add(15),
-        config.theme.background[1].saturating_add(15),
-        config.theme.background[2].saturating_add(15),
-    );
-    v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(
-        config.theme.background[0].saturating_add(30),
-        config.theme.background[1].saturating_add(30),
-        config.theme.background[2].saturating_add(30),
-    );
-    v
-}

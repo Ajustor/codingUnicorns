@@ -258,7 +258,34 @@ fn parse_token_json(json: &str) -> Option<Vec<Token>> {
         if !rest.starts_with('{') {
             break;
         }
-        let end = rest.find('}')? + 1;
+        // Find the object's closing '}' while respecting quoted strings — a token's
+        // text may itself contain '{' or '}' (C# braces, string interpolation, …),
+        // so a naive find('}') would truncate the object and drop the whole line.
+        let bytes = rest.as_bytes();
+        let mut depth = 0usize;
+        let mut in_str = false;
+        let mut end = 0usize;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' if !in_str => in_str = true,
+                b'"' if in_str => in_str = false,
+                b'\\' if in_str => i += 1, // skip escaped char
+                b'{' if !in_str => depth += 1,
+                b'}' if !in_str => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if end == 0 {
+            break; // malformed / no closing brace
+        }
         let obj = &rest[1..end - 1]; // strip braces
         rest = rest[end..].trim_start_matches([',', ' ']);
 
@@ -361,4 +388,28 @@ fn extract_json_str(obj: &str, key: &str) -> Option<String> {
         }
     }
     Some(result)
+}
+
+#[cfg(test)]
+mod token_parse_tests {
+    use super::*;
+
+    #[test]
+    fn token_text_with_braces_does_not_truncate_line() {
+        // A token whose text is "}" (block close, C# interpolation, …) must not
+        // truncate object parsing and drop the rest of the line's tokens.
+        let json = r#"[{"text":"a","kind":"keyword"},{"text":"}","kind":"normal"},{"text":"\"s\"","kind":"string"}]"#;
+        let toks = parse_token_json(json).expect("should parse");
+        assert_eq!(toks.len(), 3, "all tokens recovered despite '}}' in text");
+        assert_eq!(toks[1].text, "}");
+        assert!(toks.iter().any(|t| t.kind == TokenKind::String));
+    }
+
+    #[test]
+    fn interpolated_string_keeps_string_tokens() {
+        let json = r#"[{"text":"$","kind":"string"},{"text":"\"hi \"","kind":"string"},{"text":"{","kind":"normal"},{"text":"name","kind":"normal"},{"text":"}","kind":"normal"},{"text":" x\"","kind":"string"}]"#;
+        let toks = parse_token_json(json).expect("should parse");
+        assert_eq!(toks.len(), 6);
+        assert_eq!(toks.iter().filter(|t| t.kind == TokenKind::String).count(), 3);
+    }
 }

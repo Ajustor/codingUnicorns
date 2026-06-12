@@ -3,6 +3,9 @@ pub struct SettingsPanel {
     rebinding: Option<String>,
     search_query: String,
     search_focused: bool,
+    /// Cached shell list — `list_available_shells()` spawns `where`/`which`
+    /// subprocesses, so it must NOT run every frame. Computed once, lazily.
+    available_shells: Option<Vec<(String, String)>>,
 }
 
 impl SettingsPanel {
@@ -12,6 +15,7 @@ impl SettingsPanel {
             rebinding: None,
             search_query: String::new(),
             search_focused: false,
+            available_shells: None,
         }
     }
 
@@ -51,6 +55,7 @@ impl SettingsPanel {
                 "font", "size", "tab", "indent", "spaces", "tabs",
                 "line numbers", "word wrap", "auto-save", "auto-close", "brackets",
                 "gitignore", "hidden", "files", "editor", "minimap", "overview",
+                "current line", "highlight",
             ]) {
                 section_heading(ui, "Editor");
 
@@ -102,6 +107,10 @@ impl SettingsPanel {
                     changed |= checkbox(ui, &mut config.editor.show_minimap, "Minimap");
                 }
 
+                if setting_matches(&q, &["current", "line", "highlight", "cursor"]) {
+                    changed |= checkbox(ui, &mut config.editor.highlight_current_line, "Highlight current line");
+                }
+
                 if setting_matches(&q, &["gitignore", "ignored", "hidden", "files", "tree"]) {
                     changed |= checkbox(ui, &mut config.editor.show_gitignored, "Show gitignored files");
                     hint(ui, "Display files excluded by .gitignore in the file tree.");
@@ -117,7 +126,11 @@ impl SettingsPanel {
                 section_heading(ui, "Terminal");
 
                 if setting_matches(&q, &["shell", "terminal", "pwsh", "powershell", "cmd", "bash", "zsh"]) {
-                    let available = crate::terminal::list_available_shells();
+                    // Cached: avoid re-spawning `where`/`which` every frame (a major
+                    // source of lag on this page when egui repaints on hover/scroll).
+                    let available = self
+                        .available_shells
+                        .get_or_insert_with(crate::terminal::list_available_shells);
                     ui.label("Shell");
                     ui.add_space(2.0);
 
@@ -130,7 +143,7 @@ impl SettingsPanel {
                     }
 
                     // One button per detected shell
-                    for (name, path) in &available {
+                    for (name, path) in available.iter() {
                         let is_selected = config.shell == *path;
                         let label = if is_selected {
                             format!("{name} (current)")
@@ -157,16 +170,17 @@ impl SettingsPanel {
             // ═══════════════════════════════════════════════════════════════
             if setting_matches(&q, &[
                 "theme", "color", "background", "foreground", "accent",
-                "dark", "monokai", "solarized", "preset",
+                "dark", "monokai", "solarized", "light", "preset",
             ]) {
                 section_heading(ui, "Theme");
 
-                if setting_matches(&q, &["theme", "preset", "dark", "monokai", "solarized"]) {
+                if setting_matches(&q, &["theme", "preset", "dark", "monokai", "solarized", "light"]) {
                     const PRESETS: &[ThemePreset] = &[
                         ThemePreset { name: "dark",           label: "Dark",      bg: [30,30,30],   fg: [212,212,212], accent: [0,122,204] },
                         ThemePreset { name: "monokai",        label: "Monokai",   bg: [39,40,34],   fg: [248,248,242], accent: [166,226,46] },
                         ThemePreset { name: "solarized-dark", label: "Solarized", bg: [0,43,54],    fg: [131,148,150], accent: [38,139,210] },
                         ThemePreset { name: "one-dark",       label: "One Dark",  bg: [40,44,52],   fg: [171,178,191], accent: [97,175,239] },
+                        ThemePreset { name: "light",          label: "Light",     bg: [246,246,246], fg: [40,40,40],   accent: [0,103,184] },
                     ];
                     ui.horizontal(|ui| {
                         for preset in PRESETS {
@@ -394,12 +408,33 @@ fn keybinding_group(
     rebinding: &mut Option<String>,
     changed: &mut bool,
 ) {
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new(title).strong().size(12.0).color(egui::Color32::from_rgb(180, 180, 180)));
-    ui.add_space(2.0);
-    for (label, binding) in bindings.iter_mut() {
-        keybinding_row(ui, label, binding, rebinding, changed);
-    }
+    // Center the whole group (title + table) as a fixed-width column on screen.
+    let col_w = 440.0_f32;
+    let pad = ((ui.available_width() - col_w) / 2.0).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(pad);
+        ui.vertical(|ui| {
+            ui.set_max_width(col_w);
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(title)
+                    .strong()
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(180, 180, 180)),
+            );
+            ui.add_space(4.0);
+            egui::Grid::new(format!("kb_grid_{title}"))
+                .num_columns(2)
+                .striped(true)
+                .spacing(egui::vec2(24.0, 7.0))
+                .min_col_width(190.0)
+                .show(ui, |ui| {
+                    for (label, binding) in bindings.iter_mut() {
+                        keybinding_row(ui, label, binding, rebinding, changed);
+                    }
+                });
+        });
+    });
 }
 
 fn keybinding_row(
@@ -409,43 +444,42 @@ fn keybinding_row(
     rebinding: &mut Option<String>,
     changed: &mut bool,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).size(12.0));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let is_rebinding = rebinding.as_deref() == Some(label);
-            if is_rebinding {
-                ui.label(
-                    egui::RichText::new("Press a key...")
-                        .color(egui::Color32::from_rgb(255, 200, 0))
-                        .monospace()
-                        .size(11.0),
-                );
-                ui.input(|i| {
-                    for event in &i.events {
-                        if let egui::Event::Key { key, modifiers, pressed: true, .. } = event {
-                            binding.key = format!("{key:?}");
-                            binding.ctrl = modifiers.ctrl;
-                            binding.shift = modifiers.shift;
-                            binding.alt = modifiers.alt;
-                            *rebinding = None;
-                            *changed = true;
-                        }
+    // Column 1: action label.
+    ui.label(egui::RichText::new(label).size(12.0));
+    // Column 2: the shortcut (click to rebind).
+    let is_rebinding = rebinding.as_deref() == Some(label);
+    if is_rebinding {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Press a key...")
+                    .color(egui::Color32::from_rgb(255, 200, 0))
+                    .monospace()
+                    .size(11.0),
+            );
+            ui.input(|i| {
+                for event in &i.events {
+                    if let egui::Event::Key { key, modifiers, pressed: true, .. } = event {
+                        binding.key = format!("{key:?}");
+                        binding.ctrl = modifiers.ctrl;
+                        binding.shift = modifiers.shift;
+                        binding.alt = modifiers.alt;
+                        *rebinding = None;
+                        *changed = true;
                     }
-                });
-                if ui.small_button("Cancel").clicked() {
-                    *rebinding = None;
                 }
-            } else {
-                let btn = egui::Button::new(
-                    egui::RichText::new(binding.display()).monospace().size(10.0),
-                )
-                .min_size(egui::vec2(80.0, 0.0));
-                if ui.add(btn).on_hover_text("Click to rebind").clicked() {
-                    *rebinding = Some(label.to_string());
-                }
+            });
+            if ui.small_button("Cancel").clicked() {
+                *rebinding = None;
             }
         });
-    });
+    } else {
+        let btn = egui::Button::new(egui::RichText::new(binding.display()).monospace().size(10.0))
+            .min_size(egui::vec2(80.0, 0.0));
+        if ui.add(btn).on_hover_text("Click to rebind").clicked() {
+            *rebinding = Some(label.to_string());
+        }
+    }
+    ui.end_row();
 }
 
 /// Returns true if any keyword matches the search query (empty query matches all).
