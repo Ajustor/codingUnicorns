@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use vscode_import::{import_vscode, DebugSpec};
+
+pub mod vscode_import;
 
 /// A single run configuration (like VSCode's launch.json entry)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +79,9 @@ pub struct RunManager {
     pub active_config: usize,
     pub is_running: bool,
     workspace: Option<PathBuf>,
+    /// Specs de debug importées de `.vscode/launch.json`, clé = nom de config.
+    /// Non sérialisé : re-dérivé à chaque `load_for_workspace`.
+    debug_specs: HashMap<String, DebugSpec>,
 }
 
 impl RunManager {
@@ -84,26 +91,57 @@ impl RunManager {
             active_config: 0,
             is_running: false,
             workspace: None,
+            debug_specs: HashMap::new(),
         }
     }
 
-    /// Call when the workspace changes. Loads `launch.toml` or auto-detects configs.
+    /// Call when the workspace changes. Fusionne `launch.toml`, l'import
+    /// `.vscode` et l'auto-détection, dédupliqués.
     pub fn load_for_workspace(&mut self, workspace: &Path) {
         self.workspace = Some(workspace.to_path_buf());
+        self.debug_specs.clear();
 
+        let mut configs: Vec<RunConfig> = Vec::new();
+
+        // 1. launch.toml (précédence la plus haute).
         let launch_file = workspace.join(".coding-unicorns").join("launch.toml");
         if launch_file.exists() {
             if let Ok(content) = std::fs::read_to_string(&launch_file) {
                 if let Ok(lf) = toml::from_str::<LaunchFile>(&content) {
-                    self.configs = lf.configurations;
-                    self.active_config = 0;
-                    return;
+                    configs.extend(lf.configurations);
                 }
             }
         }
 
-        self.configs = auto_detect_configs(workspace);
+        // 2. Import .vscode (tasks.json + launch.json).
+        let imported = import_vscode(workspace);
+        configs.extend(imported.configs);
+        // Stash raw specs for post-dedup re-keying (consumed below).
+        let imported_debug_specs = imported.debug_specs;
+
+        // 3. Auto-détection (précédence la plus basse).
+        configs.extend(auto_detect_configs(workspace));
+
+        self.configs = merge_dedup(configs);
         self.active_config = 0;
+
+        // Re-key debug specs to the surviving config names (post-dedup), so every
+        // debug_specs key matches a config in self.configs. A .vscode config that
+        // was deduped away must not leave an orphan spec.
+        let raw_specs: HashMap<String, DebugSpec> = imported_debug_specs
+            .into_iter()
+            .map(|(name, spec)| (name.to_lowercase(), spec))
+            .collect();
+        for cfg in &self.configs {
+            if let Some(spec) = raw_specs.get(&cfg.name.to_lowercase()) {
+                self.debug_specs.insert(cfg.name.clone(), spec.clone());
+            }
+        }
+    }
+
+    /// Spec de debug pour une config nommée, si importée depuis `.vscode`.
+    pub fn debug_spec_for(&self, name: &str) -> Option<&DebugSpec> {
+        self.debug_specs.get(name)
     }
 
     /// Save current configs to `.coding-unicorns/launch.toml`.
@@ -166,6 +204,26 @@ impl Default for RunManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Fusionne en supprimant les doublons : par nom (insensible à la casse),
+/// puis par couple (command, cwd). Conserve la première occurrence.
+fn merge_dedup(configs: Vec<RunConfig>) -> Vec<RunConfig> {
+    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut seen_cmds: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for c in configs {
+        let name_key = c.name.to_lowercase();
+        let cmd_key = (c.command.clone(), c.cwd.clone());
+        // Name-dedup (case-insensitive) takes precedence; a config is dropped if EITHER name OR (command, cwd) matches.
+        if seen_names.contains(&name_key) || seen_cmds.contains(&cmd_key) {
+            continue;
+        }
+        seen_names.insert(name_key);
+        seen_cmds.insert(cmd_key);
+        out.push(c);
+    }
+    out
 }
 
 fn shell_escape(s: &str) -> String {
@@ -313,4 +371,22 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
     });
 
     configs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_dedup_drops_duplicate_names_and_commands() {
+        let configs = vec![
+            RunConfig { name: "Run".into(), command: "a".into(), cwd: "w".into(), env: vec![], args: vec![] },
+            RunConfig { name: "run".into(), command: "b".into(), cwd: "w".into(), env: vec![], args: vec![] }, // même nom (casse)
+            RunConfig { name: "Other".into(), command: "a".into(), cwd: "w".into(), env: vec![], args: vec![] }, // même (command, cwd)
+            RunConfig { name: "Keep".into(), command: "c".into(), cwd: "w".into(), env: vec![], args: vec![] },
+        ];
+        let merged = merge_dedup(configs);
+        let names: Vec<&str> = merged.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["Run", "Keep"]);
+    }
 }

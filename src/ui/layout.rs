@@ -654,6 +654,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         if action.run_clicked {
                             app.run_active_config();
                         }
+                        if action.debug_clicked {
+                            app.start_debug_session();
+                        }
                         if action.stop_clicked {
                             app.runner.is_running = false;
                             if let Some(term) = app.terminals.get_mut(app.active_terminal) {

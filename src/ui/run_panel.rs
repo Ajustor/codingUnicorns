@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub struct RunPanelAction {
     pub run_clicked: bool,
     pub stop_clicked: bool,
+    pub debug_clicked: bool,
 }
 
 pub struct RunPanel {
@@ -36,17 +37,26 @@ impl RunPanel {
     ) -> RunPanelAction {
         let mut run_clicked = false;
         let mut stop_clicked = false;
+        let mut debug_clicked = false;
 
         // ── HEADER with config selector and Run/Stop button ────────────
+        let active_debuggable = runner
+            .active_config()
+            .map(|c| runner.debug_spec_for(&c.name).is_some())
+            .unwrap_or(false);
+
         ui.horizontal(|ui| {
             let active_name = runner
                 .active_config()
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| "No configuration".to_string());
 
+            // Run/Stop button (40 + spacing); plus Debug button (32 + spacing) when shown.
+            let reserved = if active_debuggable { 56.0 + 36.0 } else { 56.0 };
+
             egui::ComboBox::from_id_salt("run_config_selector")
                 .selected_text(&active_name)
-                .width(ui.available_width() - 56.0)
+                .width(ui.available_width() - reserved)
                 .show_ui(ui, |ui| {
                     for (i, config) in runner.configs.iter().enumerate() {
                         let selected = runner.active_config == i;
@@ -74,6 +84,22 @@ impl RunPanel {
                 } else {
                     run_clicked = true;
                 }
+            }
+
+            if active_debuggable
+                && ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(egui_phosphor::regular::BUG)
+                                .size(16.0)
+                                .color(egui::Color32::from_rgb(220, 160, 80)),
+                        )
+                        .min_size(egui::vec2(32.0, 28.0)),
+                    )
+                    .on_hover_text("Debug active configuration")
+                    .clicked()
+            {
+                debug_clicked = true;
             }
         });
 
@@ -249,6 +275,7 @@ impl RunPanel {
         RunPanelAction {
             run_clicked,
             stop_clicked,
+            debug_clicked,
         }
     }
 }
