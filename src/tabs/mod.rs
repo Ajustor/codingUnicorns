@@ -191,3 +191,301 @@ impl TabManager {
         to_open
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Headless egui harness ──────────────────────────────────────────────
+
+    struct Harness {
+        ctx: egui::Context,
+        texts: Vec<(String, egui::Rect)>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            Self {
+                ctx: egui::Context::default(),
+                texts: vec![],
+            }
+        }
+
+        /// Run one frame rendering the tab bar; returns `show()`'s result.
+        fn frame(&mut self, tm: &mut TabManager, events: Vec<egui::Event>) -> Option<PathBuf> {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 300.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut result = None;
+            let out = self.ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    result = tm.show(ui);
+                });
+            });
+            self.texts.clear();
+            for cs in &out.shapes {
+                collect_texts(&cs.shape, &mut self.texts);
+            }
+            result
+        }
+
+        fn rect_of(&self, text: &str) -> egui::Rect {
+            self.texts
+                .iter()
+                .find(|(t, _)| t == text)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("text {text:?} not rendered; have {:?}", self.texts))
+        }
+
+        /// Press + release `button` over `text`, returning the result of the
+        /// release frame (where egui reports the click).
+        fn click(
+            &mut self,
+            tm: &mut TabManager,
+            text: &str,
+            button: egui::PointerButton,
+        ) -> Option<PathBuf> {
+            self.frame(tm, vec![]);
+            let pos = self.rect_of(text).center();
+            let ev = |pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(tm, vec![egui::Event::PointerMoved(pos), ev(true)]);
+            self.frame(tm, vec![ev(false)])
+        }
+    }
+
+    fn collect_texts(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(t) => {
+                out.push((t.galley.text().to_string(), t.visual_bounding_rect()));
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
+    }
+
+    fn manager_with(paths: &[&str]) -> TabManager {
+        let mut tm = TabManager::new();
+        for p in paths {
+            tm.open(PathBuf::from(p), String::new());
+        }
+        tm
+    }
+
+    // ── Pure state logic ───────────────────────────────────────────────────
+
+    #[test]
+    fn open_creates_tab_titled_after_file_name_and_activates_it() {
+        let mut tm = TabManager::new();
+        assert!(tm.active_tab.is_none());
+        let id = tm.open(PathBuf::from("src/main.rs"), "fn main() {}".into());
+        assert_eq!(tm.tabs.len(), 1);
+        let t = &tm.tabs[0];
+        assert_eq!(t.id, id);
+        assert_eq!(t.title, "main.rs");
+        assert_eq!(t.path, PathBuf::from("src/main.rs"));
+        assert!(!t.is_modified && !t.is_settings);
+        assert_eq!(tm.active_tab, Some(id));
+    }
+
+    #[test]
+    fn open_existing_path_reuses_tab_and_reactivates_it() {
+        let mut tm = TabManager::new();
+        let a = tm.open(PathBuf::from("a.rs"), String::new());
+        let b = tm.open(PathBuf::from("b.rs"), String::new());
+        assert_ne!(a, b);
+        assert_eq!(tm.active_tab, Some(b));
+        let again = tm.open(PathBuf::from("a.rs"), String::new());
+        assert_eq!(again, a);
+        assert_eq!(tm.tabs.len(), 2);
+        assert_eq!(tm.active_tab, Some(a));
+    }
+
+    #[test]
+    fn open_path_without_file_name_is_titled_untitled() {
+        let mut tm = TabManager::new();
+        tm.open(PathBuf::from(".."), String::new());
+        assert_eq!(tm.tabs[0].title, "untitled");
+    }
+
+    #[test]
+    fn open_untitled_creates_distinct_modified_tabs() {
+        let mut tm = TabManager::new();
+        let a = tm.open_untitled();
+        let b = tm.open_untitled();
+        assert_ne!(a, b);
+        assert_eq!(tm.tabs[0].title, "untitled-1");
+        assert_eq!(tm.tabs[1].title, "untitled-2");
+        assert_ne!(tm.tabs[0].path, tm.tabs[1].path);
+        assert!(tm.tabs.iter().all(|t| t.is_modified && !t.is_settings));
+        assert_eq!(tm.active_tab, Some(b));
+    }
+
+    #[test]
+    fn open_settings_is_a_singleton() {
+        let mut tm = manager_with(&["a.rs"]);
+        let s = tm.open_settings();
+        let t = tm.tabs.iter().find(|t| t.id == s).unwrap();
+        assert!(t.is_settings);
+        assert_eq!(t.title, "Settings");
+        assert_eq!(tm.active_tab, Some(s));
+
+        tm.open(PathBuf::from("b.rs"), String::new());
+        let s2 = tm.open_settings();
+        assert_eq!(s, s2);
+        assert_eq!(tm.tabs.iter().filter(|t| t.is_settings).count(), 1);
+        assert_eq!(tm.active_tab, Some(s));
+    }
+
+    #[test]
+    fn close_active_tab_activates_last_remaining() {
+        let mut tm = manager_with(&["a.rs", "b.rs", "c.rs"]);
+        let ids: Vec<usize> = tm.tabs.iter().map(|t| t.id).collect();
+        tm.active_tab = Some(ids[1]);
+        tm.close(ids[1]);
+        assert_eq!(tm.tabs.len(), 2);
+        assert_eq!(tm.active_tab, Some(ids[2]));
+    }
+
+    #[test]
+    fn close_inactive_tab_keeps_active() {
+        let mut tm = manager_with(&["a.rs", "b.rs"]);
+        let ids: Vec<usize> = tm.tabs.iter().map(|t| t.id).collect();
+        tm.active_tab = Some(ids[1]);
+        tm.close(ids[0]);
+        assert_eq!(tm.active_tab, Some(ids[1]));
+        assert_eq!(tm.tabs.len(), 1);
+    }
+
+    #[test]
+    fn close_last_tab_clears_active_and_unknown_id_is_noop() {
+        let mut tm = manager_with(&["a.rs"]);
+        tm.close(999);
+        assert_eq!(tm.tabs.len(), 1);
+        let id = tm.tabs[0].id;
+        tm.close(id);
+        assert!(tm.tabs.is_empty());
+        assert!(tm.active_tab.is_none());
+    }
+
+    #[test]
+    fn ids_are_never_reused_after_close() {
+        let mut tm = manager_with(&["a.rs"]);
+        let first = tm.tabs[0].id;
+        tm.close(first);
+        let next = tm.open(PathBuf::from("b.rs"), String::new());
+        assert_ne!(first, next);
+    }
+
+    // ── Rendering / interaction ────────────────────────────────────────────
+
+    #[test]
+    fn show_renders_every_tab_without_actions_when_idle() {
+        let mut tm = manager_with(&["a.rs", "b.rs"]);
+        tm.tabs[0].is_modified = true;
+        tm.open_settings();
+        let mut h = Harness::new();
+        assert!(h.frame(&mut tm, vec![]).is_none());
+        // Modified tabs get a bullet prefix; others show their plain title.
+        h.rect_of("● a.rs");
+        h.rect_of("b.rs");
+        h.rect_of("Settings");
+        assert_eq!(tm.tabs.len(), 3);
+    }
+
+    #[test]
+    fn clicking_file_tab_returns_its_path_and_activates_it() {
+        let mut tm = manager_with(&["a.rs", "b.rs"]);
+        let a_id = tm.tabs[0].id;
+        let mut h = Harness::new();
+        let r = h.click(&mut tm, "a.rs", egui::PointerButton::Primary);
+        assert_eq!(r, Some(PathBuf::from("a.rs")));
+        assert_eq!(tm.active_tab, Some(a_id));
+    }
+
+    #[test]
+    fn clicking_settings_tab_activates_without_opening_a_path() {
+        let mut tm = TabManager::new();
+        let s = tm.open_settings();
+        tm.open(PathBuf::from("a.rs"), String::new());
+        let mut h = Harness::new();
+        let r = h.click(&mut tm, "Settings", egui::PointerButton::Primary);
+        assert!(r.is_none());
+        assert_eq!(tm.active_tab, Some(s));
+    }
+
+    #[test]
+    fn close_button_on_active_tab_returns_new_active_path() {
+        let mut tm = manager_with(&["a.rs", "b.rs"]);
+        // b.rs is active; its × is the second one rendered.
+        let mut h = Harness::new();
+        h.frame(&mut tm, vec![]);
+        let closes: Vec<egui::Rect> = h
+            .texts
+            .iter()
+            .filter(|(t, _)| t == "×")
+            .map(|(_, r)| *r)
+            .collect();
+        assert_eq!(closes.len(), 2);
+        let pos = closes[1].center();
+        let ev = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.frame(&mut tm, vec![egui::Event::PointerMoved(pos), ev(true)]);
+        let r = h.frame(&mut tm, vec![ev(false)]);
+        assert_eq!(tm.tabs.len(), 1);
+        assert_eq!(tm.tabs[0].title, "a.rs");
+        assert_eq!(
+            r,
+            Some(PathBuf::from("a.rs")),
+            "editor must load the new active tab"
+        );
+    }
+
+    #[test]
+    fn close_button_on_inactive_tab_returns_nothing() {
+        let mut tm = manager_with(&["a.rs", "b.rs"]);
+        let b_id = tm.tabs[1].id;
+        let mut h = Harness::new();
+        h.frame(&mut tm, vec![]);
+        let pos = h
+            .texts
+            .iter()
+            .find(|(t, _)| t == "×")
+            .map(|(_, r)| r.center())
+            .unwrap();
+        let ev = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.frame(&mut tm, vec![egui::Event::PointerMoved(pos), ev(true)]);
+        let r = h.frame(&mut tm, vec![ev(false)]);
+        assert!(r.is_none());
+        assert_eq!(tm.tabs.len(), 1);
+        assert_eq!(tm.active_tab, Some(b_id));
+    }
+
+    #[test]
+    fn middle_click_closes_hovered_tab() {
+        let mut tm = manager_with(&["a.rs", "b.rs"]);
+        let mut h = Harness::new();
+        let r = h.click(&mut tm, "b.rs", egui::PointerButton::Middle);
+        assert_eq!(tm.tabs.len(), 1);
+        assert_eq!(tm.tabs[0].title, "a.rs");
+        assert_eq!(r, Some(PathBuf::from("a.rs")));
+    }
+}
