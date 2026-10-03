@@ -215,19 +215,6 @@ impl Terminal {
         if !self.performer.responses.is_empty() {
             if let Some(w) = &mut self.writer {
                 let resp = std::mem::take(&mut self.performer.responses);
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(std::env::temp_dir().join("cu_csi.txt"))
-                {
-                    use std::io::Write as _;
-                    let _ = writeln!(
-                        f,
-                        "FLUSH {} bytes: {:?}",
-                        resp.len(),
-                        String::from_utf8_lossy(&resp)
-                    );
-                }
                 let _ = w.write_all(&resp);
                 let _ = w.flush();
             } else {
@@ -310,10 +297,7 @@ impl Terminal {
                             .buf
                             .rows
                             .iter()
-                            .rposition(|row| {
-                                row.iter()
-                                    .any(|c| c.ch != ' ' || c.fg != DEFAULT_FG || c.bold)
-                            })
+                            .rposition(|row| row.iter().any(Cell::is_styled_or_printed))
                             .map_or(0, |i| i + 1)
                             .max(cursor_row + 1)
                             .min(num_rows);
@@ -468,7 +452,7 @@ fn render_row(
 
     let last = row
         .iter()
-        .rposition(|c| c.ch != ' ' || c.fg != DEFAULT_FG || c.bold)
+        .rposition(Cell::is_styled_or_printed)
         .map_or(0, |i| i + 1);
 
     let (rect, _) =
@@ -514,9 +498,10 @@ fn render_row(
     let mut i = 0;
     while i < last {
         let fg = row[i].fg;
+        let bg = row[i].bg;
         let bold = row[i].bold;
         let mut j = i + 1;
-        while j < last && row[j].fg == fg && row[j].bold == bold {
+        while j < last && row[j].fg == fg && row[j].bg == bg && row[j].bold == bold {
             j += 1;
         }
         let text: String = row[i..j].iter().map(|c| c.ch).collect();
@@ -527,7 +512,7 @@ fn render_row(
             egui::TextFormat {
                 font_id: font_id.clone(),
                 color,
-                background: term_bg,
+                background: bg.unwrap_or(term_bg),
                 ..Default::default()
             },
         );
