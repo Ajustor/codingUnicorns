@@ -604,9 +604,7 @@ impl eframe::App for CodingUnicorns {
         }
         // Alt+Left = navigate back
         if want_nav_back {
-            if let Some(entry) = self.nav_history.go_back() {
-                self.open_file_at_line(entry.path, entry.row);
-            }
+            self.navigate_back();
         }
         // Alt+Right = navigate forward
         if want_nav_forward {
