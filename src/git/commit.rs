@@ -18,7 +18,7 @@ impl GitStatus {
         let sig = repo
             .signature()
             .map_err(|e| format!("Signature error: {e}"))?;
-        let parent_commits: Vec<git2::Commit> = match repo.head() {
+        let mut parent_commits: Vec<git2::Commit> = match repo.head() {
             Ok(head) => {
                 let oid = head
                     .target()
@@ -30,9 +30,34 @@ impl GitStatus {
             }
             Err(_) => vec![],
         };
+        // Concluding a merge: MERGE_HEAD lists the other parent(s).
+        let merging = repo.state() == git2::RepositoryState::Merge;
+        if merging {
+            let mut merge_heads = Vec::new();
+            // `mergehead_foreach` needs `&mut Repository`, but `repo` is
+            // borrowed by the parent commits, so use a second handle.
+            let mut merge_repo =
+                git2::Repository::open(repo.path()).map_err(|e| format!("Repo error: {e}"))?;
+            merge_repo
+                .mergehead_foreach(|oid| {
+                    merge_heads.push(*oid);
+                    true
+                })
+                .map_err(|e| format!("MERGE_HEAD error: {e}"))?;
+            for oid in merge_heads {
+                parent_commits.push(
+                    repo.find_commit(oid)
+                        .map_err(|e| format!("Find commit error: {e}"))?,
+                );
+            }
+        }
         let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
         repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
             .map_err(|e| format!("Commit error: {e}"))?;
+        if merging {
+            repo.cleanup_state()
+                .map_err(|e| format!("Cleanup state error: {e}"))?;
+        }
         self.refresh();
         Ok(())
     }
