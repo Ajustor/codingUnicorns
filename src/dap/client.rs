@@ -38,12 +38,14 @@ impl DapClient {
 
     /// Build a client on top of an already-connected transport and send `initialize`.
     fn from_transport(mut transport: DapTransport, cfg: &DapConfig, workspace: &Path) -> Self {
-        // Substitute ${workspaceFolder} in launch_config.
-        let launch_config_str = cfg.launch_config.to_string();
-        let launch_config_str =
-            launch_config_str.replace("${workspaceFolder}", &workspace.to_string_lossy());
-        let launch_config: Value =
-            serde_json::from_str(&launch_config_str).unwrap_or(cfg.launch_config.clone());
+        // Substitute ${workspaceFolder} in launch_config (on parsed string
+        // values, so backslashes in Windows paths need no JSON escaping).
+        let mut launch_config = cfg.launch_config.clone();
+        substitute_variable(
+            &mut launch_config,
+            "${workspaceFolder}",
+            &workspace.to_string_lossy(),
+        );
 
         // Send initialize request.
         let seq = 1u64;
@@ -352,11 +354,34 @@ impl DapClient {
 
     /// Substitute `${file}` in the launch config with the given path.
     pub fn set_file_variable(&mut self, path: &Path) {
-        let s = self.launch_config.to_string();
-        let s = s.replace("${file}", path.to_string_lossy().as_ref());
-        if let Ok(v) = serde_json::from_str::<Value>(&s) {
-            self.launch_config = v;
+        substitute_variable(
+            &mut self.launch_config,
+            "${file}",
+            path.to_string_lossy().as_ref(),
+        );
+    }
+}
+
+/// Replace `var` with `replacement` in every string value of a JSON tree.
+/// Works on parsed values, so the replacement is never re-parsed as JSON.
+fn substitute_variable(value: &mut Value, var: &str, replacement: &str) {
+    match value {
+        Value::String(s) => {
+            if s.contains(var) {
+                *s = s.replace(var, replacement);
+            }
         }
+        Value::Array(items) => {
+            for item in items {
+                substitute_variable(item, var, replacement);
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values_mut() {
+                substitute_variable(v, var, replacement);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -467,7 +492,24 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: ${workspaceFolder}/${file} substitution breaks on backslash (Windows) paths"]
+    fn substitution_walks_nested_values_and_keeps_special_chars() {
+        let mut v = json!({
+            "args": ["${file}", "--x=${file}", 3, null],
+            "env": {"P": "${file}", "n": {"deep": "a ${file} b"}},
+            "${file}": true
+        });
+        let p = r#"C:\dir "q"\a.py"#;
+        substitute_variable(&mut v, "${file}", p);
+        assert_eq!(v["args"][0], p);
+        assert_eq!(v["args"][1], format!("--x={p}"));
+        assert_eq!(v["args"][2], 3);
+        assert_eq!(v["env"]["P"], p);
+        assert_eq!(v["env"]["n"]["deep"], format!("a {p} b"));
+        // Keys are left untouched.
+        assert_eq!(v["${file}"], true);
+    }
+
+    #[test]
     fn substitution_handles_backslash_paths() {
         let (_tx, rx) = unbounded();
         let transport = DapTransport::from_parts(
@@ -589,11 +631,12 @@ mod tests {
     }
 
     #[test]
-    fn set_file_variable_keeps_config_if_result_is_invalid_json() {
+    fn set_file_variable_handles_quotes_in_path() {
         let mut h = harness();
-        // A quote in the path would break the JSON string; the old config is kept.
+        // Substitution works on parsed JSON strings, so a quote in the path is
+        // substituted verbatim instead of breaking the config.
         h.client.set_file_variable(Path::new("/ws/we\"ird.py"));
-        assert_eq!(h.client.launch_config["program"], "${file}");
+        assert_eq!(h.client.launch_config["program"], "/ws/we\"ird.py");
     }
 
     #[test]
