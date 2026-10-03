@@ -94,3 +94,107 @@ impl LspManager {
         (results, reconnected)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::transport::LspTransport;
+    use crossbeam_channel::{unbounded, Sender};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    fn transport() -> (LspTransport, Sender<Value>, Arc<AtomicBool>) {
+        let (tx, rx) = unbounded();
+        let alive = Arc::new(AtomicBool::new(true));
+        let t = LspTransport::from_parts(Box::new(std::io::sink()), rx, alive.clone());
+        (t, tx, alive)
+    }
+
+    #[test]
+    fn new_manager_is_empty() {
+        let mut m = LspManager::new();
+        m.ensure_started("rs", Path::new("."));
+        assert!(m.get("rs").is_none());
+        assert!(m.get_mut("rs").is_none());
+        assert!(!m.any_busy());
+        let (res, rec) = m.poll_all();
+        assert!(res.is_empty() && rec.is_empty());
+    }
+
+    #[test]
+    fn ensure_started_with_cmd_registers_once() {
+        let mut m = LspManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        m.ensure_started_with_cmd(
+            "rs",
+            "definitely-not-a-real-lsp-binary-xyz",
+            &["--stdio".to_string()],
+            dir.path(),
+        );
+        assert!(m.get("rs").is_some());
+        assert!(!m.get("rs").unwrap().is_connected);
+        // Second call for the same extension is a no-op (does not replace the client).
+        m.get_mut("rs")
+            .unwrap()
+            .completions
+            .push(crate::lsp::client::CompletionItem {
+                label: "marker".into(),
+                detail: None,
+                kind: "Text".into(),
+                insert_text: None,
+            });
+        m.ensure_started_with_cmd("rs", "other", &[], dir.path());
+        assert_eq!(m.get("rs").unwrap().completions.len(), 1);
+        m.start_client("rs", "other", &[], dir.path());
+        assert_eq!(m.get("rs").unwrap().completions.len(), 1);
+
+        m.restart_all();
+        assert!(m.get("rs").is_none());
+    }
+
+    #[test]
+    fn poll_all_groups_responses_by_extension_and_reports_busy() {
+        let mut m = LspManager::new();
+        let (t, tx, _alive) = transport();
+        m.clients
+            .insert("rs".into(), LspClient::connected_for_test(t));
+        tx.send(json!({"id": 5, "result": "ok"})).unwrap();
+        tx.send(json!({"method": "$/progress", "params": {"value": {"kind": "begin"}}}))
+            .unwrap();
+        let (res, rec) = m.poll_all();
+        assert!(rec.is_empty(), "already connected → not a reconnect");
+        assert_eq!(res["rs"].len(), 1);
+        assert_eq!(res["rs"][0].0, 5);
+        assert!(m.any_busy());
+
+        // Nothing new → no entry for the extension.
+        let (res, _) = m.poll_all();
+        assert!(!res.contains_key("rs"));
+    }
+
+    #[test]
+    fn poll_all_reports_reconnects() {
+        let mut m = LspManager::new();
+        let (t, _tx, _alive) = transport();
+        m.clients
+            .insert("py".into(), LspClient::reconnecting_for_test(t));
+        let (_, rec) = m.poll_all();
+        assert_eq!(rec, vec!["py".to_string()]);
+        assert!(m.get("py").unwrap().is_connected);
+        let (_, rec) = m.poll_all();
+        assert!(rec.is_empty());
+    }
+
+    #[test]
+    fn poll_all_detects_crash() {
+        let mut m = LspManager::new();
+        let (t, _tx, alive) = transport();
+        m.clients
+            .insert("ts".into(), LspClient::connected_for_test(t));
+        alive.store(false, Ordering::Relaxed);
+        let (_, rec) = m.poll_all();
+        assert!(rec.is_empty());
+        assert!(!m.get("ts").unwrap().is_connected);
+    }
+}
