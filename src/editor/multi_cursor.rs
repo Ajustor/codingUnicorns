@@ -78,3 +78,146 @@ impl Editor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::cursor::Cursor;
+    use super::*;
+    use std::path::PathBuf;
+
+    fn editor(content: &str) -> Editor {
+        let mut ed = Editor::new();
+        ed.set_content(content.to_string(), None);
+        ed
+    }
+
+    fn cursor_at(row: usize, col: usize) -> Cursor {
+        let mut c = Cursor::new();
+        c.set_position(row, col);
+        c
+    }
+
+    #[test]
+    fn dedup_cursors_removes_primary_duplicates_and_repeats() {
+        let mut ed = editor("aaa\nbbb\nccc");
+        ed.cursor.set_position(0, 1);
+        ed.extra_cursors = vec![
+            cursor_at(0, 1),
+            cursor_at(1, 1),
+            cursor_at(2, 0),
+            cursor_at(1, 1),
+            cursor_at(0, 1),
+        ];
+        ed.dedup_cursors();
+        let positions: Vec<_> = ed.extra_cursors.iter().map(|c| c.position()).collect();
+        assert_eq!(positions, vec![(1, 1), (2, 0)]);
+    }
+
+    #[test]
+    fn confirm_autocomplete_replaces_partial_word() {
+        let mut ed = editor("let foo_bar = 1;\nx = fo");
+        ed.cursor.set_position(1, 6);
+        ed.autocomplete
+            .update("fo", &["foo_bar".to_string()], &[] as &[&str]);
+        assert!(ed.autocomplete.visible);
+
+        ed.confirm_autocomplete();
+
+        assert_eq!(ed.buffer.line(1), "x = foo_bar");
+        assert_eq!(ed.cursor.position(), (1, 11));
+        assert!(ed.is_modified);
+        assert_eq!(ed.content_version, 1);
+        assert!(!ed.autocomplete.visible);
+        // The edit is a single undo step.
+        assert!(ed.buffer.undo());
+        assert_eq!(ed.buffer.line(1), "x = fo");
+    }
+
+    #[test]
+    fn confirm_autocomplete_without_suggestion_only_hides_popup() {
+        let mut ed = editor("abc");
+        ed.cursor.set_position(0, 3);
+        ed.autocomplete.visible = true;
+        ed.confirm_autocomplete();
+        assert_eq!(ed.buffer.to_string(), "abc");
+        assert!(!ed.is_modified);
+        assert_eq!(ed.content_version, 0);
+        assert!(!ed.autocomplete.visible);
+    }
+
+    #[test]
+    fn trigger_autocomplete_update_uses_buffer_words() {
+        let mut ed = editor("hello help world\nhe");
+        ed.cursor.set_position(1, 2);
+        ed.trigger_autocomplete_update();
+        assert!(ed.autocomplete.visible);
+        assert_eq!(ed.autocomplete.query, "he");
+        let labels: Vec<_> = ed
+            .autocomplete
+            .suggestions
+            .iter()
+            .map(|s| s.label.as_str())
+            .collect();
+        assert!(labels.contains(&"hello"));
+        assert!(labels.contains(&"help"));
+        assert!(!labels.contains(&"world"));
+        assert!(!labels.contains(&"he"), "the typed word itself is excluded");
+    }
+
+    #[test]
+    fn trigger_local_completion_hides_popup_for_short_words() {
+        let mut ed = editor("hello\nh");
+        ed.cursor.set_position(1, 1);
+        ed.autocomplete.visible = true;
+        ed.trigger_local_completion();
+        assert!(!ed.autocomplete.visible);
+
+        ed.buffer.insert_char(1, 1, 'e');
+        ed.cursor.set_position(1, 2);
+        ed.trigger_local_completion();
+        assert!(ed.autocomplete.visible);
+        assert_eq!(ed.autocomplete.suggestions[0].label, "hello");
+    }
+
+    #[test]
+    fn all_cursor_rows_is_sorted_and_unique() {
+        let mut ed = editor("a\nb\nc\nd");
+        ed.cursor.set_position(2, 0);
+        ed.extra_cursors = vec![cursor_at(0, 0), cursor_at(2, 1), cursor_at(3, 0)];
+        assert_eq!(ed.all_cursor_rows(), vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn selected_line_rows_uses_selection_or_cursor_rows() {
+        let mut ed = editor("a\nb\nc\nd");
+        ed.cursor.set_position(3, 0);
+        ed.cursor.start_selection();
+        ed.cursor.set_position(1, 0);
+        assert_eq!(ed.selected_line_rows(), vec![1, 2, 3]);
+
+        ed.cursor.clear_selection();
+        ed.extra_cursors = vec![cursor_at(0, 0)];
+        assert_eq!(ed.selected_line_rows(), vec![0, 1]);
+    }
+
+    #[test]
+    fn comment_prefix_depends_on_extension() {
+        let mut ed = Editor::new();
+        assert_eq!(ed.comment_prefix(), "// ", "no path defaults to //");
+        let cases = [
+            ("main.rs", "// "),
+            ("app.ts", "// "),
+            ("script.py", "# "),
+            ("run.sh", "# "),
+            ("Cargo.toml", "# "),
+            ("config.yml", "# "),
+            ("query.sql", "-- "),
+            ("init.lua", "-- "),
+            ("Makefile", "// "),
+        ];
+        for (name, expected) in cases {
+            ed.current_path = Some(PathBuf::from(name));
+            assert_eq!(ed.comment_prefix(), expected, "for {name}");
+        }
+    }
+}
