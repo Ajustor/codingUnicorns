@@ -172,3 +172,86 @@ jobs:
           files: |
             artifacts/**/*
           generate_release_notes: true
+
+  # The repository is private, so clients can't read releases through the GitHub API.
+  # Publish the binaries plus a `latest.json` manifest to GitHub Pages (public), which is
+  # what the in-app updater reads (src/updater/mod.rs, MANIFEST_URL). Each deploy replaces
+  # the whole site, so only the latest stable release is hosted.
+  pages:
+    name: Publish to GitHub Pages
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts/
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Build site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          set -euo pipefail
+          dir="site/download/$TAG"
+          mkdir -p "$dir"
+          find artifacts -type f ! -name '*.ico' -exec cp {} "$dir/" \;
+
+          notes=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+
+          assets='[]'
+          rows=''
+          for f in "$dir"/*; do
+            name=$(basename "$f")
+            sha=$(sha256sum "$f" | cut -d' ' -f1)
+            url="$BASE_URL/download/$TAG/$name"
+            assets=$(jq --arg name "$name" --arg url "$url" --arg sha "$sha" \
+              '. + [{name: $name, url: $url, sha256: $sha}]' <<<"$assets")
+            rows="$rows<li><a href=\"download/$TAG/$name\">$name</a><br><code>sha256 $sha</code></li>"
+          done
+
+          jq -n --arg version "${TAG#v}" --arg notes "$notes" --arg page "$BASE_URL/" \
+            --argjson assets "$assets" \
+            '{version: $version, notes: $notes, page_url: $page, assets: $assets}' \
+            > site/latest.json
+
+          cat > site/index.html <<HTML
+          <!doctype html>
+          <html lang="en"><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Coding Unicorns $TAG</title>
+          <style>
+            body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 16px; background: #1e1e1e; color: #d4d4d4; }
+            a { color: #4fa3e0; } li { margin: .8rem 0; } code { font-size: .75rem; color: #888; word-break: break-all; }
+          </style></head>
+          <body>
+            <h1>🦄 Coding Unicorns $TAG</h1>
+            <p>Windows: use the <code>.msi</code> installer. Linux / macOS: download the binary and <code>chmod +x</code> it.
+            Installed copies update themselves.</p>
+            <ul>$rows</ul>
+          </body></html>
+          HTML
+
+          cat site/latest.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

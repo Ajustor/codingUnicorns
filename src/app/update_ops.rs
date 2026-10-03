@@ -53,7 +53,7 @@ impl CodingUnicorns {
                             );
                         });
                 }
-                ui.hyperlink_to("View release on GitHub", &info.html_url);
+                ui.hyperlink_to("Download page", &info.page_url);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| match &self.updater.state {
                     UpdateState::Available(_) => {
