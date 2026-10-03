@@ -70,7 +70,10 @@ impl ClaudeSession {
                 }
             }
             ClaudeEvent::AssistantText(text) => {
-                self.transcript.push(Message { role: Role::Assistant, text });
+                self.transcript.push(Message {
+                    role: Role::Assistant,
+                    text,
+                });
             }
             ClaudeEvent::ToolUse { name, input, .. } => {
                 self.transcript.push(Message {
@@ -78,7 +81,11 @@ impl ClaudeSession {
                     text: format!("{name} {input}"),
                 });
             }
-            ClaudeEvent::Result { cost_usd, session_id, .. } => {
+            ClaudeEvent::Result {
+                cost_usd,
+                session_id,
+                ..
+            } => {
                 self.cost_usd += cost_usd;
                 if let Some(id) = session_id {
                     self.session_id = Some(id);
@@ -116,8 +123,12 @@ mod tests {
     #[test]
     fn init_sets_session_id_once() {
         let mut s = ClaudeSession::new();
-        s.apply(ClaudeEvent::Init { session_id: "first".into() });
-        s.apply(ClaudeEvent::Init { session_id: "second".into() });
+        s.apply(ClaudeEvent::Init {
+            session_id: "first".into(),
+        });
+        s.apply(ClaudeEvent::Init {
+            session_id: "second".into(),
+        });
         assert_eq!(s.session_id.as_deref(), Some("first"));
     }
 
@@ -125,7 +136,11 @@ mod tests {
     fn result_clears_running_and_adds_cost() {
         let mut s = ClaudeSession::new();
         s.running = true;
-        s.apply(ClaudeEvent::Result { text: "ok".into(), cost_usd: 0.02, session_id: None });
+        s.apply(ClaudeEvent::Result {
+            text: "ok".into(),
+            cost_usd: 0.02,
+            session_id: None,
+        });
         assert!(!s.running);
         assert!((s.cost_usd - 0.02).abs() < 1e-9);
     }

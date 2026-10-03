@@ -5,8 +5,8 @@ mod shell;
 
 use ansi::AnsiPerformer;
 use screen_buffer::{Cell, DEFAULT_FG};
-use shell::resolve_shell;
 pub use shell::list_available_shells;
+use shell::resolve_shell;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::Color32;
@@ -83,7 +83,9 @@ impl Terminal {
     }
 
     #[allow(clippy::type_complexity)]
-    fn spawn_shell(user_shell: &str) -> (
+    fn spawn_shell(
+        user_shell: &str,
+    ) -> (
         Option<Receiver<Vec<u8>>>,
         Option<Box<dyn Write + Send>>,
         Option<Box<dyn portable_pty::Child + Send + Sync>>,
@@ -99,7 +101,13 @@ impl Terminal {
 
         // Try spawning the resolved shell
         if let Some(result) = Self::try_spawn(&shell_path, &shell_args, None) {
-            return (Some(result.0), Some(result.1), Some(result.2), shell_name, None);
+            return (
+                Some(result.0),
+                Some(result.1),
+                Some(result.2),
+                shell_name,
+                None,
+            );
         }
 
         let mut tried = shell_path.clone();
@@ -213,7 +221,12 @@ impl Terminal {
                     .open(std::env::temp_dir().join("cu_csi.txt"))
                 {
                     use std::io::Write as _;
-                    let _ = writeln!(f, "FLUSH {} bytes: {:?}", resp.len(), String::from_utf8_lossy(&resp));
+                    let _ = writeln!(
+                        f,
+                        "FLUSH {} bytes: {:?}",
+                        resp.len(),
+                        String::from_utf8_lossy(&resp)
+                    );
                 }
                 let _ = w.write_all(&resp);
                 let _ = w.flush();
@@ -342,7 +355,7 @@ impl Terminal {
                         scroll_out.inner_rect,
                         0.0,
                         egui::Stroke::new(
-                            1.0,
+                            1.0_f32,
                             egui::Color32::from_rgba_unmultiplied(80, 80, 200, 70),
                         ),
                         egui::StrokeKind::Inside,

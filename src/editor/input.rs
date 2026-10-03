@@ -50,8 +50,7 @@ impl Editor {
                         }
                         if let Some((ar, ac)) = ec_cursor.sel_anchor {
                             if ar == sr && ac > sc {
-                                ec_cursor.sel_anchor =
-                                    Some((ar, ac.saturating_sub(deleted)));
+                                ec_cursor.sel_anchor = Some((ar, ac.saturating_sub(deleted)));
                             }
                         }
                     }

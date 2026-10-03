@@ -50,9 +50,11 @@ pub fn render(
 
     // ── Hover detection & opacity animation ──────────────────────────────
     let hover_id = ui.id().with("minimap_hover");
-    let hovered = ui
-        .ctx()
-        .input(|i| i.pointer.hover_pos().is_some_and(|p| minimap_rect.contains(p)));
+    let hovered = ui.ctx().input(|i| {
+        i.pointer
+            .hover_pos()
+            .is_some_and(|p| minimap_rect.contains(p))
+    });
     let target_alpha = if hovered { 0.75 } else { 0.18 };
     let alpha = ui
         .ctx()
@@ -113,18 +115,14 @@ pub fn render(
         // Alternate colors by depth for visual distinction
         let base_a = (alpha * 18.0).min(30.0) as u8;
         let region_color = match depth_clamped % 4 {
-            0 => egui::Color32::from_rgba_unmultiplied(80, 140, 220, base_a),  // blue
+            0 => egui::Color32::from_rgba_unmultiplied(80, 140, 220, base_a), // blue
             1 => egui::Color32::from_rgba_unmultiplied(160, 120, 200, base_a), // purple
-            2 => egui::Color32::from_rgba_unmultiplied(80, 180, 160, base_a),  // teal
-            _ => egui::Color32::from_rgba_unmultiplied(180, 160, 80, base_a),  // gold
+            2 => egui::Color32::from_rgba_unmultiplied(80, 180, 160, base_a), // teal
+            _ => egui::Color32::from_rgba_unmultiplied(180, 160, 80, base_a), // gold
         };
 
         // Left indent bar (thin vertical line marking the block boundary)
-        let indent_level = data
-            .lines
-            .get(start)
-            .map(|l| l.indent)
-            .unwrap_or(0);
+        let indent_level = data.lines.get(start).map(|l| l.indent).unwrap_or(0);
         let bar_x_pos = content_x + indent_level as f32 * char_px;
 
         // Background band
@@ -181,12 +179,11 @@ pub fn render(
         }
         last_drawn_y = y;
         let x_offset = line.indent as f32 * char_px;
-        let w = (line.content_len as f32 * char_px).min(content_w - x_offset).max(2.0);
+        let w = (line.content_len as f32 * char_px)
+            .min(content_w - x_offset)
+            .max(2.0);
         painter.rect_filled(
-            egui::Rect::from_min_size(
-                egui::pos2(content_x + x_offset, y),
-                egui::vec2(w, line_h),
-            ),
+            egui::Rect::from_min_size(egui::pos2(content_x + x_offset, y), egui::vec2(w, line_h)),
             0.0,
             code_color,
         );
@@ -240,7 +237,10 @@ pub fn render(
         let y = minimap_rect.min.y + line as f32 * scale;
         if y >= minimap_rect.min.y && y <= minimap_rect.max.y {
             let c = egui::Color32::from_rgba_unmultiplied(
-                color.r(), color.g(), color.b(), (marker_alpha * 255.0) as u8,
+                color.r(),
+                color.g(),
+                color.b(),
+                (marker_alpha * 255.0) as u8,
             );
             painter.rect_filled(
                 egui::Rect::from_min_size(
@@ -290,7 +290,7 @@ pub fn render(
         vp_rect,
         1.0,
         egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgba_unmultiplied(180, 180, 180, (alpha * 100.0) as u8),
         ),
         egui::StrokeKind::Inside,

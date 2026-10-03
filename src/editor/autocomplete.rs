@@ -194,7 +194,11 @@ impl Autocomplete {
                                 0.0,
                                 egui::text::TextFormat {
                                     font_id: egui::FontId::monospace(13.0),
-                                    color: if matched { palette.accent } else { palette.text },
+                                    color: if matched {
+                                        palette.accent
+                                    } else {
+                                        palette.text
+                                    },
                                     ..Default::default()
                                 },
                             );

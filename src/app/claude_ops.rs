@@ -35,10 +35,12 @@ impl CodingUnicorns {
                 // clear running and note it. Dropping `turn` reaps the child.
                 if self.claude_session.running {
                     self.claude_session.running = false;
-                    self.claude_session.transcript.push(claude::session::Message {
-                        role: claude::session::Role::Assistant,
-                        text: "(claude ended without a result — see logs)".to_string(),
-                    });
+                    self.claude_session
+                        .transcript
+                        .push(claude::session::Message {
+                            role: claude::session::Role::Assistant,
+                            text: "(claude ended without a result — see logs)".to_string(),
+                        });
                 }
                 ctx.request_repaint();
             }
@@ -106,25 +108,32 @@ impl CodingUnicorns {
         }
         let perm = self.claude_perm.as_ref().unwrap();
         let self_exe = std::env::current_exe().unwrap_or_default();
-        let mcp_config = match permission::write_mcp_config(&std::env::temp_dir(), &self_exe, perm.port) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("claude mcp-config: {e}");
-                return;
-            }
-        };
+        let mcp_config =
+            match permission::write_mcp_config(&std::env::temp_dir(), &self_exe, perm.port) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("claude mcp-config: {e}");
+                    return;
+                }
+            };
 
         let ctx = EditorContext {
-            current_file: self.editor.current_path.as_ref().map(|p| p.display().to_string()),
+            current_file: self
+                .editor
+                .current_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
             selection: self.editor.selected_text_pub(),
             selection_lines: self.editor.selection_line_range_pub(),
         };
         let prompt = claude::session::ClaudeSession::build_prompt(&user_text, &ctx);
 
-        self.claude_session.transcript.push(claude::session::Message {
-            role: claude::session::Role::User,
-            text: user_text,
-        });
+        self.claude_session
+            .transcript
+            .push(claude::session::Message {
+                role: claude::session::Role::User,
+                text: user_text,
+            });
         self.claude_session.running = true;
 
         let req = process::TurnRequest {
@@ -141,13 +150,15 @@ impl CodingUnicorns {
             Ok(turn) => self.claude_turn = Some(turn),
             Err(e) => {
                 self.claude_session.running = false;
-                self.claude_session.transcript.push(claude::session::Message {
-                    role: claude::session::Role::Assistant,
-                    text: format!(
-                        "Failed to launch `{}`: {e}. Is Claude Code installed and on PATH?",
-                        self.config.claude_binary
-                    ),
-                });
+                self.claude_session
+                    .transcript
+                    .push(claude::session::Message {
+                        role: claude::session::Role::Assistant,
+                        text: format!(
+                            "Failed to launch `{}`: {e}. Is Claude Code installed and on PATH?",
+                            self.config.claude_binary
+                        ),
+                    });
             }
         }
     }
@@ -193,9 +204,11 @@ impl CodingUnicorns {
 
     /// Push a system/tool note into the transcript (panel-local message).
     fn push_claude_note(&mut self, text: String) {
-        self.claude_session.transcript.push(claude::session::Message {
-            role: claude::session::Role::Tool,
-            text,
-        });
+        self.claude_session
+            .transcript
+            .push(claude::session::Message {
+                role: claude::session::Role::Tool,
+                text,
+            });
     }
 }

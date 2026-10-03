@@ -56,7 +56,11 @@ mod tests {
     use crate::lsp::client::DocumentSymbol;
 
     fn sym(name: &str, line: u32) -> DocumentSymbol {
-        DocumentSymbol { name: name.to_string(), kind: "Function".into(), line }
+        DocumentSymbol {
+            name: name.to_string(),
+            kind: "Function".into(),
+            line,
+        }
     }
 
     #[test]

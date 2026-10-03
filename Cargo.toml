@@ -1,6 +1,6 @@
 [package]
 name = "coding-unicorns"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 
 [[bin]]
@@ -44,6 +44,10 @@ image = { version = "0.25", default-features = false, features = [
   "webp",
 ] }
 egui_commonmark = { version = "0.20", features = ["better_syntax_highlighting"] }
+ureq = "3"
+semver = "1"
+sha2 = "0.10"
+self-replace = "1"
 
 [profile.release]
 opt-level = "s"

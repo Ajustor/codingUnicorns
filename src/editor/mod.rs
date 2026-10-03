@@ -818,10 +818,7 @@ impl Editor {
                 let has_focus = response.has_focus();
                 if !has_focus && !self.show_find && !self.show_goto_line {
                     let explicit = std::mem::take(&mut self.focus_requested);
-                    if response.clicked()
-                        || explicit
-                        || ui.memory(|m| m.focused().is_none())
-                    {
+                    if response.clicked() || explicit || ui.memory(|m| m.focused().is_none()) {
                         ui.memory_mut(|m| m.request_focus(response.id));
                     }
                 }
@@ -1382,7 +1379,9 @@ impl Editor {
                                                     // occurrence, add extra cursor at next match.
                                                     // Search from the last extra cursor (or main if none).
                                                     let (search_row, search_col) =
-                                                        if let Some(last) = self.extra_cursors.last() {
+                                                        if let Some(last) =
+                                                            self.extra_cursors.last()
+                                                        {
                                                             last.position()
                                                         } else {
                                                             self.cursor.position()
@@ -2186,7 +2185,11 @@ impl Editor {
                                 egui::Align2::RIGHT_CENTER,
                                 (line_idx + 1).to_string(),
                                 font_id.clone(),
-                                if line_idx == cur_row_for_gutter { line_num_color_active } else { line_num_color },
+                                if line_idx == cur_row_for_gutter {
+                                    line_num_color_active
+                                } else {
+                                    line_num_color
+                                },
                             );
                         }
                         line_idx = fold_end + 1;
@@ -2196,8 +2199,14 @@ impl Editor {
                     // Current-line highlight (suppressed while a selection is active, to avoid noise).
                     let (hl_row, _) = self.cursor.position();
                     let selection_active = sel_range.is_some()
-                        || self.extra_cursors.iter().any(|c| c.selection_range().is_some());
-                    if config.editor.highlight_current_line && line_idx == hl_row && !selection_active {
+                        || self
+                            .extra_cursors
+                            .iter()
+                            .any(|c| c.selection_range().is_some());
+                    if config.editor.highlight_current_line
+                        && line_idx == hl_row
+                        && !selection_active
+                    {
                         painter.rect_filled(
                             egui::Rect::from_min_max(
                                 egui::pos2(rect.min.x, y),
@@ -2217,7 +2226,11 @@ impl Editor {
                             egui::Align2::RIGHT_CENTER,
                             (line_idx + 1).to_string(),
                             font_id.clone(),
-                            if line_idx == cur_row_for_gutter { line_num_color_active } else { line_num_color },
+                            if line_idx == cur_row_for_gutter {
+                                line_num_color_active
+                            } else {
+                                line_num_color
+                            },
                         );
                     }
 
@@ -2251,7 +2264,7 @@ impl Editor {
                         if let Some(entry) = self.blame_data.get(line_idx) {
                             let blame_text = format!(
                                 "{} {}",
-                                &entry.commit_short,
+                                entry.commit_short,
                                 if entry.author.len() > 8 {
                                     &entry.author[..8]
                                 } else {
@@ -2535,7 +2548,7 @@ impl Editor {
                         if cursor_visible {
                             painter.line_segment(
                                 [egui::pos2(cx, y), egui::pos2(cx, y + line_height)],
-                                egui::Stroke::new(2.0, cursor_color),
+                                egui::Stroke::new(2.0_f32, cursor_color),
                             );
                         }
                         // Request repaint at the next blink transition.
@@ -2569,7 +2582,7 @@ impl Editor {
                                 });
                             painter.line_segment(
                                 [egui::pos2(ecx, y), egui::pos2(ecx, y + line_height)],
-                                egui::Stroke::new(2.0, accent_color),
+                                egui::Stroke::new(2.0_f32, accent_color),
                             );
                         }
                     }
@@ -2602,7 +2615,7 @@ impl Editor {
                             };
                             painter.line_segment(
                                 [egui::pos2(gx, y), egui::pos2(gx, y + line_height)],
-                                egui::Stroke::new(1.0, guide_color),
+                                egui::Stroke::new(1.0_f32, guide_color),
                             );
                         }
                     }
@@ -2637,7 +2650,10 @@ impl Editor {
                                         egui::vec2(char_width, line_height),
                                     ),
                                     2.0,
-                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 160, 255)),
+                                    egui::Stroke::new(
+                                        1.0_f32,
+                                        egui::Color32::from_rgb(100, 160, 255),
+                                    ),
                                     egui::StrokeKind::Inside,
                                 );
                             }
@@ -2697,7 +2713,7 @@ impl Editor {
                                     egui::pos2(underline_x_start, underline_y),
                                     egui::pos2(underline_x_end, underline_y),
                                 ],
-                                egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 160, 255)),
+                                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(100, 160, 255)),
                             );
                         }
                     }
@@ -2729,7 +2745,7 @@ impl Editor {
                                 let y2 = underline_y - amp;
                                 painter.line_segment(
                                     [egui::pos2(x1, y1), egui::pos2(x2, y2)],
-                                    egui::Stroke::new(1.0, color),
+                                    egui::Stroke::new(1.0_f32, color),
                                 );
                                 x = x2;
                             }
@@ -3037,7 +3053,10 @@ impl Editor {
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::new()
                                     .fill(palette.surface_raised)
-                                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(75)))
+                                    .stroke(egui::Stroke::new(
+                                        1.0_f32,
+                                        egui::Color32::from_gray(75),
+                                    ))
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::same(10))
                                     .show(ui, |ui| {
@@ -3061,7 +3080,7 @@ impl Editor {
                                                                 ),
                                                             ],
                                                             egui::Stroke::new(
-                                                                1.0,
+                                                                1.0_f32,
                                                                 egui::Color32::from_gray(60),
                                                             ),
                                                         );
@@ -3163,7 +3182,7 @@ impl Editor {
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::new()
                                     .fill(palette.surface_raised)
-                                    .stroke(egui::Stroke::new(1.5, border_color))
+                                    .stroke(egui::Stroke::new(1.5_f32, border_color))
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::symmetric(10, 6))
                                     .show(ui, |ui| {
@@ -3214,7 +3233,7 @@ impl Editor {
                                 egui::Frame::new()
                                     .fill(palette.surface_raised)
                                     .stroke(egui::Stroke::new(
-                                        1.0,
+                                        1.0_f32,
                                         egui::Color32::from_rgb(80, 130, 200),
                                     ))
                                     .corner_radius(egui::CornerRadius::same(4))

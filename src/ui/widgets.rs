@@ -5,7 +5,7 @@ use crate::ui::theme::{Palette, Spacing};
 pub fn popup_frame(palette: Palette, spacing: Spacing) -> egui::Frame {
     egui::Frame::new()
         .fill(palette.surface_raised)
-        .stroke(egui::Stroke::new(1.0, palette.border))
+        .stroke(egui::Stroke::new(1.0_f32, palette.border))
         .corner_radius(egui::CornerRadius::same(spacing.round_md as u8))
         .inner_margin(egui::Margin::same(spacing.xs as i8))
         .shadow(egui::epaint::Shadow {
@@ -69,7 +69,12 @@ const TOAST_FADE_MS: u128 = 400;
 
 /// Draw active toasts bottom-centre and drop expired ones. Returns true if any remain
 /// (so the caller can request a repaint).
-pub fn render_toasts(ctx: &egui::Context, palette: Palette, spacing: Spacing, toasts: &mut Vec<Toast>) -> bool {
+pub fn render_toasts(
+    ctx: &egui::Context,
+    palette: Palette,
+    spacing: Spacing,
+    toasts: &mut Vec<Toast>,
+) -> bool {
     toasts.retain(|t| t.born.elapsed().as_millis() < TOAST_TTL_MS);
     if toasts.is_empty() {
         return false;
@@ -87,15 +92,14 @@ pub fn render_toasts(ctx: &egui::Context, palette: Palette, spacing: Spacing, to
                     255
                 };
                 popup_frame(palette, spacing).show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(&t.message)
-                            .color(egui::Color32::from_rgba_unmultiplied(
-                                palette.text.r(),
-                                palette.text.g(),
-                                palette.text.b(),
-                                a,
-                            )),
-                    );
+                    ui.label(egui::RichText::new(&t.message).color(
+                        egui::Color32::from_rgba_unmultiplied(
+                            palette.text.r(),
+                            palette.text.g(),
+                            palette.text.b(),
+                            a,
+                        ),
+                    ));
                 });
                 ui.add_space(spacing.sm);
             }

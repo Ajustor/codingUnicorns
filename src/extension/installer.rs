@@ -86,7 +86,12 @@ pub fn install_from_workspace(
 ) -> mpsc::Receiver<WorkspaceStatus> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        workspace_install_inner(workspace_path, extensions_dir, selected_members.as_deref(), &tx);
+        workspace_install_inner(
+            workspace_path,
+            extensions_dir,
+            selected_members.as_deref(),
+            &tx,
+        );
     });
     rx
 }

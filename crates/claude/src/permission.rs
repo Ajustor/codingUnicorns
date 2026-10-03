@@ -40,7 +40,11 @@ impl PermissionListener {
                 std::thread::spawn(move || handle_conn(stream, &tok, &tx));
             }
         });
-        Ok(Self { port, token, requests: rx })
+        Ok(Self {
+            port,
+            token,
+            requests: rx,
+        })
     }
 }
 
@@ -65,7 +69,11 @@ fn handle_conn(stream: TcpStream, token: &str, tx: &Sender<PermissionRequest>) {
     }
     let (reply_tx, reply_rx) = channel::<Decision>();
     let req = PermissionRequest {
-        tool: v.get("tool").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+        tool: v
+            .get("tool")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string(),
         input: v.get("input").cloned().unwrap_or(Value::Null),
         reply: reply_tx,
     };
@@ -145,8 +153,14 @@ pub fn run_permission_mcp_server(port: u16, token: String) {
             })),
             "tools/call" => {
                 let args = req.get("params").and_then(|p| p.get("arguments"));
-                let tool = args.and_then(|a| a.get("tool_name")).and_then(|t| t.as_str()).unwrap_or("");
-                let input = args.and_then(|a| a.get("input")).cloned().unwrap_or(Value::Null);
+                let tool = args
+                    .and_then(|a| a.get("tool_name"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("");
+                let input = args
+                    .and_then(|a| a.get("input"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let decision = ask_editor(port, &token, tool, &input);
                 let payload = match decision {
                     Decision::Allow => json!({"behavior":"allow","updatedInput": input}),
@@ -185,8 +199,13 @@ fn ask_editor(port: u16, token: &str, tool: &str, input: &Value) -> Decision {
     if reader.read_line(&mut resp).is_err() {
         return Decision::Deny;
     }
-    match serde_json::from_str::<Value>(resp.trim()).ok()
-        .and_then(|v| v.get("decision").and_then(|d| d.as_str()).map(str::to_string))
+    match serde_json::from_str::<Value>(resp.trim())
+        .ok()
+        .and_then(|v| {
+            v.get("decision")
+                .and_then(|d| d.as_str())
+                .map(str::to_string)
+        })
         .as_deref()
     {
         Some("allow") => Decision::Allow,
@@ -215,7 +234,10 @@ mod tests {
         });
 
         // Editor side: receive request, allow it.
-        let req = listener.requests.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let req = listener
+            .requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         assert_eq!(req.tool, "Edit");
         req.reply.send(Decision::Allow).unwrap();
 

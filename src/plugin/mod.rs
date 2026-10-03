@@ -48,7 +48,11 @@ pub trait Plugin: Send + Sync {
 
     /// Tokenize an entire document at once (tree-sitter based).
     /// Returns per-line token vectors, or None if not supported.
-    fn tokenize_document(&self, _lang: &str, _text: &str) -> Option<Vec<Vec<crate::editor::highlight::Token>>> {
+    fn tokenize_document(
+        &self,
+        _lang: &str,
+        _text: &str,
+    ) -> Option<Vec<Vec<crate::editor::highlight::Token>>> {
         None
     }
 
