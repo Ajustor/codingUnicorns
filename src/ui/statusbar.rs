@@ -118,3 +118,94 @@ impl Default for StatusBar {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
+    }
+
+    /// Render the status bar headlessly and return every text run painted.
+    fn rendered(editor: &Editor, branch: &str, lsp: LspStatus) -> Vec<String> {
+        let mut git = GitStatus::new();
+        git.branch = branch.into();
+        let palette =
+            crate::ui::theme::Palette::from_theme(&crate::config::Config::default().theme);
+        let ctx = egui::Context::default();
+        let bar = StatusBar::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                bar.show(ui, editor, &git, lsp.clone(), palette);
+            });
+        });
+        let mut texts = Vec::new();
+        for c in &out.shapes {
+            collect_texts(&c.shape, &mut texts);
+        }
+        texts
+    }
+
+    fn has(texts: &[String], s: &str) -> bool {
+        texts.iter().any(|t| t == s)
+    }
+
+    #[test]
+    fn no_file_shows_branch_and_cursor_only() {
+        let editor = Editor::new();
+        let t = rendered(&editor, "main", LspStatus::Inactive);
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert!(has(&t, "⎇ main"));
+        assert!(has(&t, "Ln 1, Col 1"));
+    }
+
+    #[test]
+    fn file_details_and_one_based_cursor() {
+        let mut editor = Editor::new();
+        editor.current_path = Some(PathBuf::from("src").join("main.rs"));
+        editor.cursor.row = 9;
+        editor.cursor.col = 4;
+        editor.detected_indent_spaces = true;
+        editor.detected_indent_size = 2;
+        let t = rendered(&editor, "feature/x", LspStatus::Inactive);
+        assert!(has(&t, "⎇ feature/x"));
+        assert!(has(&t, "main.rs"), "{t:?}");
+        assert!(has(&t, "RS"));
+        assert!(has(&t, "Spaces: 2"));
+        assert!(has(&t, "Ln 10, Col 5"));
+        assert!(!t.iter().any(|s| s.contains("LSP")));
+    }
+
+    #[test]
+    fn modified_marker_tabs_and_missing_extension() {
+        let mut editor = Editor::new();
+        editor.current_path = Some(PathBuf::from("Makefile"));
+        editor.is_modified = true;
+        editor.detected_indent_spaces = false;
+        let t = rendered(&editor, "main", LspStatus::Inactive);
+        assert!(has(&t, "Makefile ●"), "{t:?}");
+        assert!(has(&t, "TXT"), "extension defaults to txt");
+        assert!(has(&t, "Tabs"));
+    }
+
+    #[test]
+    fn lsp_status_indicator() {
+        let editor = Editor::new();
+        for (status, label) in [
+            (LspStatus::Connecting, "⬤ LSP"),
+            (LspStatus::Loading, "⬤ LSP loading…"),
+            (LspStatus::Ready, "⬤ LSP"),
+            (LspStatus::Error, "⬤ LSP"),
+        ] {
+            let t = rendered(&editor, "main", status.clone());
+            assert!(has(&t, label), "{status:?}: {t:?}");
+            assert_eq!(t.len(), 3, "{status:?}: {t:?}");
+        }
+    }
+}

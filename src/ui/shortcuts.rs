@@ -150,3 +150,142 @@ fn row(ui: &mut egui::Ui, keys: &str, description: &str) {
     });
     ui.add_space(2.0);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect};
+
+    fn input(events: Vec<Event>) -> RawInput {
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        help: &mut ShortcutsHelp,
+        kb: &crate::config::KeyBindings,
+        events: Vec<Event>,
+    ) -> Vec<String> {
+        let out = ctx.run(input(events), |ctx| help.show(ctx, kb));
+        let mut texts = Vec::new();
+        for c in &out.shapes {
+            collect_texts(&c.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// New windows are laid out invisibly on their first frame; render twice.
+    fn settle(
+        ctx: &egui::Context,
+        help: &mut ShortcutsHelp,
+        kb: &crate::config::KeyBindings,
+    ) -> Vec<String> {
+        frame(ctx, help, kb, vec![]);
+        frame(ctx, help, kb, vec![])
+    }
+
+    #[test]
+    fn toggle_flips_open_state() {
+        let mut h = ShortcutsHelp::new();
+        assert!(!h.is_open());
+        h.toggle();
+        assert!(h.is_open());
+        h.toggle();
+        assert!(!h.is_open());
+    }
+
+    #[test]
+    fn closed_help_renders_nothing() {
+        let ctx = egui::Context::default();
+        let mut h = ShortcutsHelp::new();
+        let kb = crate::config::KeyBindings::default();
+        assert!(frame(&ctx, &mut h, &kb, vec![]).is_empty());
+    }
+
+    #[test]
+    fn open_help_lists_configured_bindings() {
+        let ctx = egui::Context::default();
+        let mut h = ShortcutsHelp::new();
+        h.toggle();
+        let kb = crate::config::KeyBindings::default();
+        let t = settle(&ctx, &mut h, &kb);
+        for s in [
+            "Keyboard Shortcuts",
+            "General",
+            "Show / hide this help",
+            "Open Settings",
+            kb.shortcuts_help.display().as_str(),
+            kb.settings.display().as_str(),
+        ] {
+            assert!(t.iter().any(|x| x == s), "missing {s:?} in {t:?}");
+        }
+        assert!(h.is_open());
+    }
+
+    #[test]
+    fn custom_binding_is_displayed() {
+        let ctx = egui::Context::default();
+        let mut h = ShortcutsHelp::new();
+        h.toggle();
+        let kb = crate::config::KeyBindings {
+            settings: crate::config::KeyBinding::new("F9", false, true, true),
+            ..Default::default()
+        };
+        let shown = kb.settings.display();
+        let t = settle(&ctx, &mut h, &kb);
+        assert!(t.contains(&shown), "missing {shown:?} in {t:?}");
+    }
+
+    #[test]
+    fn close_button_closes_window() {
+        let ctx = egui::Context::default();
+        let mut h = ShortcutsHelp::new();
+        h.toggle();
+        let kb = crate::config::KeyBindings::default();
+        settle(&ctx, &mut h, &kb);
+        // Small focusable click-only widget = the title-bar close button (the window
+        // background itself is also click-sensing but spans the whole window).
+        let close: Vec<Rect> = ctx.viewport(|vp| {
+            let w = &vp.prev_pass.widgets;
+            w.layer_ids()
+                .flat_map(|l| w.get_layer(l))
+                .filter(|r| {
+                    r.sense.is_focusable()
+                        && r.sense.senses_click()
+                        && !r.sense.senses_drag()
+                        && r.rect.width() < 50.0
+                })
+                .map(|r| r.rect)
+                .collect()
+        });
+        assert_eq!(close.len(), 1, "{close:?}");
+        let pos = close[0].center();
+        let press = |pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(
+            &ctx,
+            &mut h,
+            &kb,
+            vec![Event::PointerMoved(pos), press(true)],
+        );
+        assert!(h.is_open());
+        frame(&ctx, &mut h, &kb, vec![press(false)]);
+        assert!(!h.is_open());
+    }
+}
