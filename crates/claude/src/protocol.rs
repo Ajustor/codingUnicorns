@@ -145,4 +145,128 @@ mod tests {
         assert!(parse_line("not json").is_empty());
         assert!(parse_line(r#"{"type":"stream_event"}"#).is_empty());
     }
+    #[test]
+    fn init_without_session_id_yields_nothing() {
+        assert!(parse_line(r#"{"type":"system","subtype":"init"}"#).is_empty());
+        // non-string session id is treated as missing
+        assert!(parse_line(r#"{"type":"system","subtype":"init","session_id":5}"#).is_empty());
+    }
+
+    #[test]
+    fn system_events_other_than_init_are_ignored() {
+        assert!(parse_line(r#"{"type":"system","subtype":"compact","session_id":"x"}"#).is_empty());
+        assert!(parse_line(r#"{"type":"system","session_id":"x"}"#).is_empty());
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        let line = "  \t{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\"}\r\n";
+        assert_eq!(
+            parse_line(line),
+            vec![ClaudeEvent::Init {
+                session_id: "s".into()
+            }]
+        );
+        assert!(parse_line("   \n").is_empty());
+    }
+
+    #[test]
+    fn result_defaults_when_fields_missing() {
+        assert_eq!(
+            parse_line(r#"{"type":"result"}"#),
+            vec![ClaudeEvent::Result {
+                text: String::new(),
+                cost_usd: 0.0,
+                session_id: None
+            }]
+        );
+        // wrong types fall back to defaults too
+        assert_eq!(
+            parse_line(r#"{"type":"result","result":1,"total_cost_usd":"x","session_id":2}"#),
+            vec![ClaudeEvent::Result {
+                text: String::new(),
+                cost_usd: 0.0,
+                session_id: None
+            }]
+        );
+    }
+
+    #[test]
+    fn result_accepts_integer_cost() {
+        match parse_line(r#"{"type":"result","total_cost_usd":2}"#).as_slice() {
+            [ClaudeEvent::Result { cost_usd, .. }] => assert_eq!(*cost_usd, 2.0),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_use_full_fields_and_defaults() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"tool_use","id":"t9","name":"Bash","input":{"command":"ls"}},
+            {"type":"tool_use"}
+        ]}}"#;
+        assert_eq!(
+            parse_line(line),
+            vec![
+                ClaudeEvent::ToolUse {
+                    id: "t9".into(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({"command":"ls"}),
+                },
+                ClaudeEvent::ToolUse {
+                    id: String::new(),
+                    name: String::new(),
+                    input: Value::Null,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn assistant_skips_empty_missing_and_unknown_blocks() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"text","text":""},
+            {"type":"text"},
+            {"type":"text","text":42},
+            {"type":"thinking","thinking":"hmm"},
+            {"no_type":true},
+            {"type":"text","text":"kept"}
+        ]}}"#;
+        assert_eq!(
+            parse_line(line),
+            vec![ClaudeEvent::AssistantText("kept".into())]
+        );
+    }
+
+    #[test]
+    fn assistant_preserves_block_order() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"text","text":"a"},
+            {"type":"tool_use","id":"1","name":"Read","input":{}},
+            {"type":"text","text":"b"}
+        ]}}"#;
+        let evs = parse_line(line);
+        assert_eq!(evs.len(), 3);
+        assert_eq!(evs[0], ClaudeEvent::AssistantText("a".into()));
+        assert!(matches!(&evs[1], ClaudeEvent::ToolUse { id, .. } if id == "1"));
+        assert_eq!(evs[2], ClaudeEvent::AssistantText("b".into()));
+    }
+
+    #[test]
+    fn malformed_assistant_messages_yield_nothing() {
+        assert!(parse_line(r#"{"type":"assistant"}"#).is_empty());
+        assert!(parse_line(r#"{"type":"assistant","message":{}}"#).is_empty());
+        assert!(parse_line(r#"{"type":"assistant","message":{"content":"text"}}"#).is_empty());
+        assert!(parse_line(r#"{"type":"assistant","message":{"content":[]}}"#).is_empty());
+    }
+
+    #[test]
+    fn malformed_json_and_non_objects_yield_nothing() {
+        assert!(parse_line(r#"{"type":"result""#).is_empty());
+        assert!(parse_line("[1,2,3]").is_empty());
+        assert!(parse_line("\"result\"").is_empty());
+        assert!(parse_line("null").is_empty());
+        assert!(parse_line(r#"{"type":7}"#).is_empty());
+        assert!(parse_line(r#"{"type":"user","message":{"content":[]}}"#).is_empty());
+    }
 }
