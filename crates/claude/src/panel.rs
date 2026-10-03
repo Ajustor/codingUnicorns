@@ -33,7 +33,11 @@ impl ClaudePanel {
         let mut action = ClaudeAction::None;
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Claude").strong().color(egui::Color32::WHITE));
+            ui.label(
+                egui::RichText::new("Claude")
+                    .strong()
+                    .color(egui::Color32::WHITE),
+            );
             if let Some(acc) = account {
                 ui.label(
                     egui::RichText::new(acc)
@@ -123,8 +127,8 @@ impl ClaudePanel {
                 .hint_text("Ask Claude…  (Enter to send, Shift+Enter for newline)")
                 .desired_width(f32::INFINITY),
         );
-        let enter = resp.has_focus()
-            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+        let enter =
+            resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
         if enter && !session.running {
             let text = self.input.trim().to_string();
             if !text.is_empty() {

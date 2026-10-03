@@ -71,8 +71,7 @@ fn discover_shells() -> Vec<ShellCandidate> {
 
         // PowerShell 7+ (pwsh) — check common install locations
         let pwsh_locations = [
-            std::env::var("ProgramFiles")
-                .unwrap_or_else(|_| r"C:\Program Files".to_string())
+            std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".to_string())
                 + r"\PowerShell\7\pwsh.exe",
             // winget / scoop / chocolatey may put it on PATH
             "pwsh.exe".to_string(),
@@ -86,12 +85,9 @@ fn discover_shells() -> Vec<ShellCandidate> {
 
         // Git Bash
         let git_bash_locations = [
-            std::env::var("ProgramFiles")
-                .unwrap_or_else(|_| r"C:\Program Files".to_string())
+            std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".to_string())
                 + r"\Git\bin\bash.exe",
-            std::env::var("LOCALAPPDATA")
-                .unwrap_or_default()
-                + r"\Programs\Git\bin\bash.exe",
+            std::env::var("LOCALAPPDATA").unwrap_or_default() + r"\Programs\Git\bin\bash.exe",
             "bash.exe".to_string(),
         ];
         for loc in git_bash_locations {

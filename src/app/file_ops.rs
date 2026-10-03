@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{ImageData, CodingUnicorns};
+use super::{CodingUnicorns, ImageData};
 
 /// Returns true if the path has an image file extension we can display.
 pub(crate) fn is_image_file(path: &std::path::Path) -> bool {

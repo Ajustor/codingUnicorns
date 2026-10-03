@@ -15,7 +15,10 @@ pub fn fetch_account(binary: &str) -> Option<String> {
     if v.get("loggedIn").and_then(|b| b.as_bool()) != Some(true) {
         return Some("not logged in".to_string());
     }
-    let email = v.get("email").and_then(|e| e.as_str()).unwrap_or("signed in");
+    let email = v
+        .get("email")
+        .and_then(|e| e.as_str())
+        .unwrap_or("signed in");
     match v.get("subscriptionType").and_then(|s| s.as_str()) {
         Some(sub) => Some(format!("{email} · {sub}")),
         None => Some(email.to_string()),

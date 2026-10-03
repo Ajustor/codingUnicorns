@@ -174,7 +174,12 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .as_ref()
                     .and_then(|p| p.extension())
                     .and_then(|e| e.to_str())
-                    .map(|e| matches!(e.to_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"))
+                    .map(|e| {
+                        matches!(
+                            e.to_lowercase().as_str(),
+                            "md" | "markdown" | "mdown" | "mkd"
+                        )
+                    })
                     .unwrap_or(false);
                 if can_preview {
                     let color = if app.show_md_preview {
@@ -182,8 +187,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     } else {
                         egui::Color32::from_gray(200)
                     };
-                    let btn = egui::Button::new(egui::RichText::new("👁 Preview").small().color(color))
-                        .frame(false);
+                    let btn =
+                        egui::Button::new(egui::RichText::new("👁 Preview").small().color(color))
+                            .frame(false);
                     if ui
                         .add(btn)
                         .on_hover_text("Toggle Markdown preview (Ctrl+Shift+V)")
@@ -306,7 +312,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         let r = tab_label_response.rect;
                         tab_ui.painter().line_segment(
                             [r.left_top(), r.right_top()],
-                            egui::Stroke::new(2.0, active_bar),
+                            egui::Stroke::new(2.0_f32, active_bar),
                         );
                     }
 
@@ -474,7 +480,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     if is_active {
                         painter.line_segment(
                             [rect.left_top(), rect.left_bottom()],
-                            Stroke::new(2.0, accent),
+                            Stroke::new(2.0_f32, accent),
                         );
                     }
 
@@ -790,7 +796,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             .show(ctx, |ui| {
                 let pending = app.claude_pending.as_ref();
                 let account = app.claude_account.as_deref();
-                let action = app.claude_panel.show(ui, &app.claude_session, pending, account);
+                let action = app
+                    .claude_panel
+                    .show(ui, &app.claude_session, pending, account);
                 match action {
                     claude::panel::ClaudeAction::Send(text) => {
                         if text.starts_with('/') {
@@ -843,7 +851,12 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             .as_ref()
             .and_then(|p| p.extension())
             .and_then(|e| e.to_str())
-            .map(|e| matches!(e.to_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"))
+            .map(|e| {
+                matches!(
+                    e.to_lowercase().as_str(),
+                    "md" | "markdown" | "mdown" | "mkd"
+                )
+            })
             .unwrap_or(false);
     if md_preview {
         SidePanel::right("md_preview")
@@ -949,14 +962,14 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     ui.painter().rect_stroke(
                         left_rect,
                         0.0,
-                        egui::Stroke::new(1.0, accent_color),
+                        egui::Stroke::new(1.0_f32, accent_color),
                         egui::StrokeKind::Inside,
                     );
                 } else {
                     ui.painter().rect_stroke(
                         right_rect,
                         0.0,
-                        egui::Stroke::new(1.0, accent_color),
+                        egui::Stroke::new(1.0_f32, accent_color),
                         egui::StrokeKind::Inside,
                     );
                 }
@@ -1287,8 +1300,15 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    app.editor
-                        .show(ui, &app.config, &app.plugin_manager, lsp_hover, &bp_lines, app.palette, app.spacing);
+                    app.editor.show(
+                        ui,
+                        &app.config,
+                        &app.plugin_manager,
+                        lsp_hover,
+                        &bp_lines,
+                        app.palette,
+                        app.spacing,
+                    );
                 } else {
                     welcome_screen(ui);
                 }
@@ -1386,4 +1406,3 @@ fn find_free_path(parent: &std::path::Path, base: &str, _is_dir: bool) -> std::p
     }
     parent.join(base) // fallback
 }
-

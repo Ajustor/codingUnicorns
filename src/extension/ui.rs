@@ -141,10 +141,12 @@ impl ExtensionsPanel {
                             cancel = true;
                         }
                         if ui
-                            .add(egui::Button::new(
-                                egui::RichText::new("Uninstall").color(egui::Color32::WHITE),
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Uninstall").color(egui::Color32::WHITE),
+                                )
+                                .fill(egui::Color32::from_rgb(200, 60, 60)),
                             )
-                            .fill(egui::Color32::from_rgb(200, 60, 60)))
                             .clicked()
                         {
                             choice = Some(false);
@@ -181,11 +183,13 @@ impl ExtensionsPanel {
                             choice = Some(false);
                         }
                         if ui
-                            .add(egui::Button::new(
-                                egui::RichText::new("Module + dependencies")
-                                    .color(egui::Color32::WHITE),
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Module + dependencies")
+                                        .color(egui::Color32::WHITE),
+                                )
+                                .fill(egui::Color32::from_rgb(200, 60, 60)),
                             )
-                            .fill(egui::Color32::from_rgb(200, 60, 60)))
                             .clicked()
                         {
                             choice = Some(true);
@@ -1009,8 +1013,7 @@ impl ExtensionsPanel {
             }
             Err(e) => {
                 self.zip_log.clear();
-                self.zip_log
-                    .push(format!("Failed to read ZIP: {e}"));
+                self.zip_log.push(format!("Failed to read ZIP: {e}"));
             }
         }
     }
@@ -1070,9 +1073,7 @@ impl ExtensionsPanel {
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         ui.label(
-                                            egui::RichText::new(&entry.name)
-                                                .strong()
-                                                .size(13.0),
+                                            egui::RichText::new(&entry.name).strong().size(13.0),
                                         );
                                         ui.label(
                                             egui::RichText::new(format!("v{}", entry.version))
@@ -1084,7 +1085,9 @@ impl ExtensionsPanel {
                                                 ui.label(
                                                     egui::RichText::new("(reinstall)")
                                                         .size(11.0)
-                                                        .color(egui::Color32::from_rgb(180, 180, 180)),
+                                                        .color(egui::Color32::from_rgb(
+                                                            180, 180, 180,
+                                                        )),
                                                 );
                                             } else {
                                                 ui.label(
@@ -1165,8 +1168,7 @@ impl ExtensionsPanel {
             } else {
                 self.workspace_log.clear();
                 self.workspace_status = WorkspaceStatus::Building;
-                let rx =
-                    super::installer::install_from_workspace(path, ext_dir, Some(selected));
+                let rx = super::installer::install_from_workspace(path, ext_dir, Some(selected));
                 self.workspace_job = Some(rx);
             }
             self.show_picker = false;
