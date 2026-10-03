@@ -244,3 +244,294 @@ fn tokenize_line_plain(line: &str) -> Vec<Token> {
 pub fn keywords_for_language(_lang: &str) -> &'static [&'static str] {
     &[]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::manager::PluginManager;
+    use crate::plugin::Plugin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn tok(text: &str, kind: TokenKind) -> Token {
+        Token {
+            text: text.to_string(),
+            kind,
+        }
+    }
+
+    /// Language plugin double: optional document tokenizer, optional line tokenizer
+    /// producing a single token of `line_kind`, counts tokenizer resets.
+    struct FakeLang {
+        doc: Option<Vec<Vec<Token>>>,
+        line_kind: Option<TokenKind>,
+        resets: Arc<AtomicUsize>,
+    }
+
+    impl Plugin for FakeLang {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn file_extensions(&self) -> &[&str] {
+            &["fk"]
+        }
+        fn tokenize_document(&self, lang: &str, _text: &str) -> Option<Vec<Vec<Token>>> {
+            if lang == "fk" {
+                self.doc.clone()
+            } else {
+                None
+            }
+        }
+        fn tokenize_line(&self, lang: &str, line: &str) -> Option<Vec<Token>> {
+            if lang != "fk" {
+                return None;
+            }
+            self.line_kind.map(|k| vec![tok(line, k)])
+        }
+        fn reset_tokenizer(&self) {
+            self.resets.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn manager(
+        doc: Option<Vec<Vec<Token>>>,
+        line_kind: Option<TokenKind>,
+    ) -> (PluginManager, Arc<AtomicUsize>) {
+        let resets = Arc::new(AtomicUsize::new(0));
+        let mut pm = PluginManager::new();
+        pm.register(Box::new(FakeLang {
+            doc,
+            line_kind,
+            resets: resets.clone(),
+        }));
+        (pm, resets)
+    }
+
+    fn fk_highlighter() -> Highlighter {
+        let mut h = Highlighter::new();
+        h.set_language("fk");
+        h
+    }
+
+    fn kinds(tokens: &[Token]) -> Vec<TokenKind> {
+        tokens.iter().map(|t| t.kind).collect()
+    }
+
+    #[test]
+    fn token_colors_are_distinct_where_expected() {
+        use TokenKind::*;
+        assert_eq!(Keyword.color(), egui::Color32::from_rgb(197, 134, 192));
+        assert_eq!(Normal.color(), egui::Color32::from_rgb(212, 212, 212));
+        assert_eq!(Function.color(), Macro.color());
+        assert_eq!(Operator.color(), Normal.color());
+        let all = [
+            Keyword,
+            KeywordType,
+            String,
+            Comment,
+            Number,
+            Function,
+            Normal,
+            Class,
+            TypeParam,
+            Property,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a.color(), b.color(), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn set_language_lowercases_and_invalidates() {
+        let mut h = Highlighter::new();
+        h.highlight_document("a", 3, None);
+        assert!(!h.needs_update(3));
+        h.set_language("RS");
+        assert_eq!(h.language, "rs");
+        assert!(h.needs_update(3), "language change forces re-highlight");
+
+        // Same language again keeps the cache.
+        h.highlight_document("a", 4, None);
+        h.set_language("rs");
+        assert!(!h.needs_update(4));
+    }
+
+    #[test]
+    fn set_language_from_filename_handles_special_names() {
+        let mut h = Highlighter::new();
+        let cases = [
+            ("Dockerfile", "dockerfile"),
+            ("dockerfile.dev", "dockerfile"),
+            ("Makefile", "makefile"),
+            ("GNUmakefile", "makefile"),
+            ("main.RS", "rs"),
+            ("archive.tar.gz", "gz"),
+            ("README", "readme"),
+        ];
+        for (name, lang) in cases {
+            h.set_language_from_filename(name);
+            assert_eq!(h.language, lang, "for {name}");
+        }
+    }
+
+    #[test]
+    fn invalidate_forces_update_and_drops_viewport() {
+        let mut h = Highlighter::new();
+        h.highlight_viewport("x", 0, 1, 7, (0, 10), None);
+        assert!(!h.viewport_stale(7, 0, 10));
+        h.invalidate();
+        assert!(h.needs_update(7));
+        assert!(h.viewport_stale(7, 0, 10));
+    }
+
+    #[test]
+    fn viewport_stale_checks_version_and_range() {
+        let mut h = Highlighter::new();
+        assert!(h.viewport_stale(-1, 0, 1), "no viewport cached yet");
+        h.highlight_viewport("a\nb", 10, 100, 2, (5, 50), None);
+        assert!(!h.viewport_stale(2, 5, 50));
+        assert!(!h.viewport_stale(2, 10, 40));
+        assert!(h.viewport_stale(3, 10, 40), "content changed");
+        assert!(h.viewport_stale(2, 4, 40), "scrolled above window");
+        assert!(h.viewport_stale(2, 10, 51), "scrolled below window");
+        // Full-document mode clears the viewport.
+        h.highlight_document("a", 9, None);
+        assert!(h.viewport_stale(9, 0, 1));
+    }
+
+    #[test]
+    fn highlight_viewport_places_tokens_at_absolute_lines() {
+        let doc = vec![
+            vec![tok("fn", TokenKind::Keyword)],
+            vec![tok("x", TokenKind::Number)],
+            vec![tok("overflow", TokenKind::Comment)],
+        ];
+        let (pm, _) = manager(Some(doc), None);
+        let mut h = fk_highlighter();
+        h.highlight_viewport("fn\nx\noverflow", 3, 5, 1, (3, 5), Some(&pm));
+        assert!(!h.needs_update(1));
+        assert_eq!(h.line_tokens.len(), 5);
+        assert!(h.line_tokens[..3].iter().all(Vec::is_empty));
+        assert_eq!(kinds(&h.line_tokens[3]), vec![TokenKind::Keyword]);
+        assert_eq!(kinds(&h.line_tokens[4]), vec![TokenKind::Number]);
+    }
+
+    #[test]
+    fn highlight_viewport_without_plugin_leaves_lines_empty() {
+        let mut h = fk_highlighter();
+        h.highlight_viewport("a\nb", 0, 3, 1, (0, 3), None);
+        assert_eq!(h.line_tokens.len(), 3);
+        assert!(h.line_tokens.iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn highlight_document_without_plugins_is_plain_text() {
+        let mut h = Highlighter::new();
+        h.highlight_document("let x;\n\nfoo", 1, None);
+        assert_eq!(h.line_tokens.len(), 3);
+        assert_eq!(h.line_tokens[0].len(), 1);
+        assert_eq!(h.line_tokens[0][0].text, "let x;");
+        assert_eq!(h.line_tokens[0][0].kind, TokenKind::Normal);
+        assert!(h.line_tokens[1].is_empty(), "empty line has no tokens");
+    }
+
+    #[test]
+    fn highlight_document_is_noop_for_same_version() {
+        let mut h = Highlighter::new();
+        h.highlight_document("one", 5, None);
+        h.highlight_document("two\nthree", 5, None);
+        assert_eq!(h.line_tokens.len(), 1);
+        assert_eq!(h.line_tokens[0][0].text, "one");
+    }
+
+    #[test]
+    fn highlight_document_prefers_document_tokenizer() {
+        let doc = vec![vec![
+            tok("fn", TokenKind::Keyword),
+            tok(" a", TokenKind::Normal),
+        ]];
+        let (pm, resets) = manager(Some(doc), Some(TokenKind::Comment));
+        let mut h = fk_highlighter();
+        h.highlight_document("fn a", 1, Some(&pm));
+        assert_eq!(
+            kinds(&h.line_tokens[0]),
+            vec![TokenKind::Keyword, TokenKind::Normal]
+        );
+        assert_eq!(resets.load(Ordering::SeqCst), 0, "line path not taken");
+    }
+
+    #[test]
+    fn highlight_document_falls_back_to_line_tokenizer() {
+        // Empty document tokens count as "unsupported".
+        let (pm, resets) = manager(Some(vec![]), Some(TokenKind::Comment));
+        let mut h = fk_highlighter();
+        h.highlight_document("// a\n// b", 1, Some(&pm));
+        assert_eq!(resets.load(Ordering::SeqCst), 1);
+        assert_eq!(h.line_tokens.len(), 2);
+        assert_eq!(kinds(&h.line_tokens[1]), vec![TokenKind::Comment]);
+        assert_eq!(h.line_tokens[1][0].text, "// b");
+    }
+
+    #[test]
+    fn highlight_document_uses_plain_when_line_tokenizer_is_trivial() {
+        // Line tokenizer only returns Normal tokens: treated as no highlighting.
+        let (pm, resets) = manager(None, Some(TokenKind::Normal));
+        let mut h = fk_highlighter();
+        h.highlight_document("a\nb", 1, Some(&pm));
+        assert_eq!(resets.load(Ordering::SeqCst), 1);
+        assert_eq!(h.line_tokens.len(), 2);
+        assert_eq!(kinds(&h.line_tokens[0]), vec![TokenKind::Normal]);
+
+        // A plugin that doesn't handle the language falls back to plain per line.
+        let (pm, resets) = manager(None, Some(TokenKind::Keyword));
+        let mut h = Highlighter::new();
+        h.set_language("other");
+        h.highlight_document("x", 1, Some(&pm));
+        assert_eq!(resets.load(Ordering::SeqCst), 0);
+        assert_eq!(kinds(&h.line_tokens[0]), vec![TokenKind::Normal]);
+    }
+
+    #[test]
+    fn tokens_for_line_uses_cache_then_plugin_then_plain() {
+        let (pm, _) = manager(None, Some(TokenKind::Keyword));
+        let mut h = fk_highlighter();
+        h.highlight_document("cached", 1, Some(&pm));
+
+        // Cache hit (ignores the passed text).
+        let t = h.tokens_for_line(0, "ignored", None);
+        assert_eq!(t[0].text, "cached");
+        assert_eq!(t[0].kind, TokenKind::Keyword);
+
+        // Cache miss: plugin tokenizer.
+        let t = h.tokens_for_line(5, "fresh", Some(&pm));
+        assert_eq!(t[0].text, "fresh");
+        assert_eq!(t[0].kind, TokenKind::Keyword);
+
+        // Cache miss, no plugin: plain.
+        let t = h.tokens_for_line(5, "fresh", None);
+        assert_eq!(kinds(&t), vec![TokenKind::Normal]);
+
+        // Plugin that doesn't handle the language: plain.
+        let (pm_none, _) = manager(None, None);
+        let t = h.tokens_for_line(5, "fresh", Some(&pm_none));
+        assert_eq!(kinds(&t), vec![TokenKind::Normal]);
+    }
+
+    #[test]
+    fn tokenize_line_is_plain() {
+        let h = Highlighter::new();
+        let t = h.tokenize_line("fn main() {}");
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].text, "fn main() {}");
+        assert_eq!(t[0].kind, TokenKind::Normal);
+        assert!(h.tokenize_line("").is_empty());
+    }
+
+    #[test]
+    fn no_builtin_keywords() {
+        assert!(keywords_for_language("rs").is_empty());
+        assert!(keywords_for_language("").is_empty());
+    }
+}
