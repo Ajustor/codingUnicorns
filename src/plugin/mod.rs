@@ -78,3 +78,55 @@ pub trait Plugin: Send + Sync {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Minimal;
+    impl Plugin for Minimal {
+        fn name(&self) -> &str {
+            "minimal"
+        }
+    }
+
+    fn ctx() -> PluginContext<'static> {
+        PluginContext {
+            buffer_text: "some text",
+            filename: Some("a.rs"),
+            cursor_row: 0,
+            cursor_col: 0,
+            is_modified: false,
+            hovered_word: None,
+        }
+    }
+
+    #[test]
+    fn trait_defaults_are_inert() {
+        let mut p = Minimal;
+        assert_eq!(p.name(), "minimal");
+        assert_eq!(p.version(), "0.1.0");
+        assert!(p.commands().is_empty());
+        assert!(p.sidebar_panels().is_empty());
+        let r = p.update(&ctx());
+        assert!(r.status_text.is_none() && r.notifications.is_empty());
+        let r = p.execute_command("x", &ctx());
+        assert!(r.status_text.is_none() && r.notifications.is_empty());
+        assert!(p.tokenize_line("rs", "fn x").is_none());
+        assert!(p.hover_info("rs", "x", "").is_none());
+        assert!(p.tokenize_document("rs", "fn x").is_none());
+        p.reset_tokenizer();
+        assert!(p.file_extensions().is_empty());
+        assert!(p.lsp_server_command().is_none());
+        assert!(p.dap_config().is_none());
+    }
+
+    #[test]
+    fn default_render_sidebar_draws_nothing() {
+        let ctx = egui::Context::default();
+        let mut p = Minimal;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| p.render_sidebar("panel", ui));
+        });
+    }
+}

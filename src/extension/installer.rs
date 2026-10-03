@@ -1195,3 +1195,637 @@ fn zip_install_inner(
 
     let _ = tx.send(WorkspaceStatus::Done { installed, total });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::manifest::{Dependencies, ExtensionManifest};
+    use super::*;
+    use std::io::Write;
+    use std::path::Path;
+
+    fn manifest(id: &str) -> String {
+        format!(
+            "[extension]\nid = \"{id}\"\nname = \"Name {id}\"\nversion = \"0.1.0\"\ndescription = \"d\"\n"
+        )
+    }
+
+    fn write(path: &Path, content: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn make_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let f = std::fs::File::create(path).unwrap();
+        let mut w = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, data) in entries {
+            if name.ends_with('/') {
+                w.add_directory(*name, opts).unwrap();
+            } else {
+                w.start_file(*name, opts).unwrap();
+                w.write_all(data).unwrap();
+            }
+        }
+        w.finish().unwrap();
+    }
+
+    fn collect<T>(rx: mpsc::Receiver<T>) -> Vec<T> {
+        rx.iter().collect()
+    }
+
+    fn run_ws(ws: &Path, exts: &Path, sel: Option<&[String]>) -> Vec<WorkspaceStatus> {
+        let (tx, rx) = mpsc::channel();
+        workspace_install_inner(ws.to_path_buf(), exts.to_path_buf(), sel, &tx);
+        drop(tx);
+        collect(rx)
+    }
+
+    fn run_zip(zip: &Path, exts: &Path, sel: Option<&[String]>) -> Vec<WorkspaceStatus> {
+        let (tx, rx) = mpsc::channel();
+        zip_install_inner(zip.to_path_buf(), exts.to_path_buf(), sel, &tx);
+        drop(tx);
+        collect(rx)
+    }
+
+    fn read_source(dir: &Path) -> ExtensionSource {
+        toml::from_str(&std::fs::read_to_string(dir.join("source.toml")).unwrap()).unwrap()
+    }
+
+    // ── Small helpers ────────────────────────────────────────────────────
+
+    #[test]
+    fn write_source_creates_parseable_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_source(
+            tmp.path(),
+            &ExtensionSource {
+                kind: SourceKind::Workspace,
+                path: Some("/ws".into()),
+                member: Some("m".into()),
+                url: None,
+            },
+        );
+        let s = read_source(tmp.path());
+        assert_eq!(s.kind, SourceKind::Workspace);
+        assert_eq!(s.member.as_deref(), Some("m"));
+    }
+
+    #[test]
+    fn parse_workspace_members_variants() {
+        assert_eq!(
+            parse_workspace_members("[workspace]\nmembers = [\"a\", \"b\", 3]\n").unwrap(),
+            vec!["a", "b"]
+        );
+        assert!(parse_workspace_members("[package]\nname = \"x\"\n").is_err());
+        assert!(parse_workspace_members("[workspace]\n").is_err());
+        assert!(parse_workspace_members("[workspace]\nmembers = \"a\"\n").is_err());
+        assert!(parse_workspace_members("not = [toml").is_err());
+    }
+
+    #[test]
+    fn discover_modules_keeps_members_with_valid_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write(
+            &ws.join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"good\", \"bad\", \"none\"]\n",
+        );
+        write(
+            &ws.join("good/manifest.toml"),
+            manifest("acme.good").as_bytes(),
+        );
+        write(&ws.join("bad/manifest.toml"), b"garbage [");
+        std::fs::create_dir_all(ws.join("none")).unwrap();
+        let mods = discover_modules(ws).unwrap();
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].member, "good");
+        assert_eq!(mods[0].manifest.extension.id, "acme.good");
+    }
+
+    #[test]
+    fn discover_modules_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(discover_modules(tmp.path()).is_err(), "no Cargo.toml");
+        write(&tmp.path().join("Cargo.toml"), b"[package]\nname = \"x\"\n");
+        assert!(discover_modules(tmp.path()).is_err(), "not a workspace");
+    }
+
+    #[test]
+    fn find_lib_in_release_dir_checks_platform_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rel = tmp.path();
+        assert!(find_lib_in_release_dir(rel, "my_ext").is_none());
+        for name in ["libmy_ext.so", "libmy_ext.dylib", "my_ext.dll"] {
+            let t = tempfile::tempdir().unwrap();
+            write(&t.path().join(name), b"");
+            assert_eq!(
+                find_lib_in_release_dir(t.path(), "my_ext"),
+                Some(t.path().join(name))
+            );
+        }
+        // Prefers the .so when several exist.
+        write(&rel.join("x.dll"), b"");
+        write(&rel.join("libx.so"), b"");
+        assert_eq!(find_lib_in_release_dir(rel, "x"), Some(rel.join("libx.so")));
+    }
+
+    #[test]
+    fn find_prebuilt_lib_looks_in_target_release() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(find_prebuilt_lib(tmp.path(), "e").is_none());
+        for name in ["libe.so", "libe.dylib", "e.dll"] {
+            let t = tempfile::tempdir().unwrap();
+            let p = t.path().join("target").join("release").join(name);
+            write(&p, b"");
+            assert_eq!(find_prebuilt_lib(t.path(), "e"), Some(p));
+        }
+    }
+
+    #[test]
+    fn find_lib_file_returns_any_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(find_lib_file(&tmp.path().join("missing")).is_none());
+        write(&tmp.path().join("build.log"), b"");
+        assert!(find_lib_file(tmp.path()).is_none());
+        write(&tmp.path().join("foo.dylib"), b"");
+        assert_eq!(
+            find_lib_file(tmp.path()),
+            Some(tmp.path().join("foo.dylib"))
+        );
+    }
+
+    #[test]
+    fn tempdir_for_clone_uses_repo_name() {
+        for url in [
+            "https://example.invalid/acme/my-ext.git",
+            "https://example.invalid/acme/my-ext/",
+            "my-ext",
+        ] {
+            let p = tempdir_for_clone(url).unwrap();
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            assert!(name.starts_with("wu-ext-my-ext-"), "{name}");
+            assert!(p.starts_with(std::env::temp_dir()));
+            assert!(!p.exists(), "only a path is computed");
+        }
+        assert_ne!(
+            tempdir_for_clone("a").unwrap(),
+            tempdir_for_clone("a").unwrap()
+        );
+    }
+
+    #[test]
+    fn install_job_new_is_idle() {
+        let j = InstallJob::new("https://example.invalid/x".into());
+        assert_eq!(j.status, InstallStatus::Idle);
+        assert!(j.log.is_empty());
+        assert_eq!(j.repo_url, "https://example.invalid/x");
+    }
+
+    #[test]
+    fn shell_command_wraps_with_cmd_on_windows() {
+        let c = shell_command("npm");
+        let args: Vec<String> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        if cfg!(target_os = "windows") {
+            assert_eq!(c.get_program(), "cmd");
+            assert_eq!(args, vec!["/C", "npm"]);
+        } else {
+            assert_eq!(c.get_program(), "npm");
+            assert!(args.is_empty());
+        }
+    }
+
+    #[test]
+    fn split_pkg_version_variants() {
+        assert_eq!(
+            split_pkg_version("csharp-ls@0.16.0"),
+            ("csharp-ls", Some("0.16.0"))
+        );
+        assert_eq!(split_pkg_version("pylsp"), ("pylsp", None));
+        assert_eq!(split_pkg_version("a@b@c"), ("a", Some("b@c")));
+    }
+
+    #[test]
+    fn dependency_summary_lists_every_manager() {
+        let deps = Dependencies {
+            npm: vec!["pyright@1.1".into()],
+            pip: vec!["python-lsp-server".into()],
+            cargo: vec!["taplo-cli@0.9".into()],
+            go: vec!["golang.org/x/tools/gopls@latest".into()],
+            dotnet: vec!["csharp-ls@0.16.0".into()],
+        };
+        assert_eq!(
+            dependency_summary(&deps),
+            vec![
+                "pyright (npm)",
+                "python-lsp-server (pip)",
+                "taplo-cli (cargo)",
+                "golang.org/x/tools/gopls@latest (go)",
+                "csharp-ls (dotnet tool)",
+            ]
+        );
+        assert!(dependency_summary(&Dependencies::default()).is_empty());
+    }
+
+    #[test]
+    fn no_dependencies_means_no_commands() {
+        let mut steps = Vec::new();
+        let errs = install_deps(&Dependencies::default(), |s| steps.push(s));
+        assert!(errs.is_empty());
+        assert!(steps.is_empty());
+        assert!(uninstall_deps(&Dependencies::default()).is_empty());
+    }
+
+    #[test]
+    fn run_uninstall_records_failure_with_label() {
+        let mut errors = Vec::new();
+        run_uninstall(
+            &mut errors,
+            "fakepm",
+            "definitely-not-a-package-manager-xyz",
+            &["uninstall", "x"],
+        );
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].starts_with("fakepm"), "{}", errors[0]);
+    }
+
+    #[test]
+    fn copy_lib_safe_copies_and_replaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("new.dll");
+        let dest = tmp.path().join("out").join("ext.dll");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        write(&src, b"v1");
+        copy_lib_safe(&src, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"v1");
+
+        write(&src, b"v2");
+        write(&dest.with_extension("old"), b"stale");
+        copy_lib_safe(&src, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"v2");
+        assert!(!dest.with_extension("old").exists(), ".old cleaned up");
+
+        assert!(copy_lib_safe(&tmp.path().join("missing.dll"), &dest).is_err());
+    }
+
+    // ── Folder install ───────────────────────────────────────────────────
+
+    #[test]
+    fn install_from_folder_without_manifest_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let st = collect(install_from_folder(
+            tmp.path().to_path_buf(),
+            tmp.path().join("exts"),
+        ));
+        assert_eq!(
+            st,
+            vec![InstallStatus::Failed(
+                "No manifest.toml found in folder".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn install_from_folder_with_invalid_manifest_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(&tmp.path().join("manifest.toml"), b"[extension]\nid = 1\n");
+        let st = collect(install_from_folder(
+            tmp.path().to_path_buf(),
+            tmp.path().join("exts"),
+        ));
+        assert_eq!(st.len(), 1);
+        assert!(
+            matches!(&st[0], InstallStatus::Failed(m) if m.starts_with("Invalid manifest.toml"))
+        );
+    }
+
+    #[test]
+    fn install_from_folder_with_prebuilt_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("my-ext");
+        write(
+            &folder.join("manifest.toml"),
+            manifest("acme.my-ext").as_bytes(),
+        );
+        write(
+            &folder.join("target").join("release").join("my_ext.dll"),
+            b"binary",
+        );
+        let exts = tmp.path().join("exts");
+        let st = collect(install_from_folder(folder.clone(), exts.clone()));
+        assert_eq!(st, vec![InstallStatus::Installing, InstallStatus::Done]);
+        let dest = exts.join("acme.my-ext");
+        assert_eq!(std::fs::read(dest.join("my_ext.dll")).unwrap(), b"binary");
+        let m: ExtensionManifest =
+            toml::from_str(&std::fs::read_to_string(dest.join("manifest.toml")).unwrap()).unwrap();
+        assert_eq!(m.extension.id, "acme.my-ext");
+        let src = read_source(&dest);
+        assert_eq!(src.kind, SourceKind::Folder);
+        assert_eq!(src.path.as_deref(), Some(folder.to_string_lossy().as_ref()));
+
+        // Re-installing over an existing install replaces the library.
+        write(
+            &folder.join("target").join("release").join("my_ext.dll"),
+            b"binary-v2",
+        );
+        let st = collect(install_from_folder(folder, exts));
+        assert_eq!(st.last(), Some(&InstallStatus::Done));
+        assert_eq!(
+            std::fs::read(dest.join("my_ext.dll")).unwrap(),
+            b"binary-v2"
+        );
+    }
+
+    #[test]
+    fn install_from_folder_reports_mkdir_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("e");
+        write(&folder.join("manifest.toml"), manifest("acme.e").as_bytes());
+        write(&folder.join("target/release/e.dll"), b"x");
+        // extensions_dir is a regular file → create_dir_all fails.
+        let exts = tmp.path().join("exts-file");
+        write(&exts, b"");
+        let st = collect(install_from_folder(folder, exts));
+        assert_eq!(st[0], InstallStatus::Installing);
+        assert!(matches!(&st[1], InstallStatus::Failed(m) if m.starts_with("Cannot create dir")));
+    }
+
+    // ── Workspace / git install (pre-build error paths only) ─────────────
+
+    #[test]
+    fn workspace_install_without_cargo_toml_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let st = run_ws(tmp.path(), &tmp.path().join("exts"), None);
+        assert_eq!(st.len(), 1);
+        assert!(
+            matches!(&st[0], WorkspaceStatus::Failed(m) if m.starts_with("Cannot read Cargo.toml"))
+        );
+        // Thread wrapper behaves the same.
+        let st = collect(install_from_workspace(
+            tmp.path().to_path_buf(),
+            tmp.path().join("exts"),
+            None,
+        ));
+        assert!(matches!(&st[0], WorkspaceStatus::Failed(_)));
+    }
+
+    #[test]
+    fn workspace_install_with_non_workspace_cargo_toml_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(&tmp.path().join("Cargo.toml"), b"[package]\nname = \"x\"\n");
+        let st = run_ws(tmp.path(), &tmp.path().join("exts"), None);
+        assert!(matches!(&st[0], WorkspaceStatus::Failed(m) if m.starts_with("Invalid workspace")));
+    }
+
+    #[test]
+    fn workspace_install_without_matching_modules_fails_before_building() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        write(
+            &ws.join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"a\", \"b\"]\n",
+        );
+        write(&ws.join("a/manifest.toml"), manifest("acme.a").as_bytes());
+        std::fs::create_dir_all(ws.join("b")).unwrap();
+        let only_b = vec!["b".to_string()];
+        let st = run_ws(ws, &ws.join("exts"), Some(&only_b));
+        assert_eq!(
+            st,
+            vec![WorkspaceStatus::Failed(
+                "No modules with manifest.toml found in this workspace.".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn single_git_install_error_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        single_git_install_inner(tmp.path(), &tmp.path().join("exts"), "u", &tx);
+        write(&tmp.path().join("manifest.toml"), b"nope [");
+        single_git_install_inner(tmp.path(), &tmp.path().join("exts"), "u", &tx);
+        drop(tx);
+        let st = collect(rx);
+        assert_eq!(st.len(), 4);
+        assert_eq!(st[0], WorkspaceStatus::Building);
+        assert!(matches!(&st[1], WorkspaceStatus::Failed(m) if m.starts_with("No manifest.toml")));
+        assert_eq!(st[2], WorkspaceStatus::Building);
+        assert!(matches!(&st[3], WorkspaceStatus::Failed(m) if m.starts_with("Invalid manifest")));
+    }
+
+    // ── ZIP ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn discover_zip_modules_finds_top_level_manifests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = tmp.path().join("bundle.zip");
+        let a = manifest("acme.a");
+        let deep = manifest("acme.deep");
+        let root = manifest("acme.root");
+        make_zip(
+            &zip,
+            &[
+                ("mod-a/", b""),
+                ("mod-a/manifest.toml", a.as_bytes()),
+                ("mod-b/manifest.toml", b"broken ["),
+                ("deep/nested/manifest.toml", deep.as_bytes()),
+                ("manifest.toml", root.as_bytes()),
+            ],
+        );
+        let mods = discover_zip_modules(&zip).unwrap();
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].dir_name, "mod-a");
+        assert_eq!(mods[0].manifest.extension.id, "acme.a");
+    }
+
+    #[test]
+    fn discover_zip_modules_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(discover_zip_modules(&tmp.path().join("missing.zip")).is_err());
+        let bogus = tmp.path().join("bogus.zip");
+        write(&bogus, b"not a zip");
+        assert!(discover_zip_modules(&bogus).is_err());
+    }
+
+    #[test]
+    fn install_from_zip_installs_complete_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = tmp.path().join("bundle.zip");
+        let (ma, mb, mc) = (manifest("acme.a"), manifest("acme.b"), manifest("acme.c"));
+        make_zip(
+            &zip,
+            &[
+                ("mod-a/", b""),
+                ("mod-a/manifest.toml", ma.as_bytes()),
+                ("mod-a/mod_a.dll", b"dll-bytes"),
+                ("mod-a/libmod_a.so", b"so-bytes"),
+                ("mod-a/README.md", b"ignored"),
+                ("mod-a/src/", b""),
+                ("mod-b/manifest.toml", mb.as_bytes()),
+                ("mod-c/manifest.toml", mc.as_bytes()),
+            ],
+        );
+        let exts = tmp.path().join("exts");
+        let st = collect(install_from_zip(zip.clone(), exts.clone(), None));
+        let installing = |n: &str, done| WorkspaceStatus::Installing {
+            current: format!("Name {n}"),
+            done,
+            total: 3,
+        };
+        let no_lib = |n: &str| WorkspaceStatus::ModuleFailed {
+            name: n.into(),
+            reason: "No .dll/.so/.dylib found".into(),
+        };
+        assert_eq!(
+            st,
+            vec![
+                installing("acme.a", 0),
+                installing("acme.b", 1),
+                no_lib("mod-b"),
+                installing("acme.c", 2),
+                no_lib("mod-c"),
+                WorkspaceStatus::Done {
+                    installed: 1,
+                    total: 3
+                },
+            ]
+        );
+        let a = exts.join("acme.a");
+        assert_eq!(std::fs::read(a.join("mod_a.dll")).unwrap(), b"dll-bytes");
+        assert_eq!(std::fs::read(a.join("libmod_a.so")).unwrap(), b"so-bytes");
+        assert!(a.join("manifest.toml").is_file());
+        assert!(
+            !a.join("README.md").exists(),
+            "only libs + manifest extracted"
+        );
+        assert!(!a.join("mod_a.dll.tmp").exists(), "temp file removed");
+        let src = read_source(&a);
+        assert_eq!(src.kind, SourceKind::Zip);
+        assert_eq!(src.member.as_deref(), Some("mod-a"));
+        assert!(!exts.join("acme.b").join("source.toml").exists());
+    }
+
+    #[test]
+    fn install_from_zip_respects_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = tmp.path().join("bundle.zip");
+        let (ma, mb) = (manifest("acme.a"), manifest("acme.b"));
+        make_zip(
+            &zip,
+            &[
+                ("a/manifest.toml", ma.as_bytes()),
+                ("a/a.dll", b"1"),
+                ("b/manifest.toml", mb.as_bytes()),
+                ("b/b.dll", b"2"),
+            ],
+        );
+        let exts = tmp.path().join("exts");
+        let sel = vec!["b".to_string()];
+        let st = run_zip(&zip, &exts, Some(&sel));
+        assert_eq!(
+            st.last(),
+            Some(&WorkspaceStatus::Done {
+                installed: 1,
+                total: 1
+            })
+        );
+        assert!(exts.join("acme.b").join("b.dll").is_file());
+        assert!(!exts.join("acme.a").exists());
+
+        let none = vec!["zzz".to_string()];
+        assert_eq!(
+            run_zip(&zip, &exts, Some(&none)),
+            vec![WorkspaceStatus::Failed(
+                "No modules with manifest.toml found in this ZIP.".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn install_from_zip_invalid_archives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let st = run_zip(&tmp.path().join("missing.zip"), tmp.path(), None);
+        assert!(matches!(&st[0], WorkspaceStatus::Failed(m) if m.starts_with("Cannot open ZIP")));
+        let bogus = tmp.path().join("bogus.zip");
+        write(&bogus, b"PK not really");
+        let st = run_zip(&bogus, tmp.path(), None);
+        assert!(matches!(&st[0], WorkspaceStatus::Failed(m) if m.starts_with("Invalid ZIP")));
+        let empty = tmp.path().join("empty.zip");
+        make_zip(&empty, &[("readme.txt", b"hi")]);
+        let st = run_zip(&empty, tmp.path(), None);
+        assert!(matches!(&st[0], WorkspaceStatus::Failed(m) if m.contains("No modules")));
+    }
+
+    #[test]
+    fn zip_entry_path_traversal_stays_inside_extension_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let exts = root.join("exts");
+        let zip = tmp.path().join("evil.zip");
+        let m = manifest("acme.m");
+        make_zip(
+            &zip,
+            &[
+                ("m/manifest.toml", m.as_bytes()),
+                ("m/../../evil.dll", b"pwned"),
+                ("m/../../../evil2.dll", b"pwned"),
+                ("m/sub/../../manifest.toml", m.as_bytes()),
+            ],
+        );
+        let st = run_zip(&zip, &exts, None);
+        assert_eq!(
+            st.last(),
+            Some(&WorkspaceStatus::Done {
+                installed: 1,
+                total: 1
+            })
+        );
+        // Entries are flattened to their file name inside the extension dir.
+        assert!(exts.join("acme.m").join("evil.dll").is_file());
+        assert!(!root.join("evil.dll").exists());
+        assert!(!tmp.path().join("evil.dll").exists());
+        assert!(!tmp.path().join("evil2.dll").exists());
+        assert!(!exts.join("evil.dll").exists());
+    }
+
+    #[test]
+    #[ignore = "BUG: manifest `id` is joined onto extensions_dir unsanitised — `../x` escapes it"]
+    fn manifest_id_cannot_escape_extensions_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exts = tmp.path().join("exts");
+        let zip = tmp.path().join("evil.zip");
+        let m = manifest("../escaped");
+        make_zip(
+            &zip,
+            &[("m/manifest.toml", m.as_bytes()), ("m/m.dll", b"pwned")],
+        );
+        let _ = run_zip(&zip, &exts, None);
+        assert!(
+            !tmp.path().join("escaped").exists(),
+            "install wrote outside the extensions directory"
+        );
+    }
+
+    #[test]
+    #[ignore = "BUG: ZIP entries using `\\` separators are discovered but never extracted"]
+    fn zip_with_backslash_separators_installs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = tmp.path().join("win.zip");
+        let m = manifest("acme.m");
+        make_zip(
+            &zip,
+            &[("m\\manifest.toml", m.as_bytes()), ("m\\m.dll", b"1")],
+        );
+        assert_eq!(discover_zip_modules(&zip).unwrap().len(), 1);
+        let st = run_zip(&zip, &tmp.path().join("exts"), None);
+        assert_eq!(
+            st.last(),
+            Some(&WorkspaceStatus::Done {
+                installed: 1,
+                total: 1
+            })
+        );
+    }
+}
