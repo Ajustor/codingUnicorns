@@ -112,3 +112,274 @@ impl GitStatus {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::tests::{bare_origin, TestRepo};
+
+    /// A repo with one commit pushed to a fresh bare `origin`.
+    fn with_origin() -> (TestRepo, tempfile::TempDir, String) {
+        let r = TestRepo::new();
+        r.write("a.txt", "1");
+        r.commit_all("init");
+        let (bare, url) = bare_origin();
+        r.repo.remote("origin", &url).unwrap();
+        let mut s = r.status();
+        s.push().unwrap();
+        (r, bare, url)
+    }
+
+    /// Clone `url` into a new temp dir and give it a local identity.
+    fn clone(url: &str) -> (tempfile::TempDir, git2::Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::clone(url, dir.path()).unwrap();
+        (dir, repo)
+    }
+
+    fn commit_in(repo: &git2::Repository, rel: &str, content: &str, msg: &str) -> git2::Oid {
+        let wd = repo.workdir().unwrap();
+        std::fs::write(wd.join(rel), content).unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(std::path::Path::new(rel)).unwrap();
+        idx.write().unwrap();
+        let tree = repo.find_tree(idx.write_tree().unwrap()).unwrap();
+        let s = crate::git::tests::sig("Other");
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &s, &s, msg, &tree, &[&parent])
+            .unwrap()
+    }
+
+    fn push_from(repo: &git2::Repository) {
+        repo.find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
+    }
+
+    // ── commit ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn first_commit_has_no_parent_and_uses_repo_identity() {
+        let r = TestRepo::new();
+        r.write("a.txt", "hello");
+        let mut s = r.status();
+        s.stage_file("a.txt");
+        s.commit("initial commit").unwrap();
+
+        let c = r.repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(c.message(), Some("initial commit"));
+        assert_eq!(c.parent_count(), 0);
+        assert_eq!(c.author().name(), Some("Test"));
+        assert_eq!(c.author().email(), Some("test@example.com"));
+        assert!(c.tree().unwrap().get_name("a.txt").is_some());
+        // Status was refreshed: nothing left to commit, branch now known.
+        assert!(s.files.is_empty());
+        assert_eq!(s.branch, "main");
+    }
+
+    #[test]
+    fn commit_only_includes_staged_changes_and_chains_parent() {
+        let r = TestRepo::new();
+        r.write("a.txt", "1");
+        r.write("b.txt", "1");
+        let first = r.commit_all("init");
+        r.write("a.txt", "2");
+        r.write("b.txt", "2");
+        let mut s = r.status();
+        s.stage_file("a.txt");
+        s.commit("change a").unwrap();
+
+        let c = r.repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(c.parent_id(0).unwrap(), first);
+        let tree = c.tree().unwrap();
+        let blob = |n: &str| {
+            r.repo
+                .find_blob(tree.get_name(n).unwrap().id())
+                .unwrap()
+                .content()
+                .to_vec()
+        };
+        assert_eq!(blob("a.txt"), b"2");
+        assert_eq!(blob("b.txt"), b"1", "unstaged change not committed");
+        assert_eq!(s.files.len(), 1);
+        assert_eq!(s.files[0].path, "b.txt");
+    }
+
+    #[test]
+    fn commit_errors() {
+        let mut s = GitStatus::new();
+        assert_eq!(s.commit("x").unwrap_err(), "No repo path");
+
+        let dir = tempfile::tempdir().unwrap();
+        if git2::Repository::discover(dir.path()).is_err() {
+            s.repo_path = Some(dir.path().to_path_buf());
+            assert!(s.commit("x").unwrap_err().starts_with("Repo error"));
+        }
+    }
+
+    #[test]
+    fn commit_without_valid_identity_fails_cleanly() {
+        let r = TestRepo::new();
+        r.write("a.txt", "1");
+        // An empty repo-local name overrides any global identity.
+        r.repo.config().unwrap().set_str("user.name", "").unwrap();
+        let mut s = r.status();
+        s.stage_file("a.txt");
+        let err = s.commit("x").unwrap_err();
+        assert!(err.starts_with("Signature error"), "{err}");
+        assert!(r.repo.head().is_err(), "nothing committed");
+    }
+
+    #[test]
+    fn commit_with_unresolved_conflicts_fails() {
+        let r = TestRepo::new();
+        r.write("f.txt", "base\n");
+        r.commit_all("base");
+        r.branch("other");
+        r.write("f.txt", "main side\n");
+        r.commit_all("main");
+        r.switch("other");
+        r.write("f.txt", "other side\n");
+        r.commit_all("other");
+        r.switch("main");
+        let mut s = r.status();
+        s.merge_branch("other").unwrap();
+        let err = s.commit("merge").unwrap_err();
+        assert!(err.starts_with("Write tree error"), "{err}");
+    }
+
+    // ── push ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn push_updates_origin_branch() {
+        let (r, bare, _) = with_origin();
+        let bare_repo = git2::Repository::open_bare(bare.path()).unwrap();
+        let remote_main = |b: &git2::Repository| {
+            b.find_reference("refs/heads/main")
+                .unwrap()
+                .target()
+                .unwrap()
+        };
+        assert_eq!(remote_main(&bare_repo), r.head_oid());
+
+        r.write("a.txt", "2");
+        let tip = r.commit_all("second");
+        let mut s = r.status();
+        s.push().unwrap();
+        assert_eq!(remote_main(&bare_repo), tip);
+    }
+
+    #[test]
+    fn push_errors() {
+        let mut s = GitStatus::new();
+        assert_eq!(s.push().unwrap_err(), "No repo path");
+
+        let r = TestRepo::new();
+        let mut s = r.status();
+        assert!(
+            s.push().unwrap_err().starts_with("HEAD error"),
+            "unborn HEAD"
+        );
+
+        r.write("a", "1");
+        r.commit_all("c");
+        assert!(
+            s.push().unwrap_err().starts_with("Remote error"),
+            "no origin"
+        );
+
+        let missing = r.path().join("no-such-remote-dir");
+        r.repo.remote("origin", &missing.to_string_lossy()).unwrap();
+        assert!(s.push().unwrap_err().starts_with("Push error"));
+    }
+
+    #[test]
+    fn push_and_pull_report_missing_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        if git2::Repository::discover(dir.path()).is_ok() {
+            return;
+        }
+        let mut s = GitStatus::new();
+        s.repo_path = Some(dir.path().to_path_buf());
+        assert!(s.push().unwrap_err().starts_with("Repo error"));
+        assert!(s.pull().unwrap_err().starts_with("Repo error"));
+    }
+
+    // ── pull ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn pull_up_to_date_is_ok_and_changes_nothing() {
+        let (r, _bare, _) = with_origin();
+        let before = r.head_oid();
+        let mut s = r.status();
+        s.pull().unwrap();
+        assert_eq!(r.head_oid(), before);
+        assert_eq!((s.ahead, s.behind), (0, 0));
+    }
+
+    #[test]
+    fn pull_fast_forwards_to_remote_commits() {
+        let (r, _bare, url) = with_origin();
+        let (_other_dir, other) = clone(&url);
+        let remote_tip = commit_in(&other, "b.txt", "from other", "remote work");
+        push_from(&other);
+
+        let mut s = r.status();
+        s.pull().unwrap();
+        assert_eq!(r.head_oid(), remote_tip);
+        assert_eq!(r.head_name(), "main");
+        assert_eq!(r.read("b.txt"), "from other", "worktree checked out");
+        assert!(s.files.is_empty());
+        assert_eq!((s.ahead, s.behind), (0, 0));
+    }
+
+    #[test]
+    fn pull_refuses_diverged_history() {
+        let (r, _bare, url) = with_origin();
+        let (_other_dir, other) = clone(&url);
+        commit_in(&other, "b.txt", "remote", "remote work");
+        push_from(&other);
+        r.write("a.txt", "local");
+        let local = r.commit_all("local work");
+
+        let mut s = r.status();
+        let err = s.pull().unwrap_err();
+        assert!(err.contains("diverged"), "{err}");
+        assert_eq!(r.head_oid(), local, "local branch untouched");
+        // The fetch did update the tracking ref, so we now know we're behind.
+        s.refresh();
+        assert_eq!((s.ahead, s.behind), (1, 1));
+    }
+
+    #[test]
+    fn pull_errors() {
+        let mut s = GitStatus::new();
+        assert_eq!(s.pull().unwrap_err(), "No repo path");
+
+        let r = TestRepo::new();
+        let mut s = r.status();
+        assert!(s.pull().unwrap_err().starts_with("HEAD error"));
+
+        r.write("a", "1");
+        r.commit_all("c");
+        assert!(s.pull().unwrap_err().starts_with("Remote error"));
+
+        let missing = r.path().join("no-such-remote-dir");
+        r.repo.remote("origin", &missing.to_string_lossy()).unwrap();
+        assert!(s.pull().unwrap_err().starts_with("Fetch error"));
+    }
+
+    #[test]
+    fn pull_branch_missing_on_remote_fails() {
+        let (r, _bare, _) = with_origin();
+        r.branch("local-only");
+        r.switch("local-only");
+        let mut s = r.status();
+        let err = s.pull().unwrap_err();
+        assert!(
+            err.starts_with("Fetch error") || err.starts_with("Remote ref error"),
+            "{err}"
+        );
+    }
+}
