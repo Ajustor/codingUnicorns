@@ -236,6 +236,31 @@ impl SettingsPanel {
             }
 
             // ═══════════════════════════════════════════════════════════════
+            // UPDATES
+            // ═══════════════════════════════════════════════════════════════
+            if setting_matches(&q, &["update", "version", "release", "upgrade"]) {
+                section_heading(ui, "Updates");
+                changed |= checkbox(ui, &mut config.check_updates, "Check for updates on startup");
+                hint(
+                    ui,
+                    &format!(
+                        "Current version: v{}. Run \"Check for Updates\" from the command palette to check now.",
+                        crate::updater::Updater::current_version()
+                    ),
+                );
+                if let Some(skipped) = config.skipped_update_version.clone() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Skipped version: v{skipped}"));
+                        if ui.small_button("Clear").clicked() {
+                            config.skipped_update_version = None;
+                            changed = true;
+                        }
+                    });
+                }
+                ui.add_space(16.0);
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // THEME
             // ═══════════════════════════════════════════════════════════════
             if setting_matches(

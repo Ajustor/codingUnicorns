@@ -237,6 +237,12 @@ pub struct Config {
     /// Auto-approve read-only tools (Read/Glob/Grep) without a prompt.
     #[serde(default = "default_true")]
     pub claude_auto_allow_read: bool,
+    /// Check GitHub for a newer release on startup.
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
+    /// Release the user chose to skip; startup checks stay quiet about it.
+    #[serde(default)]
+    pub skipped_update_version: Option<String>,
 }
 
 fn default_terminal_height() -> f32 {
@@ -313,6 +319,8 @@ impl Default for Config {
             shell: String::new(),
             claude_binary: default_claude_binary(),
             claude_auto_allow_read: true,
+            check_updates: true,
+            skipped_update_version: None,
         }
     }
 }

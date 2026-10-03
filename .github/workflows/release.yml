@@ -12,8 +12,26 @@ permissions:
   contents: write
 
 jobs:
+  verify-version:
+    name: Verify tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The in-app updater compares the release tag with the version compiled into the
+      # binary (CARGO_PKG_VERSION); a mismatch would make every client re-offer the update.
+      - name: Compare versions
+        run: |
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.artifact }}
+    needs: verify-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -36,7 +54,7 @@ jobs:
             artifact: coding-unicorns-windows-x64.exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -107,25 +125,28 @@ jobs:
           $candle = Join-Path $wixDir.FullName "bin\candle.exe"
           $light  = Join-Path $wixDir.FullName "bin\light.exe"
 
-          & $candle -arch x64 -out wix\main.wixobj wix\main.wxs
+          # MSI ProductVersion must follow the release, or MajorUpgrade won't replace
+          # older installs. Strip any pre-release suffix (MSI only accepts x.y.z).
+          $version = "${{ github.ref_name }}".TrimStart('v').Split('-')[0]
+          & $candle -arch x64 "-dProductVersion=$version" -out wix\main.wixobj wix\main.wxs
           & $light  -ext WixUIExtension -out coding-unicorns-setup.msi wix\main.wixobj
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
       - name: Upload Windows installer (MSI)
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coding-unicorns-setup-msi
           path: coding-unicorns-setup.msi
 
       - name: Upload icon (ICO)
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coding-unicorns-icon-ico
           path: assets/icon.ico
@@ -135,10 +156,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts/
 

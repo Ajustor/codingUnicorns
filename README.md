@@ -63,6 +63,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 - ⚙️ Thèmes personnalisables (Dark, Monokai, Solarized Dark, One Dark + custom RGB)
 - ⌨️ **43 raccourcis clavier configurables** dans Settings → Keybindings
 - 💾 Auto-save optionnel
+- 🔄 Mises à jour automatiques depuis les releases GitHub (vérification au démarrage, checksum SHA-256)
 
 ---
 
@@ -280,6 +281,17 @@ Le fichier de configuration est stocké dans :
 | Linux | `~/.config/coding-unicorns/config.toml` |
 | macOS | `~/Library/Application Support/coding-unicorns/config.toml` |
 | Windows | `%APPDATA%\coding-unicorns\config.toml` |
+
+### Mises à jour
+
+Au démarrage (builds release uniquement), l'IDE interroge la dernière release GitHub. Si une version plus récente existe, une fenêtre propose de l'installer ; le binaire téléchargé est vérifié avec le digest SHA-256 publié par GitHub.
+
+- **Binaire portable** (Linux, macOS, `.exe` Windows) : l'exécutable est remplacé sur place, puis l'IDE redémarre.
+- **Installation MSI** (Windows, dans `Program Files`) : le `.msi` est téléchargé et lancé via `msiexec` à la fermeture de l'IDE.
+
+Vérification manuelle : palette de commandes → **Check for Updates**. Désactivable dans Settings → Updates (`check_updates = false`).
+
+Pour publier : mettre à jour `version` dans `Cargo.toml`, puis pousser un tag `vX.Y.Z` identique — le workflow de release refuse un tag qui ne correspond pas.
 
 ---
 
