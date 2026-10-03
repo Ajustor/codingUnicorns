@@ -244,4 +244,158 @@ mod tests {
         assert!(p.surface.r() < p.bg.r());
         assert!(p.border.r() < p.surface.r());
     }
+
+    fn light_theme() -> crate::config::Theme {
+        crate::config::Theme {
+            name: "light".into(),
+            background: [246, 246, 246],
+            foreground: [40, 40, 40],
+            accent: [166, 226, 46],
+        }
+    }
+
+    #[test]
+    fn mix_clamps_t_and_hits_endpoints() {
+        let a = Color32::from_rgb(10, 20, 30);
+        let b = Color32::from_rgb(200, 100, 0);
+        assert_eq!(mix(a, b, 0.0), a);
+        assert_eq!(mix(a, b, 1.0), b);
+        assert_eq!(mix(a, b, -3.0), a);
+        assert_eq!(mix(a, b, 7.0), b);
+        // Per-channel, rounded, alpha dropped to opaque.
+        assert_eq!(mix(a, b, 0.25), Color32::from_rgb(58, 40, 23));
+        let translucent = Color32::from_rgba_unmultiplied(100, 100, 100, 10);
+        assert_eq!(mix(translucent, translucent, 0.5).a(), 255);
+    }
+
+    #[test]
+    fn luminance_weights_green_most() {
+        let r = luminance(Color32::from_rgb(255, 0, 0));
+        let g = luminance(Color32::from_rgb(0, 255, 0));
+        let b = luminance(Color32::from_rgb(0, 0, 255));
+        assert!(g > r && r > b);
+        assert!((r + g + b - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dark_and_on_thresholds() {
+        // luminance exactly 0.5 is not dark
+        let mid = Color32::from_gray(128);
+        assert!(!is_dark(mid));
+        assert!(is_dark(Color32::from_gray(127)));
+        // `on` switches at 0.55
+        assert_eq!(on(Color32::from_gray(140)), Color32::WHITE);
+        assert_eq!(on(Color32::from_gray(141)), Color32::from_rgb(20, 20, 20));
+    }
+
+    #[test]
+    fn palette_copies_seed_colours() {
+        let t = dark_theme();
+        let p = Palette::from_theme(&t);
+        assert_eq!(p.bg, Color32::from_rgb(30, 30, 30));
+        assert_eq!(p.text, Color32::from_rgb(212, 212, 212));
+        assert_eq!(p.accent, Color32::from_rgb(0, 122, 204));
+    }
+
+    #[test]
+    fn dark_palette_lifts_toward_white_in_depth_order() {
+        let p = Palette::from_theme(&dark_theme());
+        assert!(p.bg.r() < p.surface.r());
+        assert!(p.surface.r() < p.line_highlight.r());
+        assert!(p.line_highlight.r() < p.surface_raised.r());
+        assert!(p.surface_raised.r() < p.border.r());
+        assert!(p.border.r() < p.border_strong.r());
+        // accent hover is lighter than accent on dark themes
+        assert!(p.accent_hover.g() > p.accent.g());
+    }
+
+    #[test]
+    fn light_palette_darkens_and_uses_dark_text_on_bright_accent() {
+        let p = Palette::from_theme(&light_theme());
+        assert!(p.surface_raised.r() < p.surface.r());
+        assert!(p.border_strong.r() < p.border.r());
+        assert!(p.accent_hover.g() < p.accent.g());
+        assert_eq!(p.on_accent, Color32::from_rgb(20, 20, 20));
+    }
+
+    #[test]
+    fn muted_text_sits_between_fg_and_bg() {
+        let p = Palette::from_theme(&dark_theme());
+        assert!(p.text.r() > p.text_muted.r());
+        assert!(p.text_muted.r() > p.text_faint.r());
+        assert!(p.text_faint.r() > p.bg.r());
+        assert_eq!(p.hint, p.text_muted);
+    }
+
+    #[test]
+    fn translucent_accents_and_fixed_semantics() {
+        let p = Palette::from_theme(&dark_theme());
+        for (c, a) in [
+            (p.accent_muted, 48),
+            (p.selection, 95),
+            (p.selection_inactive, 45),
+        ] {
+            assert_eq!(c.a(), a);
+        }
+        assert_eq!(p.overlay.a(), 150);
+        // Semantic colours do not depend on the theme.
+        let l = Palette::from_theme(&light_theme());
+        assert_eq!(p.error, l.error);
+        assert_eq!(p.warning, l.warning);
+        assert_eq!(p.info, l.info);
+        assert_eq!(p.success, l.success);
+        assert_eq!(p.git_added, l.git_added);
+        assert_eq!(p.git_modified, l.git_modified);
+        assert_eq!(p.git_removed, l.git_removed);
+    }
+
+    #[test]
+    fn spacing_scale_is_monotonic() {
+        let s = Spacing::default();
+        assert!(s.xs < s.sm && s.sm < s.md && s.md < s.lg);
+        assert!(s.round_sm < s.round_md && s.round_md < s.round_lg);
+        assert_eq!(s.md, 8.0);
+    }
+
+    #[test]
+    fn apply_theme_dark_config_sets_visuals_and_fonts() {
+        let ctx = egui::Context::default();
+        let config = crate::config::Config::default();
+        let (p, s) = apply_theme(&ctx, &config);
+        assert_eq!(p.bg, Color32::from_rgb(30, 30, 30));
+        assert_eq!(s.md, Spacing::default().md);
+        let style = ctx.style();
+        let v = &style.visuals;
+        assert!(v.dark_mode);
+        assert_eq!(v.panel_fill, p.surface);
+        assert_eq!(v.window_fill, p.surface_raised);
+        assert_eq!(v.extreme_bg_color, p.bg);
+        assert_eq!(v.override_text_color, Some(p.text));
+        assert_eq!(v.hyperlink_color, p.accent);
+        assert_eq!(v.selection.bg_fill, p.selection);
+        assert_eq!(v.selection.stroke.color, p.accent);
+        assert_eq!(v.widgets.inactive.weak_bg_fill, p.surface);
+        assert_eq!(v.widgets.hovered.weak_bg_fill, p.border);
+        assert_eq!(v.widgets.active.weak_bg_fill, p.border_strong);
+        assert_eq!(v.window_stroke.color, p.border);
+        use egui::TextStyle;
+        let size = |ts: TextStyle| style.text_styles[&ts].size;
+        assert_eq!(size(TextStyle::Small), 12.0);
+        assert_eq!(size(TextStyle::Body), 13.0);
+        assert_eq!(size(TextStyle::Button), 13.0);
+        assert_eq!(size(TextStyle::Heading), 16.0);
+    }
+
+    #[test]
+    fn apply_theme_light_config_uses_light_visuals() {
+        let ctx = egui::Context::default();
+        let config = crate::config::Config {
+            theme: light_theme(),
+            ..Default::default()
+        };
+        let (p, _) = apply_theme(&ctx, &config);
+        let style = ctx.style();
+        assert!(!style.visuals.dark_mode);
+        assert_eq!(style.visuals.panel_fill, p.surface);
+    }
 }
