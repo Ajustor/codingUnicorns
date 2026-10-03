@@ -79,9 +79,21 @@ impl GitStatus {
         self.repo_path = Some(path.clone());
         self.last_error = None;
         if let Ok(repo) = git2::Repository::discover(&path) {
-            if let Ok(head) = repo.head() {
-                if let Some(name) = head.shorthand() {
-                    self.branch = name.to_string();
+            match repo.head() {
+                Ok(head) => {
+                    if let Some(name) = head.shorthand() {
+                        self.branch = name.to_string();
+                    }
+                }
+                Err(_) => {
+                    // Unborn branch (no commits yet): HEAD is a symbolic ref
+                    // to a branch that does not exist yet.
+                    if let Some(name) = repo.find_reference("HEAD").ok().and_then(|h| {
+                        h.symbolic_target()
+                            .map(|t| t.strip_prefix("refs/heads/").unwrap_or(t).to_string())
+                    }) {
+                        self.branch = name;
+                    }
                 }
             }
             self.compute_ahead_behind(&repo);
@@ -314,14 +326,25 @@ pub(crate) mod tests {
         let r = TestRepo::new();
         r.write("new.txt", "hi");
         let s = r.status();
-        // Unborn HEAD: repo.head() fails so the placeholder stays.
-        assert_eq!(s.branch, "—");
+        // Unborn HEAD: the branch name comes from the symbolic HEAD target.
+        assert_eq!(s.branch, "main");
         let f = file(&s, "new.txt").unwrap();
         assert_eq!(f.wt_status, FileChangeKind::Untracked);
         assert_eq!(f.index_status, FileChangeKind::None);
 
         r.commit_all("init");
         assert_eq!(r.status().branch, "main");
+    }
+
+    #[test]
+    fn load_unborn_branch_uses_symbolic_head_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = git2::RepositoryInitOptions::new();
+        opts.initial_head("trunk");
+        git2::Repository::init_opts(dir.path(), &opts).unwrap();
+        let mut s = GitStatus::new();
+        s.load(dir.path().to_path_buf());
+        assert_eq!(s.branch, "trunk");
     }
 
     #[test]

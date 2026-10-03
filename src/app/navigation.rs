@@ -13,6 +13,24 @@ impl CodingUnicorns {
         self.open_file_at_line(target_path, target_line);
     }
 
+    /// Alt+Left: go back, recording the current position so Alt+Right can
+    /// return to it.
+    // TODO: wire up — the Alt+Left handler in app/mod.rs still calls
+    // `nav_history.go_back()` directly and should call this instead.
+    #[allow(dead_code)]
+    pub fn navigate_back(&mut self) {
+        let entry = match self.editor.current_path.clone() {
+            Some(current_path) => {
+                let (row, col) = self.editor.cursor.position();
+                self.nav_history.go_back_from(current_path, row, col)
+            }
+            None => self.nav_history.go_back(),
+        };
+        if let Some(entry) = entry {
+            self.open_file_at_line(entry.path, entry.row);
+        }
+    }
+
     /// Cycle to the next open tab (Ctrl+Tab).
     pub fn cycle_tab_next(&mut self) {
         let n = self.tab_manager.tabs.len();
