@@ -334,8 +334,11 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let path = Self::config_path();
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        Self::load_from(&Self::config_path())
+    }
+
+    fn load_from(path: &std::path::Path) -> Self {
+        if let Ok(content) = std::fs::read_to_string(path) {
             toml::from_str(&content).unwrap_or_default()
         } else {
             Self::default()
@@ -343,12 +346,358 @@ impl Config {
     }
 
     pub fn save(&self) {
-        let path = Self::config_path();
+        self.save_to(&Self::config_path());
+    }
+
+    fn save_to(&self, path: &std::path::Path) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(content) = toml::to_string_pretty(self) {
             let _ = std::fs::write(path, content);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL_KEYS: &[(&str, egui::Key)] = &[
+        ("A", egui::Key::A),
+        ("B", egui::Key::B),
+        ("C", egui::Key::C),
+        ("D", egui::Key::D),
+        ("E", egui::Key::E),
+        ("F", egui::Key::F),
+        ("G", egui::Key::G),
+        ("H", egui::Key::H),
+        ("I", egui::Key::I),
+        ("J", egui::Key::J),
+        ("K", egui::Key::K),
+        ("L", egui::Key::L),
+        ("M", egui::Key::M),
+        ("N", egui::Key::N),
+        ("O", egui::Key::O),
+        ("P", egui::Key::P),
+        ("Q", egui::Key::Q),
+        ("R", egui::Key::R),
+        ("S", egui::Key::S),
+        ("T", egui::Key::T),
+        ("U", egui::Key::U),
+        ("V", egui::Key::V),
+        ("W", egui::Key::W),
+        ("X", egui::Key::X),
+        ("Y", egui::Key::Y),
+        ("Z", egui::Key::Z),
+        ("Backtick", egui::Key::Backtick),
+        ("Comma", egui::Key::Comma),
+        ("F1", egui::Key::F1),
+        ("F2", egui::Key::F2),
+        ("F3", egui::Key::F3),
+        ("F4", egui::Key::F4),
+        ("F5", egui::Key::F5),
+        ("F6", egui::Key::F6),
+        ("F7", egui::Key::F7),
+        ("F8", egui::Key::F8),
+        ("F9", egui::Key::F9),
+        ("F10", egui::Key::F10),
+        ("F11", egui::Key::F11),
+        ("F12", egui::Key::F12),
+        ("Enter", egui::Key::Enter),
+        ("Escape", egui::Key::Escape),
+        ("Tab", egui::Key::Tab),
+        ("Space", egui::Key::Space),
+        ("Delete", egui::Key::Delete),
+        ("Backspace", egui::Key::Backspace),
+        ("ArrowUp", egui::Key::ArrowUp),
+        ("ArrowDown", egui::Key::ArrowDown),
+        ("ArrowLeft", egui::Key::ArrowLeft),
+        ("ArrowRight", egui::Key::ArrowRight),
+        ("Home", egui::Key::Home),
+        ("End", egui::Key::End),
+        ("PageUp", egui::Key::PageUp),
+        ("PageDown", egui::Key::PageDown),
+        ("OpenBracket", egui::Key::OpenBracket),
+        ("[", egui::Key::OpenBracket),
+        ("CloseBracket", egui::Key::CloseBracket),
+        ("]", egui::Key::CloseBracket),
+        ("Slash", egui::Key::Slash),
+        ("/", egui::Key::Slash),
+        ("Backslash", egui::Key::Backslash),
+        ("\\", egui::Key::Backslash),
+        ("Period", egui::Key::Period),
+        (".", egui::Key::Period),
+    ];
+
+    fn kb(key: &str) -> KeyBinding {
+        KeyBinding::new(key, false, false, false)
+    }
+
+    /// Run a headless egui frame with `key` pressed and `mods` held, then
+    /// evaluate `binding.matches` against its input state.
+    fn matches_with(binding: &KeyBinding, key: Option<egui::Key>, mods: egui::Modifiers) -> bool {
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput {
+            modifiers: mods,
+            ..Default::default()
+        };
+        if let Some(key) = key {
+            raw.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            });
+        }
+        let mut out = false;
+        let _ = ctx.run(raw, |ctx| out = ctx.input(|i| binding.matches(i)));
+        out
+    }
+
+    /// Every `KeyBinding` field of `KeyBindings`, discovered via serde so new
+    /// fields are covered automatically.
+    fn all_bindings(kbs: &KeyBindings) -> Vec<(String, KeyBinding)> {
+        let value = toml::Value::try_from(kbs).unwrap();
+        value
+            .as_table()
+            .unwrap()
+            .iter()
+            .map(|(name, v)| (name.clone(), v.clone().try_into().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn parse_key_knows_every_supported_name() {
+        for (name, key) in ALL_KEYS {
+            assert_eq!(kb(name).parse_key(), Some(*key), "key name {name:?}");
+        }
+    }
+
+    #[test]
+    fn parse_key_rejects_unknown_and_is_case_sensitive() {
+        assert_eq!(kb("").parse_key(), None);
+        assert_eq!(kb("a").parse_key(), None);
+        assert_eq!(kb("F13").parse_key(), None);
+        assert_eq!(kb("Ctrl+S").parse_key(), None);
+    }
+
+    #[test]
+    fn display_joins_modifiers_in_order() {
+        assert_eq!(kb("F5").display(), "F5");
+        assert_eq!(KeyBinding::new("S", true, false, false).display(), "Ctrl+S");
+        assert_eq!(
+            KeyBinding::new("Z", true, true, false).display(),
+            "Ctrl+Shift+Z"
+        );
+        assert_eq!(
+            KeyBinding::new("ArrowUp", true, true, true).display(),
+            "Ctrl+Shift+Alt+ArrowUp"
+        );
+        assert_eq!(KeyBinding::new("B", false, false, true).display(), "Alt+B");
+    }
+
+    #[test]
+    fn matches_requires_key_and_exact_modifiers() {
+        use egui::Modifiers as M;
+        let save = KeyBinding::new("S", true, false, false);
+        assert!(matches_with(&save, Some(egui::Key::S), M::CTRL));
+        assert!(!matches_with(&save, Some(egui::Key::S), M::NONE));
+        assert!(!matches_with(&save, Some(egui::Key::S), M::CTRL | M::SHIFT));
+        assert!(!matches_with(&save, Some(egui::Key::S), M::CTRL | M::ALT));
+        assert!(!matches_with(&save, Some(egui::Key::A), M::CTRL));
+        assert!(!matches_with(&save, None, M::CTRL));
+
+        let redo = KeyBinding::new("Z", true, true, false);
+        assert!(matches_with(&redo, Some(egui::Key::Z), M::CTRL | M::SHIFT));
+        assert!(!matches_with(&redo, Some(egui::Key::Z), M::CTRL));
+
+        let back = KeyBinding::new("ArrowLeft", false, false, true);
+        assert!(matches_with(&back, Some(egui::Key::ArrowLeft), M::ALT));
+    }
+
+    #[test]
+    fn matches_is_false_for_unparseable_key() {
+        let bad = KeyBinding::new("Nope", false, false, false);
+        assert!(!matches_with(
+            &bad,
+            Some(egui::Key::N),
+            egui::Modifiers::NONE
+        ));
+    }
+
+    #[test]
+    fn every_default_keybinding_uses_a_parseable_key() {
+        let all = all_bindings(&KeyBindings::default());
+        assert!(all.len() >= 40, "expected all bindings, got {}", all.len());
+        for (name, b) in all {
+            assert!(
+                b.parse_key().is_some(),
+                "default binding {name} uses unknown key {:?}",
+                b.key
+            );
+        }
+    }
+
+    #[test]
+    fn default_keybindings_spot_check() {
+        let k = KeyBindings::default();
+        assert_eq!(k.save.display(), "Ctrl+S");
+        assert_eq!(k.open_file.display(), "Ctrl+Shift+O");
+        assert_eq!(k.toggle_terminal.display(), "Ctrl+Backtick");
+        assert_eq!(k.redo.display(), "Ctrl+Shift+Z");
+        assert_eq!(k.move_line_up.display(), "Alt+ArrowUp");
+        assert_eq!(k.goto_definition.display(), "F12");
+        assert_eq!(k.debug_step_out.display(), "Shift+F11");
+    }
+
+    #[test]
+    fn default_config_values() {
+        let c = Config::default();
+        assert_eq!(c.theme.name, "dark");
+        assert_eq!(c.theme.background, [30, 30, 30]);
+        assert_eq!(c.editor.tab_size, 4);
+        assert!(c.editor.insert_spaces);
+        assert!(!c.editor.word_wrap);
+        assert!(c.editor.line_numbers);
+        assert!(!c.editor.auto_save);
+        assert!(c.editor.auto_close_brackets);
+        assert!(!c.editor.show_gitignored);
+        assert!(c.editor.show_minimap);
+        assert!(c.editor.highlight_current_line);
+        assert_eq!(c.font.size, 14.0);
+        assert_eq!(c.font.family, "monospace");
+        assert_eq!(c.last_workspace, None);
+        assert_eq!(c.last_file, None);
+        assert_eq!(c.terminal_height, 200.0);
+        assert_eq!(c.shell, "");
+        assert_eq!(c.claude_binary, "claude");
+        assert!(c.claude_auto_allow_read);
+        assert!(c.check_updates);
+        assert_eq!(c.skipped_update_version, None);
+    }
+
+    #[test]
+    fn toml_round_trip_preserves_all_fields() {
+        let mut c = Config::default();
+        c.theme.name = "light".into();
+        c.theme.accent = [1, 2, 3];
+        c.editor.tab_size = 2;
+        c.editor.word_wrap = true;
+        c.editor.show_minimap = false;
+        c.editor.show_gitignored = true;
+        c.font.size = 18.5;
+        c.font.family = "Fira Code".into();
+        c.keybindings.save = KeyBinding::new("F2", false, true, true);
+        c.last_workspace = Some("C:\\work\\proj".into());
+        c.last_file = Some("/tmp/x.rs".into());
+        c.terminal_height = 321.0;
+        c.shell = "pwsh.exe".into();
+        c.claude_binary = "claude-dev".into();
+        c.claude_auto_allow_read = false;
+        c.check_updates = false;
+        c.skipped_update_version = Some("1.2.3".into());
+
+        let s = toml::to_string_pretty(&c).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(toml::to_string_pretty(&back).unwrap(), s);
+        assert_eq!(back.theme.name, "light");
+        assert_eq!(back.theme.accent, [1, 2, 3]);
+        assert_eq!(back.editor.tab_size, 2);
+        assert!(back.editor.word_wrap);
+        assert!(!back.editor.show_minimap);
+        assert_eq!(back.font.family, "Fira Code");
+        assert_eq!(back.keybindings.save.display(), "Shift+Alt+F2");
+        assert_eq!(back.last_workspace.as_deref(), Some("C:\\work\\proj"));
+        assert_eq!(back.terminal_height, 321.0);
+        assert_eq!(back.shell, "pwsh.exe");
+        assert_eq!(back.claude_binary, "claude-dev");
+        assert!(!back.claude_auto_allow_read);
+        assert!(!back.check_updates);
+        assert_eq!(back.skipped_update_version.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn old_config_missing_new_fields_gets_defaults() {
+        // A config written by an early version: no keybindings, no
+        // terminal/claude/update settings, and an older [editor] section.
+        let old = r#"
+            [theme]
+            name = "custom"
+            background = [1, 1, 1]
+            foreground = [2, 2, 2]
+            accent = [3, 3, 3]
+
+            [editor]
+            tab_size = 8
+            insert_spaces = false
+            word_wrap = true
+            line_numbers = false
+            auto_save = true
+
+            [font]
+            size = 12.0
+            family = "Consolas"
+        "#;
+        let c: Config = toml::from_str(old).unwrap();
+        // Explicit values are kept.
+        assert_eq!(c.theme.name, "custom");
+        assert_eq!(c.editor.tab_size, 8);
+        assert!(!c.editor.insert_spaces);
+        assert!(c.editor.auto_save);
+        assert_eq!(c.font.family, "Consolas");
+        // Missing fields take their documented defaults (not bool::default()).
+        assert!(c.editor.auto_close_brackets);
+        assert!(!c.editor.show_gitignored);
+        assert!(c.editor.show_minimap);
+        assert!(c.editor.highlight_current_line);
+        assert_eq!(c.terminal_height, 200.0);
+        assert_eq!(c.shell, "");
+        assert_eq!(c.claude_binary, "claude");
+        assert!(c.claude_auto_allow_read);
+        assert!(c.check_updates);
+        assert_eq!(c.last_workspace, None);
+        assert_eq!(c.skipped_update_version, None);
+        assert_eq!(c.keybindings.save.display(), "Ctrl+S");
+        assert_eq!(c.keybindings.debug_step_out.display(), "Shift+F11");
+    }
+
+    #[test]
+    fn config_missing_required_section_fails_to_parse() {
+        assert!(toml::from_str::<Config>("[theme]\nname = \"x\"").is_err());
+    }
+
+    #[test]
+    fn save_to_creates_parent_dirs_and_load_from_reads_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("deeper").join("config.toml");
+        let mut c = Config::default();
+        c.font.size = 22.0;
+        c.last_file = Some("main.rs".into());
+        c.save_to(&path);
+        assert!(path.exists());
+        let back = Config::load_from(&path);
+        assert_eq!(back.font.size, 22.0);
+        assert_eq!(back.last_file.as_deref(), Some("main.rs"));
+    }
+
+    #[test]
+    fn load_from_missing_or_corrupt_file_falls_back_to_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = Config::load_from(&dir.path().join("nope.toml"));
+        assert_eq!(missing.theme.name, "dark");
+
+        let corrupt = dir.path().join("bad.toml");
+        std::fs::write(&corrupt, "this is = = not toml [").unwrap();
+        let c = Config::load_from(&corrupt);
+        assert_eq!(c.font.size, 14.0);
+        assert_eq!(c.claude_binary, "claude");
+    }
+
+    #[test]
+    fn config_path_ends_with_app_specific_file() {
+        let p = Config::config_path();
+        assert!(p.ends_with(std::path::Path::new("coding-unicorns").join("config.toml")));
     }
 }
