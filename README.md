@@ -63,7 +63,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 - ⚙️ Thèmes personnalisables (Dark, Monokai, Solarized Dark, One Dark + custom RGB)
 - ⌨️ **43 raccourcis clavier configurables** dans Settings → Keybindings
 - 💾 Auto-save optionnel
-- 🔄 Mises à jour automatiques depuis les releases GitHub (vérification au démarrage, checksum SHA-256)
+- 🔄 Mises à jour automatiques via GitHub Pages (vérification au démarrage, checksum SHA-256)
 
 ---
 
@@ -284,14 +284,14 @@ Le fichier de configuration est stocké dans :
 
 ### Mises à jour
 
-Au démarrage (builds release uniquement), l'IDE interroge la dernière release GitHub. Si une version plus récente existe, une fenêtre propose de l'installer ; le binaire téléchargé est vérifié avec le digest SHA-256 publié par GitHub.
+Au démarrage (builds release uniquement), l'IDE lit le manifeste [`latest.json`](https://ajustor.github.io/codingUnicorns/latest.json) publié sur GitHub Pages par le workflow de release (le dépôt étant privé, l'API des releases n'est pas accessible aux clients). Si une version plus récente existe, une fenêtre propose de l'installer ; le fichier téléchargé est vérifié avec le SHA-256 du manifeste.
 
 - **Binaire portable** (Linux, macOS, `.exe` Windows) : l'exécutable est remplacé sur place, puis l'IDE redémarre.
 - **Installation MSI** (Windows, dans `Program Files`) : le `.msi` est téléchargé et lancé via `msiexec` à la fermeture de l'IDE.
 
 Vérification manuelle : palette de commandes → **Check for Updates**. Désactivable dans Settings → Updates (`check_updates = false`).
 
-Pour publier : mettre à jour `version` dans `Cargo.toml`, puis pousser un tag `vX.Y.Z` identique — le workflow de release refuse un tag qui ne correspond pas.
+Pour publier : mettre à jour `version` dans `Cargo.toml`, puis pousser un tag `vX.Y.Z` identique — le workflow de release refuse un tag qui ne correspond pas. Les tags de pré-release (`v1.2.0-beta`) créent une release GitHub mais ne sont pas publiés sur Pages. Seule la dernière version stable est hébergée sur Pages ; page de téléchargement : https://ajustor.github.io/codingUnicorns/
 
 ---
 

@@ -1,8 +1,11 @@
-//! Self-update from GitHub releases.
+//! Self-update from the release manifest published on GitHub Pages.
 //!
-//! Flow: `check()` queries `releases/latest` on a background thread and compares the tag with
+//! The repository is private, so clients can't use the GitHub releases API. Instead the release
+//! workflow deploys `latest.json` plus the binaries to GitHub Pages (public).
+//!
+//! Flow: `check()` fetches the manifest on a background thread and compares its version with
 //! `CARGO_PKG_VERSION`. If newer, the UI offers to install. `install()` downloads the asset for
-//! this platform, verifies its SHA-256 against the digest GitHub publishes, then either:
+//! this platform, verifies its SHA-256 against the manifest, then either:
 //! - replaces the running executable in place (portable binaries), or
 //! - on Windows MSI installs (Program Files, not writable), stages the `.msi` so it can be run
 //!   with `msiexec` once the app has exited.
@@ -16,7 +19,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const REPO: &str = "Ajustor/codingUnicorns";
+/// Written by the `pages` job of `.github/workflows/release.yml`.
+const MANIFEST_URL: &str = "https://ajustor.github.io/codingUnicorns/latest.json";
 const USER_AGENT: &str = concat!("coding-unicorns/", env!("CARGO_PKG_VERSION"));
 /// Hard cap on downloaded asset size, as a guard against a runaway response.
 const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
@@ -36,31 +40,32 @@ const BINARY_ASSET: Option<&str> = None;
 
 const MSI_ASSET: &str = "coding-unicorns-setup.msi";
 
+/// `latest.json` on GitHub Pages.
 #[derive(Debug, Clone, Deserialize)]
-struct GhRelease {
-    tag_name: String,
-    html_url: String,
+struct Manifest {
+    version: String,
     #[serde(default)]
-    body: Option<String>,
+    notes: String,
+    /// Human-facing download page.
+    page_url: String,
     #[serde(default)]
-    assets: Vec<GhAsset>,
+    assets: Vec<ManifestAsset>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct GhAsset {
+struct ManifestAsset {
     name: String,
-    browser_download_url: String,
-    /// `"sha256:<hex>"`, published by GitHub for every uploaded asset.
-    #[serde(default)]
-    digest: Option<String>,
+    url: String,
+    /// Lowercase hex SHA-256 of the file.
+    sha256: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct ReleaseInfo {
     pub version: semver::Version,
     pub notes: String,
-    pub html_url: String,
-    asset: GhAsset,
+    pub page_url: String,
+    asset: ManifestAsset,
     kind: InstallKind,
 }
 
@@ -275,33 +280,31 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
 fn http_get(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
     ureq::get(url)
         .header("User-Agent", USER_AGENT)
-        .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| format!("request to {url} failed: {e}"))
 }
 
 fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let mut resp = http_get(&url)?;
+    let mut resp = http_get(MANIFEST_URL)?;
     let text = resp
         .body_mut()
         .read_to_string()
-        .map_err(|e| format!("reading release info: {e}"))?;
-    let release: GhRelease =
-        serde_json::from_str(&text).map_err(|e| format!("parsing release info: {e}"))?;
+        .map_err(|e| format!("reading release manifest: {e}"))?;
+    let manifest: Manifest =
+        serde_json::from_str(&text).map_err(|e| format!("parsing release manifest: {e}"))?;
     let current = semver::Version::parse(Updater::current_version())
         .map_err(|e| format!("bad current version: {e}"))?;
-    select_update(release, &current, install_kind())
+    select_update(manifest, &current, install_kind())
 }
 
-/// Pick the asset to install if `release` is newer than `current`.
+/// Pick the asset to install if `manifest` is newer than `current`.
 fn select_update(
-    release: GhRelease,
+    manifest: Manifest,
     current: &semver::Version,
     kind: InstallKind,
 ) -> Result<Option<ReleaseInfo>, String> {
-    let version = semver::Version::parse(release.tag_name.trim_start_matches('v'))
-        .map_err(|e| format!("bad release tag {:?}: {e}", release.tag_name))?;
+    let version = semver::Version::parse(manifest.version.trim_start_matches('v'))
+        .map_err(|e| format!("bad release version {:?}: {e}", manifest.version))?;
     if version <= *current {
         return Ok(None);
     }
@@ -309,16 +312,16 @@ fn select_update(
         InstallKind::Msi => MSI_ASSET,
         InstallKind::ReplaceBinary => BINARY_ASSET.ok_or("no prebuilt binary for this platform")?,
     };
-    let asset = release
+    let asset = manifest
         .assets
         .iter()
         .find(|a| a.name == wanted)
         .cloned()
-        .ok_or_else(|| format!("release {} has no asset {wanted}", release.tag_name))?;
+        .ok_or_else(|| format!("release v{version} has no asset {wanted}"))?;
     Ok(Some(ReleaseInfo {
         version,
-        notes: release.body.unwrap_or_default(),
-        html_url: release.html_url,
+        notes: manifest.notes,
+        page_url: manifest.page_url,
         asset,
         kind,
     }))
@@ -344,14 +347,14 @@ fn install_kind() -> InstallKind {
 
 /// Returns the staged MSI path for MSI installs, `None` once the binary has been replaced.
 fn download_and_apply(info: &ReleaseInfo) -> Result<Option<PathBuf>, String> {
-    let mut resp = http_get(&info.asset.browser_download_url)?;
+    let mut resp = http_get(&info.asset.url)?;
     let bytes = resp
         .body_mut()
         .with_config()
         .limit(MAX_ASSET_BYTES)
         .read_to_vec()
         .map_err(|e| format!("downloading {}: {e}", info.asset.name))?;
-    verify_digest(&bytes, info.asset.digest.as_deref())?;
+    verify_digest(&bytes, &info.asset.sha256)?;
 
     let dir = std::env::temp_dir().join("coding-unicorns-update");
     std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
@@ -375,11 +378,11 @@ fn download_and_apply(info: &ReleaseInfo) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Refuse to install anything whose hash we can't check against GitHub's digest.
-fn verify_digest(bytes: &[u8], digest: Option<&str>) -> Result<(), String> {
-    let expected = digest
-        .and_then(|d| d.strip_prefix("sha256:"))
-        .ok_or("release asset has no sha256 digest; refusing to install")?;
+/// Refuse to install anything that doesn't match the manifest's checksum.
+fn verify_digest(bytes: &[u8], expected: &str) -> Result<(), String> {
+    if expected.is_empty() {
+        return Err("release asset has no sha256; refusing to install".into());
+    }
     let actual: String = Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -397,17 +400,17 @@ fn verify_digest(bytes: &[u8], digest: Option<&str>) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn release(tag: &str, assets: &[&str]) -> GhRelease {
-        GhRelease {
-            tag_name: tag.into(),
-            html_url: String::new(),
-            body: None,
+    fn manifest(version: &str, assets: &[&str]) -> Manifest {
+        Manifest {
+            version: version.into(),
+            notes: String::new(),
+            page_url: String::new(),
             assets: assets
                 .iter()
-                .map(|n| GhAsset {
+                .map(|n| ManifestAsset {
                     name: (*n).into(),
-                    browser_download_url: String::new(),
-                    digest: None,
+                    url: String::new(),
+                    sha256: String::new(),
                 })
                 .collect(),
         }
@@ -416,17 +419,17 @@ mod tests {
     #[test]
     fn older_or_equal_release_is_not_an_update() {
         let cur = semver::Version::new(0, 5, 0);
-        let r = release("v0.5.0", &[MSI_ASSET]);
-        assert!(select_update(r, &cur, InstallKind::Msi).unwrap().is_none());
-        let r = release("v0.4.9", &[MSI_ASSET]);
-        assert!(select_update(r, &cur, InstallKind::Msi).unwrap().is_none());
+        let m = manifest("0.5.0", &[MSI_ASSET]);
+        assert!(select_update(m, &cur, InstallKind::Msi).unwrap().is_none());
+        let m = manifest("0.4.9", &[MSI_ASSET]);
+        assert!(select_update(m, &cur, InstallKind::Msi).unwrap().is_none());
     }
 
     #[test]
     fn newer_release_picks_matching_asset() {
         let cur = semver::Version::new(0, 5, 0);
-        let r = release("v0.6.0", &["other", MSI_ASSET]);
-        let info = select_update(r, &cur, InstallKind::Msi).unwrap().unwrap();
+        let m = manifest("v0.6.0", &["other", MSI_ASSET]);
+        let info = select_update(m, &cur, InstallKind::Msi).unwrap().unwrap();
         assert_eq!(info.version, semver::Version::new(0, 6, 0));
         assert_eq!(info.asset.name, MSI_ASSET);
     }
@@ -434,17 +437,35 @@ mod tests {
     #[test]
     fn newer_release_without_asset_errors() {
         let cur = semver::Version::new(0, 5, 0);
-        let r = release("v0.6.0", &["other"]);
-        assert!(select_update(r, &cur, InstallKind::Msi).is_err());
+        let m = manifest("0.6.0", &["other"]);
+        assert!(select_update(m, &cur, InstallKind::Msi).is_err());
+    }
+
+    #[test]
+    fn parses_manifest_written_by_release_workflow() {
+        let json = r#"{
+            "version": "0.6.0",
+            "notes": "Bug fixes",
+            "page_url": "https://ajustor.github.io/codingUnicorns/",
+            "assets": [{
+                "name": "coding-unicorns-setup.msi",
+                "url": "https://ajustor.github.io/codingUnicorns/download/v0.6.0/coding-unicorns-setup.msi",
+                "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            }]
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let cur = semver::Version::new(0, 5, 0);
+        let info = select_update(m, &cur, InstallKind::Msi).unwrap().unwrap();
+        assert!(info.asset.url.ends_with("/coding-unicorns-setup.msi"));
     }
 
     #[test]
     fn digest_verification() {
         // sha256("abc")
-        let abc = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        assert!(verify_digest(b"abc", Some(abc)).is_ok());
-        assert!(verify_digest(b"abd", Some(abc)).is_err());
-        assert!(verify_digest(b"abc", None).is_err());
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(verify_digest(b"abc", abc).is_ok());
+        assert!(verify_digest(b"abd", abc).is_err());
+        assert!(verify_digest(b"abc", "").is_err());
     }
 }
 
@@ -452,20 +473,16 @@ mod tests {
 mod network_tests {
     use super::*;
 
-    /// Hits the real GitHub API: `cargo test -- --ignored live_release`.
+    /// Hits the live manifest: `cargo test -- --ignored live_manifest`.
     #[test]
     #[ignore]
-    fn live_release_has_installable_assets() {
-        let mut resp = http_get(&format!(
-            "https://api.github.com/repos/{REPO}/releases/latest"
-        ))
-        .unwrap();
-        let release: GhRelease =
-            serde_json::from_str(&resp.body_mut().read_to_string().unwrap()).unwrap();
+    fn live_manifest_has_installable_assets() {
+        let mut resp = http_get(MANIFEST_URL).unwrap();
+        let m: Manifest = serde_json::from_str(&resp.body_mut().read_to_string().unwrap()).unwrap();
         let old = semver::Version::new(0, 0, 1);
         for kind in [InstallKind::ReplaceBinary, InstallKind::Msi] {
-            let info = select_update(release.clone(), &old, kind).unwrap().unwrap();
-            assert!(info.asset.digest.as_deref().unwrap().starts_with("sha256:"));
+            let info = select_update(m.clone(), &old, kind).unwrap().unwrap();
+            assert_eq!(info.asset.sha256.len(), 64);
         }
     }
 }
