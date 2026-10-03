@@ -27,6 +27,7 @@ mod debug_ops;
 pub mod file_ops;
 mod lsp_ops;
 mod navigation;
+mod update_ops;
 mod workspace_search;
 
 pub struct CodingUnicorns {
@@ -155,6 +156,8 @@ pub struct CodingUnicorns {
     pub pending_delete: Option<std::path::PathBuf>,
     /// Transient toast notifications (shown bottom-centre, fade out after 2 s).
     pub toasts: Vec<crate::ui::widgets::Toast>,
+    /// GitHub release self-updater.
+    pub updater: crate::updater::Updater,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -165,7 +168,7 @@ pub struct ImageData {
 }
 
 impl CodingUnicorns {
-    pub fn new(_cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
         let config = Config::load();
         let mut plugin_manager = PluginManager::new();
         plugin_manager.register(Box::new(WordCountPlugin::new()));
@@ -304,6 +307,7 @@ impl CodingUnicorns {
             image_texture: None,
             pending_delete: None,
             toasts: Vec::new(),
+            updater: crate::updater::Updater::new(),
         };
 
         if let Some(path) = initial_path {
@@ -349,6 +353,12 @@ impl CodingUnicorns {
             }
         }
 
+        // Debug builds live in target/ — never self-update those automatically.
+        if app.config.check_updates && !cfg!(debug_assertions) {
+            let skipped = app.config.skipped_update_version.clone();
+            app.updater.check(false, skipped.as_deref(), &cc.egui_ctx);
+        }
+
         app
     }
 
@@ -361,6 +371,12 @@ impl CodingUnicorns {
 }
 
 impl eframe::App for CodingUnicorns {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(action) = self.updater.exit_action.take() {
+            crate::updater::run_exit_action(&action, self.workspace_path.as_deref());
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle window close request — warn about unsaved files
         let close_requested = ctx.input(|i| i.viewport().close_requested());
@@ -369,6 +385,8 @@ impl eframe::App for CodingUnicorns {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.show_close_warning = true;
         }
+
+        self.update_updater(ctx);
 
         // App-quit unsaved-changes dialog
         if self.show_close_warning {
@@ -393,6 +411,13 @@ impl eframe::App for CodingUnicorns {
                         }
                         if ui.button("Cancel").clicked() {
                             self.show_close_warning = false;
+                            // A "Restart now" from the updater shouldn't fire on a later quit.
+                            if matches!(
+                                self.updater.exit_action,
+                                Some(crate::updater::ExitAction::Relaunch)
+                            ) {
+                                self.updater.exit_action = None;
+                            }
                         }
                     });
                 });
@@ -1103,6 +1128,14 @@ impl eframe::App for CodingUnicorns {
                             self.ensure_lsp_for_file(&path);
                         }
                         self.toast("LSP restarted");
+                    }
+                    PaletteCommand::CheckForUpdates => {
+                        if matches!(self.updater.state, crate::updater::UpdateState::Ready(_)) {
+                            self.updater.dismissed = false;
+                        } else {
+                            self.toast("Checking for updates…");
+                            self.updater.check(true, None, ctx);
+                        }
                     }
                 }
             }

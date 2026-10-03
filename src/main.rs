@@ -16,6 +16,7 @@ pub mod runner;
 mod tabs;
 mod terminal;
 mod ui;
+mod updater;
 
 use app::CodingUnicorns;
 
