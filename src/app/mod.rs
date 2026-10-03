@@ -342,7 +342,7 @@ impl CodingUnicorns {
                         app.ensure_lsp_for_file(&file_path);
                         if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
                             let lang_id = lsp_ops::language_id_for_ext(ext);
-                            let uri = format!("file://{}", file_path.display());
+                            let uri = crate::lsp::client::path_to_uri(&file_path);
                             if let Some(client) = app.lsp.get_mut(ext) {
                                 client.did_open(&uri, lang_id, &content);
                             }
@@ -651,7 +651,7 @@ impl eframe::App for CodingUnicorns {
                     .unwrap_or("")
                     .to_string();
                 if reconnected_exts.contains(&ext) {
-                    let uri = format!("file://{}", path.display());
+                    let uri = crate::lsp::client::path_to_uri(path);
                     let content = self.editor.buffer.to_string();
                     let lang_id = lsp_ops::language_id_for_ext(&ext);
                     if let Some(client) = self.lsp.get_mut(&ext) {
@@ -790,7 +790,7 @@ impl eframe::App for CodingUnicorns {
         // Update diagnostics for the current file.
         if let Some(path) = self.editor.current_path.clone() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                let uri = format!("file://{}", path.display());
+                let uri = crate::lsp::client::path_to_uri(&path);
                 if let Some(client) = self.lsp.get(ext) {
                     self.editor.diagnostics = client.get_diagnostics(&uri);
                 }
@@ -807,7 +807,7 @@ impl eframe::App for CodingUnicorns {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if let Some(client) = self.lsp.get_mut(ext) {
                         if client.is_connected {
-                            let uri = format!("file://{}", path.display());
+                            let uri = crate::lsp::client::path_to_uri(&path);
                             self.pending_completion_id =
                                 Some(client.request_completions(&uri, row as u32, col as u32));
                             lsp_sent = true;
@@ -835,7 +835,7 @@ impl eframe::App for CodingUnicorns {
                     if version_changed || time_elapsed {
                         if let Some(client) = self.lsp.get_mut(ext) {
                             if client.is_connected {
-                                let uri = format!("file://{}", path.display());
+                                let uri = crate::lsp::client::path_to_uri(&path);
                                 self.pending_symbols_id =
                                     Some(client.request_document_symbols(&uri));
                                 self.outline_last_version = self.editor.content_version;
@@ -854,7 +854,7 @@ impl eframe::App for CodingUnicorns {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if let Some(client) = self.lsp.get_mut(ext) {
                         if client.is_connected {
-                            let uri = format!("file://{}", path.display());
+                            let uri = crate::lsp::client::path_to_uri(&path);
                             let tab_size = self.editor.detected_indent_size as u32;
                             let insert_spaces = self.editor.detected_indent_spaces;
                             self.pending_format_id =
@@ -872,7 +872,7 @@ impl eframe::App for CodingUnicorns {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if let Some(client) = self.lsp.get_mut(ext) {
                         if client.is_connected {
-                            let uri = format!("file://{}", path.display());
+                            let uri = crate::lsp::client::path_to_uri(&path);
                             let row = self.editor.signature_help_row;
                             let col = self.editor.signature_help_col;
                             self.pending_signature_id =
@@ -958,7 +958,7 @@ impl eframe::App for CodingUnicorns {
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                         if let Some(client) = self.lsp.get_mut(ext) {
                             if client.is_connected {
-                                let uri = format!("file://{}", path.display());
+                                let uri = crate::lsp::client::path_to_uri(&path);
                                 let name = self.rename_new_name.clone();
                                 self.rename_pending_id = Some(
                                     client.request_rename(&uri, row as u32, col as u32, &name),
