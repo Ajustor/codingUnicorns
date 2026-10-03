@@ -2,9 +2,18 @@ use super::auto_close;
 use super::Editor;
 
 impl Editor {
+    /// Insert a typed char at every cursor. Consecutive calls form one typing burst
+    /// sharing a single undo checkpoint; the burst ends as soon as anything else
+    /// moves a cursor, changes the selection or edits the buffer.
     pub fn insert_char(&mut self, ch: char, auto_close_enabled: bool) {
-        self.buffer.checkpoint();
+        if self.typing_burst != Some(self.typing_burst_state()) {
+            self.buffer.checkpoint();
+        }
+        self.insert_char_inner(ch, auto_close_enabled);
+        self.typing_burst = Some(self.typing_burst_state());
+    }
 
+    fn insert_char_inner(&mut self, ch: char, auto_close_enabled: bool) {
         // Skip-close: if typing a closing char that's already under the cursor, just move right.
         if auto_close_enabled && auto_close::is_closing(ch) {
             let (row, col) = self.cursor.position();
@@ -320,6 +329,12 @@ impl Editor {
                                     .saturating_add(sc);
                                 self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
                             }
+                            if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
+                                if ar == sr && ac > sc {
+                                    let adj = ac.saturating_sub(ec).saturating_add(sc);
+                                    self.extra_cursors[j].sel_anchor = Some((ar, adj));
+                                }
+                            }
                         }
                     } else {
                         self.extra_cursors[i].set_position(sr, sc);
@@ -335,6 +350,11 @@ impl Editor {
                         if self.extra_cursors[j].row == er && self.extra_cursors[j].col > ec_col {
                             self.extra_cursors[j].col -= 1;
                             self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
+                        }
+                        if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
+                            if ar == er && ac > ec_col {
+                                self.extra_cursors[j].sel_anchor = Some((ar, ac - 1));
+                            }
                         }
                     }
                 } else if er + 1 < self.buffer.num_lines() {
@@ -788,7 +808,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: delete_char_after does not shift later extra cursors' sel_anchor after deleting an extra selection"]
     fn delete_extra_cursor_anchor_shift_and_selection_delete() {
         let mut ed = editor_with("abcdef\n", 0, 0);
         ed.extra_cursors.push(selecting((0, 2), 0, 4)); // "cd"
@@ -797,6 +816,16 @@ mod tests {
         // Primary deletes 'a' -> "bcdef"; extras shift to 1..3 and 4..5 and are deleted.
         assert_eq!(ed.buffer.line(0), "be");
         assert_eq!(ed.extra_cursors[0].position(), (0, 1));
+    }
+
+    #[test]
+    fn delete_extra_cursor_char_delete_shifts_later_anchor() {
+        let mut ed = editor_with("abcdef\nx", 1, 1);
+        ed.extra_cursors.push(cursor_at(0, 0)); // deletes 'a'
+        ed.extra_cursors.push(selecting((0, 3), 0, 5)); // "de" -> shifts to 2..4
+        ed.delete_char_after();
+        assert_eq!(ed.buffer.line(0), "bcf");
+        assert_eq!(ed.extra_cursors[1].position(), (0, 2));
     }
 
     #[test]
