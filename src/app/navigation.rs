@@ -15,9 +15,6 @@ impl CodingUnicorns {
 
     /// Alt+Left: go back, recording the current position so Alt+Right can
     /// return to it.
-    // TODO: wire up — the Alt+Left handler in app/mod.rs still calls
-    // `nav_history.go_back()` directly and should call this instead.
-    #[allow(dead_code)]
     pub fn navigate_back(&mut self) {
         let entry = match self.editor.current_path.clone() {
             Some(current_path) => {
