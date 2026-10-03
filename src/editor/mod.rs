@@ -3308,4 +3308,1515 @@ mod tests {
         let got = active_indent_block(lines.len(), 1, 4, true, |i| lines[i].clone());
         assert_eq!(got, Some((1, 1, 2)));
     }
+
+    #[test]
+    fn active_indent_block_none_for_unindented_or_out_of_range_rows() {
+        let lines = ["a".to_string(), "  b".to_string()];
+        assert_eq!(
+            active_indent_block(lines.len(), 0, 2, true, |i| lines[i].clone()),
+            None
+        );
+        assert_eq!(
+            active_indent_block(lines.len(), 5, 2, true, |i| lines[i].clone()),
+            None
+        );
+    }
+
+    #[test]
+    fn active_indent_block_counts_tabs_and_nested_levels() {
+        let lines = [
+            "fn x() {".to_string(),
+            "\tif y {".to_string(),
+            "\t\tz();".to_string(),
+            "\t\tw();".to_string(),
+            "\t}".to_string(),
+            "}".to_string(),
+        ];
+        let at = |i: usize| lines[i].clone();
+        assert_eq!(
+            active_indent_block(lines.len(), 2, 4, false, at),
+            Some((2, 2, 3))
+        );
+        assert_eq!(
+            active_indent_block(lines.len(), 1, 4, false, at),
+            Some((1, 1, 4))
+        );
+        // indent_size 0 is clamped to 1 rather than dividing by zero.
+        let sp = ["  a".to_string()];
+        assert_eq!(
+            active_indent_block(1, 0, 0, true, |i| sp[i].clone()),
+            Some((2, 0, 0))
+        );
+    }
+
+    // ── Non-UI editor state ─────────────────────────────────────────────────
+
+    fn editor_with(content: &str) -> Editor {
+        let mut ed = Editor::new();
+        ed.set_content(content.to_string(), None);
+        ed
+    }
+
+    #[test]
+    fn set_content_resets_state_and_detects_indent_and_language() {
+        let mut ed = editor_with("old");
+        ed.cursor.set_position(0, 2);
+        ed.extra_cursors.push(Cursor::new());
+        ed.is_modified = true;
+        ed.content_version = 42;
+        ed.show_find = true;
+        ed.find_query = "x".into();
+        ed.folded_lines.insert(3);
+        ed.diagnostics.push(crate::lsp::client::Diagnostic {
+            message: "m".into(),
+            line: 0,
+            col: 0,
+            end_col: 1,
+            severity: crate::lsp::client::DiagSeverity::Error,
+        });
+        ed.signature_help_text = Some("sig".into());
+
+        ed.set_content(
+            "def f():\n\tpass\n".to_string(),
+            Some(PathBuf::from("script.py")),
+        );
+
+        assert_eq!(ed.buffer.to_string(), "def f():\n\tpass\n");
+        assert_eq!(ed.cursor.position(), (0, 0));
+        assert!(ed.extra_cursors.is_empty());
+        assert!(!ed.is_modified);
+        assert_eq!(ed.content_version, 0);
+        assert!(!ed.show_find);
+        assert!(ed.find_query.is_empty());
+        assert!(ed.folded_lines.is_empty());
+        assert!(ed.diagnostics.is_empty());
+        assert!(ed.signature_help_text.is_none());
+        assert_eq!(ed.current_path, Some(PathBuf::from("script.py")));
+        assert!(!ed.detected_indent_spaces, "tab-indented file");
+        assert_eq!(ed.highlighter.language, "py");
+
+        ed.set_content("a\n  b\n  c\n".to_string(), None);
+        assert!(ed.detected_indent_spaces);
+        assert_eq!(ed.detected_indent_size, 2);
+        assert_eq!(ed.current_path, None);
+    }
+
+    #[test]
+    fn selection_pub_helpers() {
+        let mut ed = editor_with("one\ntwo\nthree");
+        assert_eq!(ed.selected_text_pub(), None);
+        assert_eq!(ed.selection_line_range_pub(), None);
+        ed.cursor.set_position(2, 2);
+        ed.cursor.sel_anchor = Some((0, 1));
+        assert_eq!(ed.selected_text_pub().as_deref(), Some("ne\ntwo\nth"));
+        assert_eq!(ed.selection_line_range_pub(), Some((1, 3)));
+    }
+
+    #[test]
+    fn duplicate_line_copies_current_line_below_and_moves_cursor() {
+        let mut ed = editor_with("a\nb\nc");
+        ed.cursor.set_position(1, 1);
+        ed.duplicate_line();
+        assert_eq!(ed.buffer.to_string(), "a\nb\nb\nc");
+        assert_eq!(ed.cursor.position(), (2, 1));
+        assert!(ed.is_modified);
+        assert!(ed.buffer.undo());
+        assert_eq!(ed.buffer.to_string(), "a\nb\nc");
+    }
+
+    #[test]
+    fn cached_max_line_chars_recomputes_only_on_version_change() {
+        let mut ed = editor_with("ab\nabcdef\nx");
+        // line_char_len_fast includes the trailing newline.
+        assert_eq!(ed.cached_max_line_chars(), 7);
+        ed.buffer = Buffer::from_str("a very much longer line");
+        assert_eq!(ed.cached_max_line_chars(), 7, "cached until version bumps");
+        ed.content_version += 1;
+        assert_eq!(ed.cached_max_line_chars(), 23);
+    }
+
+    #[test]
+    fn save_writes_buffer_and_clears_modified_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.rs");
+        let mut ed = editor_with("");
+        ed.set_content("fn main() {}\n".to_string(), Some(path.clone()));
+        ed.cursor.set_position(0, 0);
+        ed.insert_char('x', false);
+        ed.line_diff_path = Some(path.clone());
+        assert!(ed.is_modified);
+        ed.save().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xfn main() {}\n");
+        assert!(!ed.is_modified);
+        assert!(ed.line_diff_path.is_none(), "line diff invalidated");
+    }
+
+    #[test]
+    fn save_without_path_is_a_noop() {
+        let mut ed = editor_with("abc");
+        ed.is_modified = true;
+        ed.save().unwrap();
+        assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn save_to_unwritable_path_errors_and_keeps_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing_dir").join("f.txt");
+        let mut ed = editor_with("");
+        ed.set_content("abc".to_string(), Some(path));
+        ed.is_modified = true;
+        assert!(ed.save().is_err());
+        assert!(ed.is_modified);
+    }
+
+    // ── Headless egui harness for `show` ────────────────────────────────────
+
+    use egui::{Event, Key, Modifiers, PointerButton};
+
+    const CTRL: Modifiers = Modifiers::CTRL;
+    const SHIFT: Modifiers = Modifiers::SHIFT;
+    const ALT: Modifiers = Modifiers::ALT;
+    const NONE: Modifiers = Modifiers::NONE;
+
+    fn mods(list: &[Modifiers]) -> Modifiers {
+        list.iter().fold(NONE, |a, &b| a | b)
+    }
+
+    struct Harness {
+        ctx: egui::Context,
+        config: crate::config::Config,
+        plugins: crate::plugin::manager::PluginManager,
+        breakpoints: std::collections::HashSet<usize>,
+        lsp_hover: Option<String>,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            Self {
+                ctx: egui::Context::default(),
+                config: crate::config::Config::default(),
+                plugins: crate::plugin::manager::PluginManager::new(),
+                breakpoints: Default::default(),
+                lsp_hover: None,
+                time: 0.0,
+            }
+        }
+
+        fn frame(&mut self, ed: &mut Editor, events: Vec<Event>, m: Modifiers) -> egui::FullOutput {
+            self.time += 1.0 / 60.0;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                time: Some(self.time),
+                modifiers: m,
+                events,
+                focused: true,
+                ..Default::default()
+            };
+            let palette = crate::ui::theme::Palette::from_theme(&self.config.theme);
+            let lsp = self.lsp_hover.take();
+            let (config, plugins, bps) = (&self.config, &self.plugins, &self.breakpoints);
+            self.ctx.run(raw, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        ed.show(
+                            ui,
+                            config,
+                            plugins,
+                            lsp.clone(),
+                            bps,
+                            palette,
+                            crate::ui::theme::Spacing::default(),
+                        );
+                    });
+            })
+        }
+
+        fn idle(&mut self, ed: &mut Editor) -> egui::FullOutput {
+            self.frame(ed, vec![], NONE)
+        }
+
+        fn press(&mut self, ed: &mut Editor, key: Key, m: Modifiers) -> egui::FullOutput {
+            let ev = Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: m,
+            };
+            self.frame(ed, vec![ev], m)
+        }
+
+        fn type_text(&mut self, ed: &mut Editor, s: &str) {
+            self.frame(ed, vec![Event::Text(s.to_string())], NONE);
+        }
+
+        fn pos(ed: &Editor, row: usize, col: usize) -> egui::Pos2 {
+            // Gutter is 50px wide with line numbers on; editor rect starts at (0, 0).
+            egui::pos2(
+                50.0 + col as f32 * ed.char_width + ed.char_width * 0.2,
+                row as f32 * ed.line_height + ed.line_height * 0.5,
+            )
+        }
+
+        fn button(pos: egui::Pos2, pressed: bool, m: Modifiers) -> Event {
+            Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: m,
+            }
+        }
+
+        /// Move the pointer off the editor (outside the screen rect).
+        fn leave(&mut self, ed: &mut Editor) {
+            self.frame(
+                ed,
+                vec![Event::PointerMoved(egui::pos2(900.0, 900.0))],
+                NONE,
+            );
+        }
+
+        /// A single click, spaced in time so it is never merged into a double click.
+        fn click_at(&mut self, ed: &mut Editor, pos: egui::Pos2, m: Modifiers) {
+            self.time += 1.0;
+            self.fast_click_at(ed, pos, m);
+        }
+
+        /// A click with no extra delay (consecutive calls form double/triple clicks).
+        fn fast_click_at(&mut self, ed: &mut Editor, pos: egui::Pos2, m: Modifiers) {
+            self.frame(
+                ed,
+                vec![Event::PointerMoved(pos), Self::button(pos, true, m)],
+                m,
+            );
+            self.frame(ed, vec![Self::button(pos, false, m)], m);
+        }
+
+        fn click(&mut self, ed: &mut Editor, row: usize, col: usize, m: Modifiers) {
+            let p = Self::pos(ed, row, col);
+            self.click_at(ed, p, m);
+        }
+
+        fn hover(&mut self, ed: &mut Editor, pos: egui::Pos2, m: Modifiers) {
+            self.frame(ed, vec![Event::PointerMoved(pos)], m);
+        }
+
+        fn hover_at(&mut self, ed: &mut Editor, row: usize, col: usize, m: Modifiers) {
+            let p = Self::pos(ed, row, col);
+            self.hover(ed, p, m);
+        }
+    }
+
+    /// Editor loaded with `content`, already focused by a warm-up frame.
+    fn setup(content: &str) -> (Harness, Editor) {
+        setup_path(content, None)
+    }
+
+    fn setup_path(content: &str, path: Option<PathBuf>) -> (Harness, Editor) {
+        let mut h = Harness::new();
+        let mut ed = Editor::new();
+        ed.set_content(content.to_string(), path);
+        h.idle(&mut ed);
+        (h, ed)
+    }
+
+    fn text(ed: &Editor) -> String {
+        ed.buffer.to_string()
+    }
+
+    fn copied(out: &egui::FullOutput) -> Option<String> {
+        out.platform_output.commands.iter().find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        })
+    }
+
+    fn extra(row: usize, col: usize) -> Cursor {
+        let mut c = Cursor::new();
+        c.set_position(row, col);
+        c
+    }
+
+    // ── Typing & text events ────────────────────────────────────────────────
+
+    #[test]
+    fn typing_inserts_text_with_auto_close() {
+        let (mut h, mut ed) = setup("");
+        h.type_text(&mut ed, "f(");
+        assert_eq!(text(&ed), "f()");
+        assert_eq!(ed.cursor.position(), (0, 2));
+        assert!(ed.is_modified);
+        assert!(ed.signature_help_request_pending);
+        assert_eq!((ed.signature_help_row, ed.signature_help_col), (0, 2));
+    }
+
+    #[test]
+    fn typing_respects_auto_close_config() {
+        let (mut h, mut ed) = setup("");
+        h.config.editor.auto_close_brackets = false;
+        h.type_text(&mut ed, "[");
+        assert_eq!(text(&ed), "[");
+    }
+
+    #[test]
+    fn typing_close_paren_clears_signature_help_and_dot_requests_completion() {
+        let (mut h, mut ed) = setup("");
+        ed.signature_help_text = Some("fn f(a)".into());
+        h.type_text(&mut ed, "a)");
+        assert!(ed.signature_help_text.is_none());
+        h.type_text(&mut ed, ".");
+        assert!(ed.completion_request_pending);
+        assert_eq!(
+            (ed.completion_trigger_row, ed.completion_trigger_col),
+            (0, 3)
+        );
+    }
+
+    #[test]
+    fn text_events_are_ignored_while_ctrl_is_held() {
+        let (mut h, mut ed) = setup("");
+        h.frame(&mut ed, vec![Event::Text("s".into())], CTRL);
+        assert_eq!(text(&ed), "");
+    }
+
+    #[test]
+    fn typing_a_word_prefix_opens_local_autocomplete() {
+        let (mut h, mut ed) = setup("hello_world\n");
+        ed.cursor.set_position(1, 0);
+        h.type_text(&mut ed, "hel");
+        assert!(ed.autocomplete.visible);
+        assert_eq!(ed.autocomplete.confirm(), Some("hello_world"));
+    }
+
+    #[test]
+    fn events_are_ignored_without_focus_while_find_is_open() {
+        let mut h = Harness::new();
+        let mut ed = Editor::new();
+        ed.set_content("abc".into(), None);
+        ed.show_find = true;
+        h.idle(&mut ed);
+        h.type_text(&mut ed, "zzz");
+        assert_eq!(text(&ed), "abc");
+    }
+
+    // ── Undo / redo ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_z_undoes_and_ctrl_y_or_ctrl_shift_z_redoes() {
+        let (mut h, mut ed) = setup("");
+        h.type_text(&mut ed, "a");
+        assert_eq!(text(&ed), "a");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "");
+        h.press(&mut ed, Key::Y, CTRL);
+        assert_eq!(text(&ed), "a");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "");
+        h.press(&mut ed, Key::Z, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "a");
+        assert!(ed.is_modified);
+    }
+
+    #[test]
+    #[ignore = "BUG: insert_char checkpoints every char, so a typing run is not one undo step"]
+    fn ctrl_z_undoes_a_whole_typing_run() {
+        let (mut h, mut ed) = setup("x");
+        ed.cursor.set_position(0, 1);
+        h.type_text(&mut ed, "abc");
+        assert_eq!(text(&ed), "xabc");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "x");
+    }
+
+    #[test]
+    #[ignore = "BUG: Backspace/Delete push a duplicate undo checkpoint (needs two Ctrl+Z)"]
+    fn each_backspace_is_one_undo_step() {
+        let (mut h, mut ed) = setup("ab");
+        ed.cursor.set_position(0, 2);
+        h.press(&mut ed, Key::Backspace, NONE);
+        h.press(&mut ed, Key::Backspace, NONE);
+        assert_eq!(text(&ed), "");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "a");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "ab");
+    }
+
+    // ── Editing keys ────────────────────────────────────────────────────────
+
+    #[test]
+    fn enter_backspace_and_delete_keys_edit_text() {
+        let (mut h, mut ed) = setup("abcd");
+        ed.cursor.set_position(0, 2);
+        h.press(&mut ed, Key::Enter, NONE);
+        assert_eq!(text(&ed), "ab\ncd");
+        assert_eq!(ed.cursor.position(), (1, 0));
+        h.press(&mut ed, Key::Backspace, NONE);
+        assert_eq!(text(&ed), "abcd");
+        assert_eq!(ed.cursor.position(), (0, 2));
+        h.press(&mut ed, Key::Delete, NONE);
+        assert_eq!(text(&ed), "abd");
+    }
+
+    #[test]
+    fn ctrl_enter_inserts_line_below_and_ctrl_shift_enter_above() {
+        let (mut h, mut ed) = setup("abc\ndef");
+        ed.cursor.set_position(0, 1);
+        ed.extra_cursors.push(extra(1, 1));
+        h.press(&mut ed, Key::Enter, CTRL);
+        assert_eq!(text(&ed), "abc\n\ndef");
+        assert_eq!(ed.cursor.position(), (1, 0));
+        assert!(ed.extra_cursors.is_empty());
+
+        ed.cursor.set_position(2, 2);
+        h.press(&mut ed, Key::Enter, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "abc\n\n\ndef");
+        assert_eq!(ed.cursor.position(), (2, 0));
+    }
+
+    #[test]
+    fn tab_inserts_detected_indent_and_shift_tab_does_nothing() {
+        let (mut h, mut ed) = setup("x");
+        h.press(&mut ed, Key::Tab, NONE);
+        assert_eq!(text(&ed), "    x");
+        assert_eq!(ed.cursor.position(), (0, 4));
+        h.press(&mut ed, Key::Tab, SHIFT);
+        assert_eq!(text(&ed), "    x");
+
+        let (mut h, mut ed) = setup("\tfoo\n");
+        ed.cursor.set_position(1, 0);
+        h.press(&mut ed, Key::Tab, NONE);
+        assert_eq!(text(&ed), "\tfoo\n\t");
+    }
+
+    #[test]
+    fn paste_inserts_text_including_newlines() {
+        let (mut h, mut ed) = setup("[]");
+        ed.cursor.set_position(0, 1);
+        h.frame(&mut ed, vec![Event::Paste("a\nb(".into())], NONE);
+        // Paste never auto-closes brackets.
+        assert_eq!(text(&ed), "[a\nb(]");
+        assert_eq!(ed.cursor.position(), (1, 2));
+    }
+
+    #[test]
+    fn paste_distributes_lines_across_matching_cursor_count() {
+        let (mut h, mut ed) = setup("x\ny\nz");
+        ed.cursor.set_position(1, 1);
+        ed.extra_cursors.push(extra(0, 1));
+        ed.extra_cursors.push(extra(2, 1));
+        h.frame(&mut ed, vec![Event::Paste("1\n2\n3".into())], NONE);
+        assert_eq!(text(&ed), "x1\ny2\nz3");
+        assert_eq!(ed.cursor.position(), (1, 2));
+        assert_eq!(ed.extra_cursors[0].position(), (0, 2));
+        assert_eq!(ed.extra_cursors[1].position(), (2, 2));
+    }
+
+    #[test]
+    fn paste_with_mismatched_line_count_pastes_everything_at_each_cursor() {
+        let (mut h, mut ed) = setup("a\nb");
+        ed.cursor.set_position(0, 1);
+        ed.extra_cursors.push(extra(1, 1));
+        h.frame(&mut ed, vec![Event::Paste("XY".into())], NONE);
+        assert_eq!(text(&ed), "aXY\nbXY");
+    }
+
+    // ── Line operations ─────────────────────────────────────────────────────
+
+    #[test]
+    fn move_line_up_and_down_with_ctrl_shift_and_alt() {
+        let (mut h, mut ed) = setup("a\nb\nc");
+        ed.cursor.set_position(1, 0);
+        h.press(&mut ed, Key::ArrowUp, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "b\na\nc");
+        assert_eq!(ed.cursor.row, 0);
+        // At the top: no-op.
+        h.press(&mut ed, Key::ArrowUp, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "b\na\nc");
+        h.press(&mut ed, Key::ArrowDown, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "a\nb\nc");
+        assert_eq!(ed.cursor.row, 1);
+
+        h.press(&mut ed, Key::ArrowDown, ALT);
+        assert_eq!(text(&ed), "a\nc\nb");
+        assert_eq!(ed.cursor.row, 2);
+        // At the bottom: no-op for both bindings.
+        h.press(&mut ed, Key::ArrowDown, ALT);
+        h.press(&mut ed, Key::ArrowDown, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "a\nc\nb");
+        h.press(&mut ed, Key::ArrowUp, ALT);
+        assert_eq!(text(&ed), "a\nb\nc");
+        assert_eq!(ed.cursor.row, 1);
+        ed.cursor.set_position(0, 0);
+        h.press(&mut ed, Key::ArrowUp, ALT);
+        assert_eq!(text(&ed), "a\nb\nc");
+    }
+
+    #[test]
+    fn duplicate_line_with_shift_alt_and_ctrl_shift_d() {
+        let (mut h, mut ed) = setup("a\nb");
+        ed.cursor.set_position(0, 0);
+        h.press(&mut ed, Key::ArrowDown, mods(&[SHIFT, ALT]));
+        assert_eq!(text(&ed), "a\na\nb");
+        assert_eq!(ed.cursor.row, 1);
+        h.press(&mut ed, Key::ArrowUp, mods(&[SHIFT, ALT]));
+        assert_eq!(text(&ed), "a\na\na\nb");
+        assert_eq!(ed.cursor.row, 1);
+        ed.cursor.set_position(2, 0);
+        h.press(&mut ed, Key::D, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "a\na\na\na\nb");
+        assert_eq!(ed.cursor.row, 3);
+    }
+
+    #[test]
+    #[ignore = "BUG: duplicating the last line (no trailing newline) appends to it instead of adding a line"]
+    fn duplicate_last_line_without_trailing_newline() {
+        let (mut h, mut ed) = setup("a\nb");
+        ed.cursor.set_position(1, 0);
+        h.press(&mut ed, Key::D, mods(&[CTRL, SHIFT]));
+        // Currently produces "a\nbb\n".
+        assert_eq!(text(&ed), "a\nb\nb");
+        assert_eq!(ed.cursor.row, 2);
+    }
+
+    #[test]
+    fn ctrl_shift_k_deletes_lines_of_all_cursors() {
+        let (mut h, mut ed) = setup("a\nb\nc\nd");
+        ed.cursor.set_position(1, 1);
+        h.press(&mut ed, Key::K, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "a\nc\nd");
+        assert_eq!(ed.cursor.position(), (1, 0));
+
+        ed.cursor.set_position(2, 0);
+        ed.extra_cursors.push(extra(0, 0));
+        h.press(&mut ed, Key::K, mods(&[CTRL, SHIFT]));
+        assert_eq!(text(&ed), "c\n");
+        assert!(ed.extra_cursors.is_empty());
+        assert_eq!(ed.cursor.position(), (1, 0));
+    }
+
+    #[test]
+    fn ctrl_brackets_indent_and_unindent_lines() {
+        let (mut h, mut ed) = setup("ab\ncd");
+        ed.cursor.set_position(0, 1);
+        h.press(&mut ed, Key::CloseBracket, CTRL);
+        assert_eq!(text(&ed), "    ab\ncd");
+        assert_eq!(ed.cursor.col, 5);
+        h.press(&mut ed, Key::OpenBracket, CTRL);
+        assert_eq!(text(&ed), "ab\ncd");
+        assert_eq!(ed.cursor.col, 1);
+
+        // Selection covering both lines indents both.
+        ed.cursor.set_position(1, 1);
+        ed.cursor.sel_anchor = Some((0, 0));
+        h.press(&mut ed, Key::CloseBracket, CTRL);
+        assert_eq!(text(&ed), "    ab\n    cd");
+        // Unindent only strips up to 4 leading spaces.
+        ed.buffer = Buffer::from_str("      x\n y");
+        ed.cursor.set_position(1, 1);
+        ed.cursor.sel_anchor = Some((0, 0));
+        h.press(&mut ed, Key::OpenBracket, CTRL);
+        assert_eq!(text(&ed), "  x\ny");
+        assert_eq!(ed.cursor.col, 0);
+    }
+
+    #[test]
+    fn ctrl_slash_toggles_line_comment() {
+        let (mut h, mut ed) = setup("fn a() {\n    let x = 1;\n}");
+        ed.cursor.set_position(1, 4);
+        h.press(&mut ed, Key::Slash, CTRL);
+        assert_eq!(ed.buffer.line(1), "//     let x = 1;");
+        h.press(&mut ed, Key::Slash, CTRL);
+        assert_eq!(ed.buffer.line(1), "    let x = 1;");
+
+        // Mixed selection: everything gets commented.
+        ed.buffer = Buffer::from_str("// a\nb");
+        ed.cursor.set_position(1, 1);
+        ed.cursor.sel_anchor = Some((0, 0));
+        h.press(&mut ed, Key::Slash, CTRL);
+        assert_eq!(text(&ed), "// // a\n// b");
+
+        // All commented, one without the trailing space: both get uncommented.
+        ed.buffer = Buffer::from_str("  //a\n// b");
+        h.press(&mut ed, Key::Slash, CTRL);
+        assert_eq!(text(&ed), "  a\nb");
+    }
+
+    #[test]
+    fn comment_prefix_depends_on_file_extension() {
+        let (mut h, mut ed) = setup_path("x = 1", Some(PathBuf::from("a.py")));
+        h.press(&mut ed, Key::Slash, CTRL);
+        assert_eq!(text(&ed), "# x = 1");
+        ed.current_path = Some(PathBuf::from("q.sql"));
+        assert_eq!(ed.comment_prefix(), "-- ");
+        ed.current_path = Some(PathBuf::from("Makefile"));
+        assert_eq!(ed.comment_prefix(), "// ");
+    }
+
+    // ── Cursor movement & selection ─────────────────────────────────────────
+
+    #[test]
+    fn arrow_keys_move_all_cursors_and_dismiss_autocomplete() {
+        let (mut h, mut ed) = setup("abc\ndefgh\nij");
+        ed.cursor.set_position(0, 1);
+        ed.extra_cursors.push(extra(1, 3));
+        ed.autocomplete.visible = true;
+        ed.autocomplete.suggestions.clear();
+        h.press(&mut ed, Key::ArrowRight, NONE);
+        assert_eq!(ed.cursor.position(), (0, 2));
+        assert_eq!(ed.extra_cursors[0].position(), (1, 4));
+        assert!(!ed.autocomplete.visible);
+        h.press(&mut ed, Key::ArrowDown, NONE);
+        assert_eq!(ed.cursor.position(), (1, 2));
+        assert_eq!(ed.extra_cursors[0].position(), (2, 2));
+        h.press(&mut ed, Key::ArrowLeft, NONE);
+        assert_eq!(ed.cursor.position(), (1, 1));
+        h.press(&mut ed, Key::ArrowUp, NONE);
+        assert_eq!(ed.cursor.position(), (0, 1));
+        assert_eq!(ed.extra_cursors[0].position(), (1, 1));
+        // Moving cursors onto the same spot merges them.
+        ed.extra_cursors = vec![extra(0, 0)];
+        ed.cursor.set_position(0, 1);
+        h.press(&mut ed, Key::ArrowLeft, NONE);
+        // primary (0,0), extra stays (0,0) -> deduped.
+        assert!(ed.extra_cursors.is_empty());
+    }
+
+    #[test]
+    fn shift_arrows_extend_selection() {
+        let (mut h, mut ed) = setup("abc\ndef");
+        ed.cursor.set_position(0, 1);
+        ed.extra_cursors.push(extra(1, 1));
+        h.press(&mut ed, Key::ArrowRight, SHIFT);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 1), (0, 2))));
+        assert_eq!(
+            ed.extra_cursors[0].selection_range(),
+            Some(((1, 1), (1, 2)))
+        );
+        h.press(&mut ed, Key::ArrowDown, SHIFT);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 1), (1, 2))));
+        h.press(&mut ed, Key::ArrowUp, SHIFT);
+        h.press(&mut ed, Key::ArrowLeft, SHIFT);
+        h.press(&mut ed, Key::ArrowLeft, SHIFT);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (0, 1))));
+        assert_eq!(ed.selected_text().as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn home_end_variants() {
+        let (mut h, mut ed) = setup("  abc\nxy\nlast line");
+        ed.cursor.set_position(0, 3);
+        ed.extra_cursors.push(extra(1, 1));
+        h.press(&mut ed, Key::End, NONE);
+        assert_eq!(ed.cursor.position(), (0, 5));
+        assert_eq!(ed.extra_cursors[0].position(), (1, 2));
+        h.press(&mut ed, Key::Home, NONE);
+        assert_eq!(ed.cursor.position(), (0, 0));
+        assert_eq!(ed.extra_cursors[0].position(), (1, 0));
+
+        h.press(&mut ed, Key::End, SHIFT);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (0, 5))));
+        assert_eq!(
+            ed.extra_cursors[0].selection_range(),
+            Some(((1, 0), (1, 2)))
+        );
+        ed.cursor.clear_selection();
+        ed.cursor.set_position(0, 4);
+        ed.extra_cursors.clear();
+        h.press(&mut ed, Key::Home, SHIFT);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (0, 4))));
+
+        ed.extra_cursors.push(extra(1, 1));
+        ed.scroll_offset = egui::vec2(0.0, 30.0);
+        h.press(&mut ed, Key::End, CTRL);
+        assert_eq!(ed.cursor.position(), (2, 9));
+        assert!(!ed.cursor.has_selection());
+        // The extra cursor lands on the same spot and is merged.
+        assert!(ed.extra_cursors.is_empty());
+        h.press(&mut ed, Key::Home, CTRL);
+        assert_eq!(ed.cursor.position(), (0, 0));
+        assert_eq!(ed.scroll_offset, egui::Vec2::ZERO);
+
+        ed.extra_cursors.push(extra(1, 1));
+        h.press(&mut ed, Key::End, mods(&[CTRL, SHIFT]));
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (2, 9))));
+        ed.cursor.clear_selection();
+        ed.cursor.set_position(1, 1);
+        ed.extra_cursors.push(extra(2, 2));
+        h.press(&mut ed, Key::Home, mods(&[CTRL, SHIFT]));
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (1, 1))));
+        assert!(ed.extra_cursors.is_empty());
+    }
+
+    #[test]
+    fn ctrl_a_selects_everything() {
+        let (mut h, mut ed) = setup("ab\ncde");
+        h.press(&mut ed, Key::A, CTRL);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (1, 3))));
+        assert_eq!(ed.selected_text().as_deref(), Some("ab\ncde"));
+    }
+
+    #[test]
+    fn ctrl_alt_arrows_add_cursors_above_and_below() {
+        let (mut h, mut ed) = setup("long line\nab\nlong line");
+        ed.cursor.set_position(1, 2);
+        h.press(&mut ed, Key::ArrowDown, mods(&[CTRL, ALT]));
+        assert_eq!(ed.extra_cursors.len(), 1);
+        assert_eq!(ed.extra_cursors[0].position(), (2, 2));
+        h.press(&mut ed, Key::ArrowUp, mods(&[CTRL, ALT]));
+        let mut rows: Vec<_> = ed.extra_cursors.iter().map(|c| c.position()).collect();
+        rows.sort();
+        // Above the primary and above the extra (which is the primary row -> deduped).
+        assert_eq!(rows, vec![(0, 2), (2, 2)]);
+        // At document edges nothing more is added.
+        h.press(&mut ed, Key::ArrowUp, mods(&[CTRL, ALT]));
+        h.press(&mut ed, Key::ArrowDown, mods(&[CTRL, ALT]));
+        let mut rows: Vec<_> = ed.extra_cursors.iter().map(|c| c.position()).collect();
+        rows.sort();
+        assert_eq!(rows, vec![(0, 2), (2, 2)]);
+    }
+
+    #[test]
+    fn ctrl_d_selects_word_then_adds_next_occurrences() {
+        let (mut h, mut ed) = setup("foo bar foo baz foo");
+        ed.cursor.set_position(0, 1);
+        h.press(&mut ed, Key::D, CTRL);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (0, 3))));
+        assert!(ed.extra_cursors.is_empty());
+        h.press(&mut ed, Key::D, CTRL);
+        assert_eq!(ed.extra_cursors.len(), 1);
+        assert_eq!(
+            ed.extra_cursors[0].selection_range(),
+            Some(((0, 8), (0, 11)))
+        );
+        h.press(&mut ed, Key::D, CTRL);
+        assert_eq!(
+            ed.extra_cursors[1].selection_range(),
+            Some(((0, 16), (0, 19)))
+        );
+        // Wrapping back onto the primary occurrence adds nothing new.
+        h.press(&mut ed, Key::D, CTRL);
+        assert_eq!(ed.extra_cursors.len(), 2);
+
+        // Typing now replaces every selected occurrence.
+        h.type_text(&mut ed, "X");
+        assert_eq!(text(&ed), "X bar X baz X");
+    }
+
+    #[test]
+    fn ctrl_d_on_non_word_does_nothing() {
+        let (mut h, mut ed) = setup("  ");
+        ed.cursor.set_position(0, 1);
+        h.press(&mut ed, Key::D, CTRL);
+        assert!(!ed.cursor.has_selection());
+    }
+
+    #[test]
+    fn ctrl_shift_l_selects_all_occurrences() {
+        let (mut h, mut ed) = setup("foo x foo\nfoo");
+        ed.cursor.set_position(0, 0);
+        h.press(&mut ed, Key::L, mods(&[CTRL, SHIFT]));
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (0, 3))));
+        let sels: Vec<_> = ed
+            .extra_cursors
+            .iter()
+            .map(|c| c.selection_range().unwrap())
+            .collect();
+        assert_eq!(sels, vec![((0, 6), (0, 9)), ((1, 0), (1, 3))]);
+
+        // Multi-cursor copy joins each cursor's selection with newlines.
+        let out = h.press(&mut ed, Key::C, CTRL);
+        assert_eq!(copied(&out).as_deref(), Some("foo\nfoo\nfoo"));
+    }
+
+    // ── Clipboard ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_c_copies_selection_or_current_line() {
+        let (mut h, mut ed) = setup("hello\nworld");
+        ed.cursor.set_position(0, 4);
+        ed.cursor.sel_anchor = Some((0, 1));
+        let out = h.press(&mut ed, Key::C, CTRL);
+        assert_eq!(copied(&out).as_deref(), Some("ell"));
+        assert_eq!(text(&ed), "hello\nworld", "copy must not modify");
+
+        ed.cursor.clear_selection();
+        ed.cursor.set_position(1, 2);
+        let out = h.press(&mut ed, Key::C, CTRL);
+        assert_eq!(copied(&out).as_deref(), Some("world\n"));
+    }
+
+    #[test]
+    fn ctrl_c_with_extra_cursors_copies_each_cursor() {
+        let (mut h, mut ed) = setup("abc\ndef\nghi\njkl");
+        // Primary: multi-line selection; extras: one without selection, one multi-line.
+        ed.cursor.set_position(2, 1);
+        ed.cursor.sel_anchor = Some((0, 1));
+        ed.extra_cursors.push(extra(3, 0));
+        let mut multi = extra(3, 2);
+        multi.sel_anchor = Some((2, 0));
+        ed.extra_cursors.push(multi);
+        let out = h.press(&mut ed, Key::C, CTRL);
+        assert_eq!(copied(&out).as_deref(), Some("bc\ndef\ng\njkl\nghi"));
+
+        // Primary without selection copies its whole line.
+        ed.cursor.clear_selection();
+        ed.cursor.set_position(1, 0);
+        ed.extra_cursors = vec![extra(0, 0)];
+        let out = h.press(&mut ed, Key::C, CTRL);
+        assert_eq!(copied(&out).as_deref(), Some("def\nabc"));
+    }
+
+    #[test]
+    fn ctrl_x_cuts_selection_and_is_undoable() {
+        let (mut h, mut ed) = setup("hello world");
+        ed.cursor.set_position(0, 5);
+        ed.cursor.sel_anchor = Some((0, 0));
+        let out = h.press(&mut ed, Key::X, CTRL);
+        assert_eq!(copied(&out).as_deref(), Some("hello"));
+        assert_eq!(text(&ed), " world");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "hello world");
+    }
+
+    #[test]
+    fn ctrl_x_without_selection_does_nothing() {
+        let (mut h, mut ed) = setup("hello");
+        let out = h.press(&mut ed, Key::X, CTRL);
+        assert_eq!(copied(&out), None);
+        assert_eq!(text(&ed), "hello");
+    }
+
+    // ── Save & request flags ────────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_s_saves_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "").unwrap();
+        let (mut h, mut ed) = setup_path("", Some(path.clone()));
+        h.type_text(&mut ed, "x");
+        assert!(ed.is_modified);
+        h.press(&mut ed, Key::S, CTRL);
+        assert!(ed.just_saved);
+        assert!(!ed.is_modified);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+    }
+
+    #[test]
+    fn shortcut_keys_set_request_flags() {
+        let (mut h, mut ed) = setup("abc");
+        ed.cursor.set_position(0, 2);
+        h.press(&mut ed, Key::Space, CTRL);
+        assert!(ed.completion_request_pending);
+        assert_eq!(
+            (ed.completion_trigger_row, ed.completion_trigger_col),
+            (0, 2)
+        );
+        h.press(&mut ed, Key::F, mods(&[CTRL, SHIFT]));
+        assert!(ed.format_request_pending);
+        assert!(!ed.show_find);
+        h.press(&mut ed, Key::F2, NONE);
+        assert_eq!(text(&ed), "abc");
+        h.press(&mut ed, Key::F, CTRL);
+        assert!(ed.show_find);
+        assert!(!ed.show_replace);
+    }
+
+    #[test]
+    fn ctrl_h_opens_find_and_replace() {
+        let (mut h, mut ed) = setup("abc");
+        h.press(&mut ed, Key::H, CTRL);
+        assert!(ed.show_find && ed.show_replace);
+        // Render the find bar with the replace row.
+        h.idle(&mut ed);
+        h.idle(&mut ed);
+        assert!(ed.show_find);
+    }
+
+    #[test]
+    fn escape_clears_extra_cursors_and_selection() {
+        let (mut h, mut ed) = setup("abc\ndef");
+        ed.cursor.set_position(0, 2);
+        ed.cursor.sel_anchor = Some((0, 0));
+        ed.extra_cursors.push(extra(1, 1));
+        h.press(&mut ed, Key::Escape, NONE);
+        assert!(ed.extra_cursors.is_empty());
+        assert!(!ed.cursor.has_selection());
+    }
+
+    // ── Autocomplete interaction ────────────────────────────────────────────
+
+    fn with_suggestions(ed: &mut Editor, labels: &[&str]) {
+        ed.autocomplete.set_lsp_suggestions(
+            labels
+                .iter()
+                .map(|l| autocomplete::Suggestion {
+                    label: l.to_string(),
+                    kind: None,
+                    match_indices: vec![],
+                })
+                .collect(),
+        );
+    }
+
+    #[test]
+    fn enter_confirms_visible_autocomplete() {
+        let (mut h, mut ed) = setup("x wo");
+        ed.cursor.set_position(0, 4);
+        with_suggestions(&mut ed, &["world", "wombat"]);
+        h.press(&mut ed, Key::ArrowDown, NONE);
+        assert_eq!(ed.autocomplete.selected, 1);
+        assert_eq!(ed.cursor.position(), (0, 4), "arrows navigate the popup");
+        h.press(&mut ed, Key::ArrowUp, NONE);
+        assert_eq!(ed.autocomplete.selected, 0);
+        h.press(&mut ed, Key::Enter, NONE);
+        assert_eq!(text(&ed), "x world");
+        assert_eq!(ed.cursor.position(), (0, 7));
+        assert!(!ed.autocomplete.visible);
+    }
+
+    #[test]
+    fn tab_confirms_visible_autocomplete() {
+        let (mut h, mut ed) = setup("wo");
+        ed.cursor.set_position(0, 2);
+        with_suggestions(&mut ed, &["wombat"]);
+        h.press(&mut ed, Key::Tab, NONE);
+        assert_eq!(text(&ed), "wombat");
+    }
+
+    #[test]
+    fn escape_dismisses_autocomplete_but_keeps_cursors() {
+        let (mut h, mut ed) = setup("wo\nwo");
+        ed.cursor.set_position(0, 2);
+        ed.extra_cursors.push(extra(1, 2));
+        with_suggestions(&mut ed, &["wombat"]);
+        h.press(&mut ed, Key::Escape, NONE);
+        assert!(!ed.autocomplete.visible);
+        assert_eq!(ed.extra_cursors.len(), 1);
+        assert_eq!(text(&ed), "wo\nwo");
+    }
+
+    // ── Find / replace & goto-line dialogs ──────────────────────────────────
+
+    #[test]
+    fn find_bar_renders_matches_and_escape_closes_it() {
+        let (mut h, mut ed) = setup("Foo bar\nfoo foo\nnone");
+        ed.show_find = true;
+        ed.find_query = "foo".into();
+        ed.update_find_matches();
+        assert_eq!(ed.find_matches, vec![0, 1]);
+        h.idle(&mut ed);
+        ed.find_use_regex = true;
+        ed.find_query = "f.o".into();
+        ed.update_find_matches();
+        h.idle(&mut ed);
+        ed.find_case_sensitive = true;
+        ed.update_find_matches();
+        assert_eq!(ed.find_matches, vec![1]);
+        h.idle(&mut ed);
+        ed.find_query = "zzz".into();
+        ed.update_find_matches();
+        h.idle(&mut ed);
+
+        h.press(&mut ed, Key::Escape, NONE);
+        assert!(!ed.show_find);
+        assert!(ed.find_query.is_empty());
+        assert!(ed.find_matches.is_empty());
+    }
+
+    #[test]
+    fn goto_line_dialog_captures_typed_input() {
+        let content = (0..50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        ed.extra_cursors.push(extra(5, 0));
+        h.press(&mut ed, Key::G, CTRL);
+        assert!(ed.show_goto_line);
+        h.idle(&mut ed);
+        h.idle(&mut ed);
+        h.type_text(&mut ed, "40");
+        assert_eq!(ed.goto_line_input, "40");
+        assert_eq!(
+            text(&ed),
+            content,
+            "typing goes to the dialog, not the buffer"
+        );
+        assert!(ed.show_goto_line);
+    }
+
+    #[test]
+    #[ignore = "BUG: goto-line re-requests focus before checking lost_focus(), so Enter never submits"]
+    fn goto_line_enter_moves_cursor() {
+        let content = (0..50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        ed.extra_cursors.push(extra(5, 0));
+        h.press(&mut ed, Key::G, CTRL);
+        h.idle(&mut ed);
+        h.idle(&mut ed);
+        h.type_text(&mut ed, "40");
+        h.press(&mut ed, Key::Enter, NONE);
+        assert!(!ed.show_goto_line);
+        assert_eq!(ed.cursor.position(), (39, 0));
+        assert!(ed.extra_cursors.is_empty());
+        assert_eq!(ed.scroll_offset.y, 39.0 * ed.line_height);
+    }
+
+    #[test]
+    fn goto_line_escape_closes_without_moving() {
+        let (mut h, mut ed) = setup("a\nb\nc");
+        ed.cursor.set_position(1, 0);
+        ed.show_goto_line = true;
+        h.idle(&mut ed);
+        h.press(&mut ed, Key::Escape, NONE);
+        assert!(!ed.show_goto_line);
+        assert_eq!(ed.cursor.position(), (1, 0));
+    }
+
+    // ── Mouse interaction ───────────────────────────────────────────────────
+
+    #[test]
+    fn click_places_cursor_and_clears_extras() {
+        let (mut h, mut ed) = setup("hello world\nsecond line");
+        ed.extra_cursors.push(extra(0, 0));
+        ed.autocomplete.visible = true;
+        h.click(&mut ed, 1, 3, NONE);
+        assert_eq!(ed.cursor.position(), (1, 3));
+        assert!(ed.extra_cursors.is_empty());
+        assert!(!ed.autocomplete.visible);
+        // Clicking past the end of a line clamps to the line length.
+        h.click(&mut ed, 0, 40, NONE);
+        assert_eq!(ed.cursor.position(), (0, 11));
+    }
+
+    #[test]
+    fn shift_click_extends_selection() {
+        let (mut h, mut ed) = setup("hello world");
+        ed.cursor.set_position(0, 2);
+        h.click(&mut ed, 0, 8, SHIFT);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 2), (0, 8))));
+    }
+
+    #[test]
+    fn ctrl_click_requests_go_to_definition() {
+        let (mut h, mut ed) = setup("let value = other;");
+        h.click(&mut ed, 0, 14, CTRL);
+        assert_eq!(ed.go_to_definition_request.as_deref(), Some("other"));
+        assert_eq!(ed.cursor.position(), (0, 14));
+    }
+
+    #[test]
+    fn double_click_selects_word_and_triple_click_selects_line() {
+        let (mut h, mut ed) = setup("alpha beta_gamma delta\nnext");
+        let p = Harness::pos(&ed, 0, 8);
+        h.click_at(&mut ed, p, NONE);
+        h.fast_click_at(&mut ed, p, NONE);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 6), (0, 16))));
+        assert_eq!(ed.selected_text().as_deref(), Some("beta_gamma"));
+        h.fast_click_at(&mut ed, p, NONE);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (1, 0))));
+
+        // Triple click on the last line selects to its end.
+        let p = Harness::pos(&ed, 1, 1);
+        h.click_at(&mut ed, p, NONE);
+        h.fast_click_at(&mut ed, p, NONE);
+        h.fast_click_at(&mut ed, p, NONE);
+        assert_eq!(ed.cursor.selection_range(), Some(((1, 0), (1, 4))));
+    }
+
+    #[test]
+    fn drag_selects_text() {
+        let (mut h, mut ed) = setup("hello world\nsecond line");
+        let p1 = Harness::pos(&ed, 0, 2);
+        // A small vertical wiggle within the same cell starts the drag.
+        let mid = p1 + egui::vec2(0.0, 8.0);
+        let p2 = Harness::pos(&ed, 1, 4);
+        h.frame(
+            &mut ed,
+            vec![Event::PointerMoved(p1), Harness::button(p1, true, NONE)],
+            NONE,
+        );
+        h.frame(&mut ed, vec![Event::PointerMoved(mid)], NONE);
+        h.frame(&mut ed, vec![Event::PointerMoved(p2)], NONE);
+        h.frame(&mut ed, vec![Harness::button(p2, false, NONE)], NONE);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 2), (1, 4))));
+        assert_eq!(ed.selected_text().as_deref(), Some("llo world\nseco"));
+    }
+
+    #[test]
+    fn ctrl_drag_adds_cursor_and_shift_drag_extends() {
+        let (mut h, mut ed) = setup("hello world\nsecond line");
+        let p1 = Harness::pos(&ed, 1, 2);
+        let p2 = Harness::pos(&ed, 1, 6);
+        h.frame(
+            &mut ed,
+            vec![Event::PointerMoved(p1), Harness::button(p1, true, CTRL)],
+            CTRL,
+        );
+        h.frame(
+            &mut ed,
+            vec![Event::PointerMoved(p1 + egui::vec2(0.0, 8.0))],
+            CTRL,
+        );
+        h.frame(&mut ed, vec![Event::PointerMoved(p2)], CTRL);
+        h.frame(&mut ed, vec![Harness::button(p2, false, CTRL)], CTRL);
+        assert_eq!(ed.extra_cursors.len(), 1);
+        assert_eq!(ed.extra_cursors[0].position(), (1, 2));
+
+        let (mut h, mut ed) = setup("hello world\nsecond line");
+        ed.cursor.set_position(0, 1);
+        let p1 = Harness::pos(&ed, 0, 5);
+        let p2 = Harness::pos(&ed, 0, 9);
+        h.frame(
+            &mut ed,
+            vec![Event::PointerMoved(p1), Harness::button(p1, true, SHIFT)],
+            SHIFT,
+        );
+        h.frame(&mut ed, vec![Event::PointerMoved(p2)], SHIFT);
+        h.frame(&mut ed, vec![Harness::button(p2, false, SHIFT)], SHIFT);
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 1), (0, 9))));
+    }
+
+    #[test]
+    fn drag_near_bottom_edge_auto_scrolls() {
+        let content = (0..200)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        let p1 = Harness::pos(&ed, 2, 0);
+        let p2 = egui::pos2(60.0, 595.0);
+        h.frame(
+            &mut ed,
+            vec![Event::PointerMoved(p1), Harness::button(p1, true, NONE)],
+            NONE,
+        );
+        h.frame(&mut ed, vec![Event::PointerMoved(p2)], NONE);
+        h.frame(&mut ed, vec![Event::PointerMoved(p2)], NONE);
+        assert!(ed.scroll_offset.y > 0.0);
+        let p3 = egui::pos2(60.0, 2.0);
+        for _ in 0..5 {
+            h.frame(&mut ed, vec![Event::PointerMoved(p3)], NONE);
+        }
+        h.frame(&mut ed, vec![Harness::button(p3, false, NONE)], NONE);
+        assert_eq!(ed.scroll_offset.y, 0.0);
+    }
+
+    #[test]
+    fn gutter_click_toggles_fold() {
+        let (mut h, mut ed) = setup("fn a() {\n    x;\n    y;\n}\nend");
+        h.idle(&mut ed);
+        assert_eq!(ed.fold_regions, vec![(0, 2)]);
+        let gutter = egui::pos2(43.0, 10.0);
+        h.click_at(&mut ed, gutter, NONE);
+        assert!(ed.folded_lines.contains(&0));
+        // Rendering with a folded region still works.
+        h.idle(&mut ed);
+        h.click_at(&mut ed, gutter, NONE);
+        assert!(!ed.folded_lines.contains(&0));
+        // Non-foldable rows can't be folded.
+        h.click_at(&mut ed, egui::pos2(43.0, 70.0), NONE);
+        assert!(ed.folded_lines.is_empty());
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_vertically_and_shift_wheel_horizontally() {
+        let long_line = "x".repeat(400);
+        let mut content = vec![long_line];
+        content.extend((0..200).map(|i| format!("l{i}")));
+        let (mut h, mut ed) = setup(&content.join("\n"));
+        let p = egui::pos2(300.0, 300.0);
+        h.hover(&mut ed, p, NONE);
+        let wheel = |m: Modifiers| Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -200.0),
+            modifiers: m,
+        };
+        h.frame(&mut ed, vec![Event::PointerMoved(p), wheel(NONE)], NONE);
+        for _ in 0..30 {
+            h.frame(&mut ed, vec![Event::PointerMoved(p)], NONE);
+        }
+        assert!(ed.scroll_offset.y > 0.0);
+        h.frame(&mut ed, vec![Event::PointerMoved(p), wheel(SHIFT)], SHIFT);
+        for _ in 0..30 {
+            h.frame(&mut ed, vec![Event::PointerMoved(p)], SHIFT);
+        }
+        assert!(ed.scroll_offset.x > 0.0);
+    }
+
+    // ── Hover, diagnostics & rendering state ────────────────────────────────
+
+    #[test]
+    fn ctrl_hover_computes_word_bounds() {
+        let (mut h, mut ed) = setup("let some_name = 1;");
+        let p = Harness::pos(&ed, 0, 6);
+        h.hover(&mut ed, p, CTRL);
+        assert_eq!(ed.ctrl_hover_word_bounds, Some((0, 4, 13)));
+        h.hover_at(&mut ed, 0, 3, CTRL);
+        assert_eq!(ed.ctrl_hover_word_bounds, None);
+        h.hover(&mut ed, p, NONE);
+        assert_eq!(ed.ctrl_hover_word_bounds, None);
+    }
+
+    #[test]
+    fn hovering_a_word_resolves_signature_from_buffer() {
+        let (mut h, mut ed) = setup("fn foo(a: i32) -> i32 {}\nfoo(1);");
+        let p = Harness::pos(&ed, 1, 1);
+        h.hover(&mut ed, p, NONE);
+        assert_eq!(ed.hovered_word(), Some("foo"));
+        assert!(!ed.hover_lsp_request_pending, "timer has not fired yet");
+        // Pretend the hover timer elapsed.
+        ed.hover_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        h.hover(&mut ed, p, NONE);
+        assert!(ed.hover_lsp_request_pending);
+        assert_eq!((ed.hover_row, ed.hover_col), (1, 1));
+        let sig = ed
+            .hover_signature
+            .clone()
+            .expect("regex fallback signature");
+        assert!(sig.contains("fn foo(a: i32)"), "{sig}");
+        // Render the popup.
+        h.hover(&mut ed, p, NONE);
+
+        // LSP response overrides the regex result.
+        h.lsp_hover = Some("lsp signature".into());
+        h.hover(&mut ed, p, NONE);
+        assert_eq!(ed.hover_signature.as_deref(), Some("lsp signature"));
+        assert!(!ed.hover_lsp_request_pending);
+    }
+
+    #[test]
+    fn hover_moves_to_empty_space_and_leaves_editor() {
+        let (mut h, mut ed) = setup("word   \nx");
+        h.hover_at(&mut ed, 0, 1, NONE);
+        assert_eq!(ed.hovered_word(), Some("word"));
+        // Empty space without a resolved signature clears the hover immediately.
+        h.hover_at(&mut ed, 0, 6, NONE);
+        assert_eq!(ed.hovered_word(), None);
+
+        // With a signature shown, leaving starts a grace period instead.
+        h.hover_at(&mut ed, 0, 1, NONE);
+        ed.hover_signature = Some("sig".into());
+        h.hover_at(&mut ed, 0, 6, NONE);
+        assert!(ed.hover_leave_instant.is_some());
+        assert_eq!(ed.hovered_word(), Some("word"));
+        // Back on the same word cancels the dismissal.
+        h.hover_at(&mut ed, 0, 1, NONE);
+        assert!(ed.hover_leave_instant.is_none());
+
+        // Leaving the editor entirely with no signature clears it.
+        ed.hover_signature = None;
+        h.leave(&mut ed);
+        assert_eq!(ed.hovered_word(), None);
+        // ... and with a signature starts the grace period.
+        h.hover_at(&mut ed, 0, 1, NONE);
+        ed.hover_signature = Some("sig".into());
+        h.leave(&mut ed);
+        assert!(ed.hover_leave_instant.is_some());
+    }
+
+    #[test]
+    fn hover_grace_period_expiry_clears_popup() {
+        let (mut h, mut ed) = setup("word");
+        ed.hover_word = Some("word".into());
+        ed.hover_signature = Some("sig".into());
+        ed.hover_leave_instant =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+        h.idle(&mut ed);
+        assert!(ed.hover_word.is_none());
+        assert!(ed.hover_signature.is_none());
+        assert!(ed.hover_leave_instant.is_none());
+    }
+
+    #[test]
+    fn hovering_a_diagnostic_sets_its_message() {
+        let (mut h, mut ed) = setup("let bad = 1;\nok");
+        ed.diagnostics = vec![
+            crate::lsp::client::Diagnostic {
+                message: "unused variable".into(),
+                line: 0,
+                col: 4,
+                end_col: 7,
+                severity: crate::lsp::client::DiagSeverity::Warning,
+            },
+            crate::lsp::client::Diagnostic {
+                message: "point".into(),
+                line: 1,
+                col: 0,
+                end_col: 0,
+                severity: crate::lsp::client::DiagSeverity::Error,
+            },
+        ];
+        h.hover_at(&mut ed, 0, 5, NONE);
+        assert_eq!(ed.diag_hover_msg.as_deref(), Some("unused variable"));
+        assert!(matches!(
+            ed.diag_hover_severity,
+            crate::lsp::client::DiagSeverity::Warning
+        ));
+        // Render the tooltip.
+        h.hover_at(&mut ed, 0, 5, NONE);
+        h.hover_at(&mut ed, 0, 10, NONE);
+        assert_eq!(ed.diag_hover_msg, None);
+        h.hover_at(&mut ed, 0, 5, NONE);
+        h.leave(&mut ed);
+        assert_eq!(ed.diag_hover_msg, None);
+    }
+
+    #[test]
+    fn scroll_to_cursor_brings_cursor_into_view() {
+        let content = (0..200)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        ed.cursor.set_position(150, 0);
+        ed.scroll_to_cursor = true;
+        h.idle(&mut ed);
+        assert!(!ed.scroll_to_cursor);
+        assert_eq!(ed.scroll_offset.y, 151.0 * ed.line_height - 600.0);
+        ed.cursor.set_position(10, 0);
+        ed.scroll_to_cursor = true;
+        h.idle(&mut ed);
+        assert_eq!(ed.scroll_offset.y, 10.0 * ed.line_height);
+    }
+
+    #[test]
+    fn frame_updates_bracket_match_folds_word_occurrences_and_minimap() {
+        let (mut h, mut ed) = setup_path(
+            "fn main() {\n    let foo = 1;\n    foo + foo;\n}\n",
+            Some(PathBuf::from("main.rs")),
+        );
+        ed.cursor.set_position(0, 7); // just after '('
+        h.idle(&mut ed);
+        assert!(ed.bracket_match.is_some());
+        assert_eq!(ed.fold_regions, vec![(0, 2)]);
+        assert_eq!(ed.minimap_lines_version, ed.content_version);
+        assert!(!ed.minimap_lines.is_empty());
+
+        // Selecting a word highlights its other occurrences.
+        ed.cursor.set_position(1, 11);
+        ed.cursor.sel_anchor = Some((1, 8));
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, vec![(2, 4, 7), (2, 10, 13)]);
+    }
+
+    #[test]
+    fn renders_gutter_decorations_and_tooltips() {
+        let (mut h, mut ed) = setup_path(
+            "fn main() {\n    call(a, b);\n\tx\n}\n",
+            Some(PathBuf::from("main.rs")),
+        );
+        ed.show_blame = true;
+        ed.blame_data = vec![
+            crate::git::BlameEntry {
+                commit_short: "abc1234".into(),
+                author: "A very long author name".into(),
+                line: 0,
+            },
+            crate::git::BlameEntry {
+                commit_short: "def5678".into(),
+                author: "Bo".into(),
+                line: 1,
+            },
+        ];
+        ed.line_diff = vec![diff::DIFF_ADDED, diff::DIFF_MODIFIED, DIFF_UNCHANGED];
+        h.breakpoints.insert(1);
+        let sevs = [
+            crate::lsp::client::DiagSeverity::Error,
+            crate::lsp::client::DiagSeverity::Warning,
+            crate::lsp::client::DiagSeverity::Info,
+            crate::lsp::client::DiagSeverity::Hint,
+        ];
+        ed.diagnostics = sevs
+            .iter()
+            .map(|s| crate::lsp::client::Diagnostic {
+                message: "msg".into(),
+                line: 1,
+                col: 4,
+                end_col: 8,
+                severity: s.clone(),
+            })
+            .collect();
+        ed.cursor.set_position(1, 5);
+        ed.extra_cursors.push(extra(2, 1));
+        let mut sel = extra(3, 1);
+        sel.sel_anchor = Some((2, 0));
+        ed.extra_cursors.push(sel);
+        ed.signature_help_text = Some("fn call(a: i32, b: i32)".into());
+        ed.diag_hover_msg = Some("an error".into());
+        ed.hover_signature =
+            Some("```rust\nfn call(a: i32)\n```\n---\nSome **docs** with `code`.\n\nMore.".into());
+        ed.hover_word = Some("call".into());
+        ed.hover_tooltip_anchor = Some(egui::pos2(100.0, 590.0));
+        ed.ctrl_hover_word_bounds = Some((1, 4, 8));
+        h.idle(&mut ed);
+        h.idle(&mut ed);
+        // Line numbers off + highlight off + no minimap also render.
+        h.config.editor.line_numbers = false;
+        h.config.editor.highlight_current_line = false;
+        h.config.editor.show_minimap = false;
+        ed.folded_lines.insert(0);
+        h.idle(&mut ed);
+        assert_eq!(
+            ed.signature_help_text.as_deref(),
+            Some("fn call(a: i32, b: i32)")
+        );
+        assert_eq!(ed.diag_hover_msg, None, "cleared while the pointer is away");
+    }
+
+    #[test]
+    fn large_files_use_debounced_or_viewport_highlighting() {
+        let mid = (0..2500)
+            .map(|i| format!("let v{i} = {i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&mid);
+        // First frame records the pending version and defers tokenization.
+        assert_eq!(ed.hl_pending_version, ed.content_version);
+        assert!(ed.hl_pending_at.is_some());
+        ed.hl_pending_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        h.idle(&mut ed);
+        assert!(!ed.highlighter.needs_update(ed.content_version));
+
+        let big = (0..4100)
+            .map(|i| format!("x{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&big);
+        assert!(!ed.highlighter.viewport_stale(ed.content_version, 0, 30));
+        ed.cursor.set_position(4000, 0);
+        ed.scroll_to_cursor = true;
+        h.idle(&mut ed);
+        h.idle(&mut ed);
+        assert!(!ed
+            .highlighter
+            .viewport_stale(ed.content_version, 3980, 4001));
+    }
+
+    #[test]
+    fn secondary_click_opens_context_menu_without_editing() {
+        let (mut h, mut ed) = setup("hello");
+        let p = Harness::pos(&ed, 0, 2);
+        let btn = |pressed| Event::PointerButton {
+            pos: p,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: NONE,
+        };
+        h.frame(&mut ed, vec![Event::PointerMoved(p), btn(true)], NONE);
+        h.frame(&mut ed, vec![btn(false)], NONE);
+        h.idle(&mut ed);
+        assert_eq!(text(&ed), "hello");
+    }
 }
