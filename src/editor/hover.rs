@@ -36,7 +36,7 @@ pub(super) fn parse_hover_sections(text: &str) -> Vec<HoverSection> {
                     sections.push(HoverSection::Text(t));
                 }
                 text_lines.clear();
-                code_lang = line.trim_start_matches('`').trim().to_string();
+                code_lang = line.trim_start().trim_start_matches('`').trim().to_string();
                 in_code = true;
             }
         } else if in_code {
@@ -119,7 +119,12 @@ pub(super) fn inline_markdown_job(text: &str, font_size: f32) -> egui::text::Lay
                 i += 1;
             }
             if i + 1 < chars.len() {
+                // Closing marker found.
                 i += 2;
+            } else {
+                // Unterminated: the rest of the line is bold.
+                bold.extend(&chars[i..]);
+                i = chars.len();
             }
             if !bold.is_empty() {
                 job.append(
@@ -273,7 +278,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: indented code fences keep the backticks in the language tag (\"```ts\" instead of \"ts\")"]
     fn indented_fence_language_is_parsed() {
         assert_eq!(
             describe("  ```ts\n  let a = 1;\n  ```"),
@@ -365,9 +369,29 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: unterminated **bold drops formatting on its last char (renders \"bol\" bold + \"d\" plain)"]
     fn unterminated_bold_consumes_rest_of_line() {
         assert_eq!(texts("x **bold"), vec!["x ", "bold"]);
+    }
+
+    #[test]
+    fn unterminated_bold_single_char_and_underscore_variant() {
+        assert_eq!(texts("x **b"), vec!["x ", "b"]);
+        assert_eq!(texts("x __bold"), vec!["x ", "bold"]);
+        let segs = segments("x **bold");
+        assert_eq!(segs[1].color, egui::Color32::WHITE);
+    }
+
+    #[test]
+    fn indented_closing_fence_and_tab_indent_are_handled() {
+        assert_eq!(
+            describe(
+                "	```rust
+fn a()
+    ```
+after"
+            ),
+            vec!["code[rust]:fn a()", "text:after"]
+        );
     }
 
     #[test]
