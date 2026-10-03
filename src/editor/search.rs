@@ -1,36 +1,44 @@
 use super::Editor;
 
 impl Editor {
+    /// Build the matcher for the current find settings (plain or regex,
+    /// case-sensitive or not). Shared by find and replace so they always agree.
+    /// Returns `None` for an empty query or an invalid regex.
+    fn find_regex(&self) -> Option<regex::Regex> {
+        if self.find_query.is_empty() {
+            return None;
+        }
+        let pattern = if self.find_use_regex {
+            self.find_query.clone()
+        } else {
+            regex::escape(&self.find_query)
+        };
+        regex::RegexBuilder::new(&pattern)
+            .case_insensitive(!self.find_case_sensitive)
+            .build()
+            .ok()
+    }
+
+    /// Replace the first (`all == false`) or every match of `re` in `line`.
+    /// Regex mode expands `$1`-style captures; plain mode inserts literally.
+    fn replace_in_line(&self, re: &regex::Regex, line: &str, all: bool) -> String {
+        let limit = if all { 0 } else { 1 };
+        if self.find_use_regex {
+            re.replacen(line, limit, self.replace_query.as_str())
+                .into_owned()
+        } else {
+            re.replacen(line, limit, regex::NoExpand(&self.replace_query))
+                .into_owned()
+        }
+    }
+
     pub(super) fn update_find_matches(&mut self) {
         self.find_matches.clear();
         // Pick up from nearest match to current cursor row
         let cursor_row = self.cursor.row;
-        if self.find_query.is_empty() {
-            return;
-        }
-        if self.find_use_regex {
-            let pattern = if self.find_case_sensitive {
-                regex::Regex::new(&self.find_query)
-            } else {
-                regex::Regex::new(&format!("(?i){}", self.find_query))
-            };
-            if let Ok(re) = pattern {
-                for i in 0..self.buffer.num_lines() {
-                    if re.is_match(&self.buffer.line(i)) {
-                        self.find_matches.push(i);
-                    }
-                }
-            }
-        } else if self.find_case_sensitive {
+        if let Some(re) = self.find_regex() {
             for i in 0..self.buffer.num_lines() {
-                if self.buffer.line(i).contains(&self.find_query) {
-                    self.find_matches.push(i);
-                }
-            }
-        } else {
-            let query = self.find_query.to_lowercase();
-            for i in 0..self.buffer.num_lines() {
-                if self.buffer.line(i).to_lowercase().contains(&query) {
+                if re.is_match(&self.buffer.line(i)) {
                     self.find_matches.push(i);
                 }
             }
@@ -76,54 +84,36 @@ impl Editor {
 
     /// Replace the first occurrence of `find_query` on the current match line.
     pub fn replace_current(&mut self) {
-        if self.find_query.is_empty() {
+        let Some(re) = self.find_regex() else {
             return;
-        }
+        };
         if self.find_matches.is_empty() {
             return;
         }
         let row = self.find_matches[self.find_current];
         let line = self.buffer.line(row);
-        let query_lc = self.find_query.to_lowercase();
-        if let Some(col) = line.to_lowercase().find(&query_lc) {
-            let q_len = self.find_query.chars().count();
-            // Delete the match
-            for _ in 0..q_len {
-                self.buffer.delete_char(row, col);
-            }
-            // Insert replacement
-            for (i, ch) in self.replace_query.chars().enumerate() {
-                self.buffer.insert_char(row, col + i, ch);
-            }
-            self.is_modified = true;
-            self.content_version = self.content_version.wrapping_add(1);
-            self.update_find_matches();
+        if !re.is_match(&line) {
+            return;
         }
+        let new_line = self.replace_in_line(&re, &line, false);
+        self.buffer.replace_line(row, &new_line);
+        self.is_modified = true;
+        self.content_version = self.content_version.wrapping_add(1);
+        self.update_find_matches();
     }
 
     /// Replace all occurrences of `find_query` with `replace_query`.
+    /// Each original occurrence is replaced exactly once (the replacement text
+    /// is never re-scanned, so a replacement containing the query terminates).
     pub fn replace_all_matches(&mut self) {
-        if self.find_query.is_empty() {
+        let Some(re) = self.find_regex() else {
             return;
-        }
-        let query_lc = self.find_query.to_lowercase();
-        let q_len = self.find_query.chars().count();
-        let rep = self.replace_query.clone();
-        let total = self.buffer.num_lines();
-        for row in 0..total {
-            loop {
-                let line = self.buffer.line(row);
-                let line_lc = line.to_lowercase();
-                if let Some(col) = line_lc.find(&query_lc) {
-                    for _ in 0..q_len {
-                        self.buffer.delete_char(row, col);
-                    }
-                    for (i, ch) in rep.chars().enumerate() {
-                        self.buffer.insert_char(row, col + i, ch);
-                    }
-                } else {
-                    break;
-                }
+        };
+        for row in 0..self.buffer.num_lines() {
+            let line = self.buffer.line(row);
+            if re.is_match(&line) {
+                let new_line = self.replace_in_line(&re, &line, true);
+                self.buffer.replace_line(row, &new_line);
             }
         }
         self.is_modified = true;
@@ -382,7 +372,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: replace uses the byte offset from str::find as a char column, corrupting lines with non-ASCII text before the match"]
     fn replace_current_handles_non_ascii_prefix() {
         let mut ed = editor("é foo");
         find(&mut ed, "foo");
@@ -392,7 +381,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: replace_current/replace_all ignore find_case_sensitive and always match case-insensitively"]
     fn replace_current_respects_case_sensitivity() {
         let mut ed = editor("foo Foo");
         ed.find_case_sensitive = true;
@@ -403,7 +391,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: replace_all_matches loops forever when the replacement contains the query"]
     fn replace_all_terminates_when_replacement_contains_query() {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -417,6 +404,84 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("replace_all_matches did not terminate");
         assert_eq!(result, "foobar");
+    }
+
+    #[test]
+    fn replace_all_handles_non_ascii_prefix() {
+        let mut ed = editor(
+            "é foo ü foo
+ßfooß",
+        );
+        ed.find_query = "foo".to_string();
+        ed.replace_query = "bar".to_string();
+        ed.replace_all_matches();
+        assert_eq!(
+            ed.buffer.to_string(),
+            "é bar ü bar
+ßbarß"
+        );
+    }
+
+    #[test]
+    fn replace_all_respects_case_sensitivity() {
+        let mut ed = editor(
+            "foo Foo
+FOO",
+        );
+        ed.find_case_sensitive = true;
+        ed.find_query = "Foo".to_string();
+        ed.replace_query = "X".to_string();
+        ed.replace_all_matches();
+        assert_eq!(
+            ed.buffer.to_string(),
+            "foo X
+FOO"
+        );
+    }
+
+    #[test]
+    fn replace_in_plain_mode_treats_query_and_replacement_literally() {
+        let mut ed = editor("a.b axb $1");
+        ed.find_query = ".".to_string();
+        ed.replace_query = "$0".to_string();
+        ed.replace_all_matches();
+        assert_eq!(ed.buffer.to_string(), "a$0b axb $1");
+    }
+
+    #[test]
+    fn replace_honours_regex_mode_with_captures() {
+        let mut ed = editor(
+            "foo1 Foo22
+bar",
+        );
+        ed.find_use_regex = true;
+        find(&mut ed, r"f(o+)(\d+)");
+        assert_eq!(ed.find_matches, vec![0]);
+        ed.replace_query = "${2}x".to_string();
+        ed.replace_current();
+        assert_eq!(
+            ed.buffer.to_string(),
+            "1x Foo22
+bar"
+        );
+        ed.replace_all_matches();
+        assert_eq!(
+            ed.buffer.to_string(),
+            "1x 22x
+bar"
+        );
+    }
+
+    #[test]
+    fn replace_with_invalid_regex_is_noop() {
+        let mut ed = editor("(foo)");
+        ed.find_use_regex = true;
+        ed.find_query = "(".to_string();
+        ed.replace_query = "x".to_string();
+        ed.replace_all_matches();
+        ed.replace_current();
+        assert_eq!(ed.buffer.to_string(), "(foo)");
+        assert!(!ed.is_modified);
     }
 
     fn select(ed: &mut Editor, row: usize, from: usize, to: usize) {
