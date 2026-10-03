@@ -203,3 +203,290 @@ impl Editor {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn editor(content: &str) -> Editor {
+        let mut ed = Editor::new();
+        ed.set_content(content.to_string(), None);
+        ed
+    }
+
+    fn write(root: &Path, rel: &str, content: &[u8]) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    // ── current_word_full ───────────────────────────────────────────────────
+
+    #[test]
+    fn current_word_full_extends_both_directions() {
+        let mut ed = editor("let foo_bar2 = 1;");
+        ed.cursor.set_position(0, 6);
+        assert_eq!(ed.current_word_full().as_deref(), Some("foo_bar2"));
+        ed.cursor.set_position(0, 4);
+        assert_eq!(ed.current_word_full_pub().as_deref(), Some("foo_bar2"));
+        // Cursor right after the word still picks it up.
+        ed.cursor.set_position(0, 12);
+        assert_eq!(ed.current_word_full().as_deref(), Some("foo_bar2"));
+    }
+
+    #[test]
+    fn current_word_full_returns_none_between_words() {
+        let mut ed = editor("a  = b");
+        ed.cursor.set_position(0, 2);
+        assert_eq!(ed.current_word_full(), None);
+        ed.cursor.set_position(0, 99);
+        assert_eq!(ed.current_word_full().as_deref(), Some("b"), "col clamped");
+    }
+
+    #[test]
+    fn current_word_full_prefers_single_line_selection() {
+        let mut ed = editor("hello world\nnext");
+        ed.cursor.set_position(0, 2);
+        ed.cursor.start_selection();
+        ed.cursor.set_position(0, 8);
+        assert_eq!(ed.current_word_full().as_deref(), Some("llo wo"));
+
+        // Multi-line selection is ignored: falls back to the word at the cursor.
+        ed.cursor.set_position(1, 2);
+        assert_eq!(ed.current_word_full().as_deref(), Some("next"));
+
+        // Empty selection is ignored too.
+        ed.cursor.clear_selection();
+        ed.cursor.set_position(0, 1);
+        ed.cursor.start_selection();
+        assert_eq!(ed.current_word_full().as_deref(), Some("hello"));
+    }
+
+    // ── current_word_at_cursor ──────────────────────────────────────────────
+
+    #[test]
+    fn current_word_at_cursor_returns_prefix_up_to_cursor() {
+        let mut ed = editor("call my_func(x)");
+        ed.cursor.set_position(0, 9);
+        assert_eq!(ed.current_word_at_cursor(), (5, "my_f".to_string()));
+        ed.cursor.set_position(0, 13);
+        assert_eq!(ed.current_word_at_cursor(), (13, String::new()));
+        ed.cursor.set_position(0, 0);
+        assert_eq!(ed.current_word_at_cursor(), (0, String::new()));
+        ed.cursor.set_position(0, 100);
+        assert_eq!(ed.current_word_at_cursor(), (15, String::new()));
+    }
+
+    // ── buffer_words ────────────────────────────────────────────────────────
+
+    #[test]
+    fn buffer_words_are_unique_sorted_and_at_least_two_chars() {
+        let ed = editor("let x = foo(bar, foo);\nbar_baz é9 a\nzz");
+        assert_eq!(
+            ed.buffer_words(),
+            vec!["bar", "bar_baz", "foo", "let", "zz", "é9"]
+        );
+        assert!(editor("").buffer_words().is_empty());
+    }
+
+    #[test]
+    fn hovered_word_reflects_state() {
+        let mut ed = editor("x");
+        assert_eq!(ed.hovered_word(), None);
+        ed.hover_word = Some("thing".to_string());
+        assert_eq!(ed.hovered_word(), Some("thing"));
+    }
+
+    // ── lookup_signature_in_buffer ──────────────────────────────────────────
+
+    #[test]
+    fn finds_function_signatures() {
+        let ed = editor(
+            "foo(1);\n    pub fn foo(a: u8) -> u8 {\n}\nfn bar (x: i32) {}\nasync fn baz() {\npub(crate) fn qux() {\nunsafe fn raw() {",
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("foo").as_deref(),
+            Some("pub fn foo(a: u8) -> u8")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("bar").as_deref(),
+            Some("fn bar (x: i32) {}")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("baz").as_deref(),
+            Some("async fn baz()")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("qux").as_deref(),
+            Some("pub(crate) fn qux()")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("raw").as_deref(),
+            Some("unsafe fn raw()")
+        );
+    }
+
+    #[test]
+    fn function_lookup_requires_exact_name_and_definition() {
+        let ed = editor("fn foobar() {}\nlet y = call_fn foo(1);");
+        assert_eq!(ed.lookup_signature_in_buffer("foo"), None);
+        assert_eq!(ed.lookup_signature_in_buffer("missing"), None);
+    }
+
+    #[test]
+    fn finds_struct_enum_and_type_definitions() {
+        let ed = editor(
+            "pub struct Foo {\nstruct Bar{\npub(crate) struct Baz {\nenum Color {\npub enum Shape{\npub type Res = Result<u8>;\ntype Id = u32;",
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("Foo").as_deref(),
+            Some("pub struct Foo")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("Bar").as_deref(),
+            Some("struct Bar")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("Baz").as_deref(),
+            Some("pub(crate) struct Baz")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("Color").as_deref(),
+            Some("enum Color")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("Shape").as_deref(),
+            Some("pub enum Shape")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("Res").as_deref(),
+            Some("pub type Res = Result<u8>")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("Id").as_deref(),
+            Some("type Id = u32")
+        );
+    }
+
+    #[test]
+    fn finds_let_bindings_up_to_the_initializer() {
+        let ed = editor("let mut count: usize = 0;\n  let x = 5;\nlet total: u8;\nlet mut y = 1;");
+        assert_eq!(
+            ed.lookup_signature_in_buffer("count").as_deref(),
+            Some("let mut count: usize")
+        );
+        assert_eq!(ed.lookup_signature_in_buffer("x").as_deref(), Some("let x"));
+        assert_eq!(
+            ed.lookup_signature_in_buffer("total").as_deref(),
+            Some("let total: u8")
+        );
+        assert_eq!(
+            ed.lookup_signature_in_buffer("y").as_deref(),
+            Some("let mut y")
+        );
+    }
+
+    #[test]
+    fn first_definition_wins() {
+        let ed = editor("pub enum Foo {\nstruct Foo {\nfn Foo() {");
+        assert_eq!(
+            ed.lookup_signature_in_buffer("Foo").as_deref(),
+            Some("pub enum Foo")
+        );
+    }
+
+    // ── lookup_signature_in_workspace ───────────────────────────────────────
+
+    #[test]
+    fn workspace_lookup_without_workspace_is_none() {
+        let ed = editor("");
+        assert_eq!(ed.lookup_signature_in_workspace("foo"), None);
+    }
+
+    #[test]
+    fn workspace_lookup_finds_definition_in_nested_source_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "README.md", b"fn helper(x: i32) docs");
+        write(
+            dir.path(),
+            "src/util/math.rs",
+            b"// math\npub fn helper(x: i32) -> i32 {\n    x\n}\n",
+        );
+        let mut ed = editor("");
+        ed.workspace_path = Some(dir.path().to_path_buf());
+        assert_eq!(
+            ed.lookup_signature_in_workspace("helper").as_deref(),
+            Some("pub fn helper(x: i32) -> i32")
+        );
+        assert_eq!(ed.lookup_signature_in_workspace("absent"), None);
+    }
+
+    #[test]
+    fn workspace_lookup_matches_other_languages_and_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "app.py", b"class X:\n  pass\n");
+        write(dir.path(), "types.ts", b"type Opts = { a: number };\n");
+        let mut ed = editor("");
+        ed.workspace_path = Some(dir.path().to_path_buf());
+        assert_eq!(
+            ed.lookup_signature_in_workspace("Opts").as_deref(),
+            Some("type Opts = { a: number };")
+        );
+    }
+
+    #[test]
+    fn workspace_lookup_skips_ignored_dirs_other_extensions_and_bad_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "target/debug/gen.rs", b"fn hidden() {}");
+        write(dir.path(), ".git/hooks/x.rs", b"fn hidden() {}");
+        write(dir.path(), "node_modules/m/index.js", b"fn hidden() {}");
+        write(dir.path(), ".cargo/registry/a.rs", b"fn hidden() {}");
+        write(dir.path(), "notes.txt", b"fn hidden() {}");
+        write(dir.path(), "binary.rs", &[0xff, 0xfe, 0x00, 0x80]);
+        let mut ed = editor("");
+        ed.workspace_path = Some(dir.path().to_path_buf());
+        assert_eq!(ed.lookup_signature_in_workspace("hidden"), None);
+    }
+
+    #[test]
+    fn workspace_lookup_missing_directory_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ed = editor("");
+        ed.workspace_path = Some(dir.path().join("does-not-exist"));
+        assert_eq!(ed.lookup_signature_in_workspace("foo"), None);
+    }
+
+    #[test]
+    fn workspace_lookup_does_not_descend_past_depth_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "1/2/3/4/5/6/7/8/9/too_deep.rs",
+            b"fn buried() {}",
+        );
+        write(dir.path(), "1/2/3/4/5/6/7/8/ok.rs", b"fn shallow() {\n}");
+        let mut ed = editor("");
+        ed.workspace_path = Some(dir.path().to_path_buf());
+        assert_eq!(ed.lookup_signature_in_workspace("buried"), None);
+        assert_eq!(
+            ed.lookup_signature_in_workspace("shallow").as_deref(),
+            Some("fn shallow()")
+        );
+    }
+
+    #[test]
+    #[ignore = "BUG: hitting a directory deeper than 8 levels aborts the whole workspace search (break instead of continue)"]
+    fn workspace_lookup_continues_past_deep_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        // "aaa" is pushed first so the deep "zzz" chain is popped (and aborts) before it.
+        write(dir.path(), "aaa/def.rs", b"fn target_fn() {\n}");
+        write(dir.path(), "zzz/1/2/3/4/5/6/7/8/9/deep.rs", b"// nothing");
+        let mut ed = editor("");
+        ed.workspace_path = Some(dir.path().to_path_buf());
+        assert_eq!(
+            ed.lookup_signature_in_workspace("target_fn").as_deref(),
+            Some("fn target_fn()")
+        );
+    }
+}
