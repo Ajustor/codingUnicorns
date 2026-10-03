@@ -16,6 +16,7 @@ pub mod runner;
 mod tabs;
 mod terminal;
 mod ui;
+mod updater;
 
 use app::CodingUnicorns;
 
@@ -166,7 +167,6 @@ fn main() -> eframe::Result<()> {
         viewport,
         ..Default::default()
     };
-
 
     eframe::run_native(
         "Coding Unicorns",

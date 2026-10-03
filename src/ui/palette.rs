@@ -19,6 +19,7 @@ pub enum PaletteCommand {
     Find,
     FindReplace,
     RestartLsp,
+    CheckForUpdates,
 }
 
 impl PaletteCommand {
@@ -35,6 +36,7 @@ impl PaletteCommand {
             PaletteCommand::Find,
             PaletteCommand::FindReplace,
             PaletteCommand::RestartLsp,
+            PaletteCommand::CheckForUpdates,
         ]
     }
 
@@ -51,6 +53,7 @@ impl PaletteCommand {
             Self::Find => "Find in File",
             Self::FindReplace => "Find & Replace",
             Self::RestartLsp => "Restart LSP Server",
+            Self::CheckForUpdates => "Check for Updates",
         }
     }
 
@@ -67,6 +70,7 @@ impl PaletteCommand {
             Self::Find => "Ctrl+F",
             Self::FindReplace => "Ctrl+H",
             Self::RestartLsp => "",
+            Self::CheckForUpdates => "",
         }
     }
 
@@ -83,6 +87,7 @@ impl PaletteCommand {
             Self::Find => "search text in current file",
             Self::FindReplace => "search and substitute replace text",
             Self::RestartLsp => "restart language server diagnostics",
+            Self::CheckForUpdates => "upgrade new version release install",
         }
     }
 }
@@ -182,7 +187,10 @@ impl CommandPalette {
             for cmd in PaletteCommand::all() {
                 let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
-                    || self.matcher.fuzzy_match(&haystack, &effective_query).is_some()
+                    || self
+                        .matcher
+                        .fuzzy_match(&haystack, &effective_query)
+                        .is_some()
                 {
                     self.entries.push(PaletteEntry::Command(cmd.clone()));
                 }
@@ -213,7 +221,10 @@ impl CommandPalette {
             for cmd in PaletteCommand::all() {
                 let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
-                    || self.matcher.fuzzy_match(&haystack, &effective_query).is_some()
+                    || self
+                        .matcher
+                        .fuzzy_match(&haystack, &effective_query)
+                        .is_some()
                 {
                     self.entries.push(PaletteEntry::Command(cmd.clone()));
                 }
@@ -315,8 +326,7 @@ impl CommandPalette {
                                     );
                                     let resp = ui.selectable_label(
                                         is_selected,
-                                        egui::RichText::new(label)
-                                            .color(palette.accent),
+                                        egui::RichText::new(label).color(palette.accent),
                                     );
                                     if is_selected {
                                         resp.scroll_to_me(None);

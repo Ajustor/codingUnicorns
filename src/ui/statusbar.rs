@@ -85,12 +85,8 @@ impl StatusBar {
                     match lsp_status {
                         LspStatus::Inactive => {}
                         LspStatus::Connecting => {
-                            ui.label(
-                                egui::RichText::new("⬤ LSP")
-                                    .color(palette.warning)
-                                    .small(),
-                            )
-                            .on_hover_text("Connecting to language server…");
+                            ui.label(egui::RichText::new("⬤ LSP").color(palette.warning).small())
+                                .on_hover_text("Connecting to language server…");
                             ui.separator();
                         }
                         LspStatus::Loading => {
@@ -103,19 +99,11 @@ impl StatusBar {
                             ui.separator();
                         }
                         LspStatus::Ready => {
-                            ui.label(
-                                egui::RichText::new("⬤ LSP")
-                                    .color(palette.success)
-                                    .small(),
-                            );
+                            ui.label(egui::RichText::new("⬤ LSP").color(palette.success).small());
                             ui.separator();
                         }
                         LspStatus::Error => {
-                            ui.label(
-                                egui::RichText::new("⬤ LSP")
-                                    .color(palette.error)
-                                    .small(),
-                            );
+                            ui.label(egui::RichText::new("⬤ LSP").color(palette.error).small());
                             ui.separator();
                         }
                     }
