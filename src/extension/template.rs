@@ -216,3 +216,92 @@ commands  = ["my-command"]  # command palette entries
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generates_project_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        generate_extension_template("my-ext", tmp.path()).unwrap();
+        let d = tmp.path().join("my-ext");
+        for f in ["Cargo.toml", "manifest.toml", "README.md", "src/lib.rs"] {
+            assert!(d.join(f).is_file(), "{f} missing");
+        }
+    }
+
+    #[test]
+    fn cargo_toml_is_a_valid_cdylib_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        generate_extension_template("my-ext", tmp.path()).unwrap();
+        let s = std::fs::read_to_string(tmp.path().join("my-ext/Cargo.toml")).unwrap();
+        let v: toml::Value = toml::from_str(&s).unwrap();
+        assert_eq!(v["package"]["name"].as_str(), Some("my-ext"));
+        assert_eq!(
+            v["lib"]["crate-type"].as_array().unwrap()[0].as_str(),
+            Some("cdylib")
+        );
+        assert!(v["dependencies"].get("egui").is_some());
+    }
+
+    #[test]
+    fn manifest_parses_as_extension_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        generate_extension_template("lang-x", tmp.path()).unwrap();
+        let s = std::fs::read_to_string(tmp.path().join("lang-x/manifest.toml")).unwrap();
+        let m: crate::extension::ExtensionManifest = toml::from_str(&s).unwrap();
+        assert_eq!(m.extension.id, "author.lang-x");
+        assert_eq!(m.extension.name, "lang-x");
+        assert_eq!(m.extension.version, "0.1.0");
+        assert!(m.capabilities.languages.is_empty());
+    }
+
+    #[test]
+    fn lib_rs_exports_ffi_entry_points() {
+        let tmp = tempfile::tempdir().unwrap();
+        generate_extension_template("e", tmp.path()).unwrap();
+        let s = std::fs::read_to_string(tmp.path().join("e/src/lib.rs")).unwrap();
+        for sym in [
+            "fn create_plugin",
+            "fn plugin_name",
+            "fn plugin_version",
+            "fn hover_info_ffi",
+            "fn lsp_server_command_ffi",
+            "fn free_hover_info",
+        ] {
+            assert!(s.contains(sym), "{sym} missing");
+        }
+        assert_eq!(s.matches("#[no_mangle]").count(), 6);
+    }
+
+    #[test]
+    fn readme_mentions_name_and_platform_libraries() {
+        let tmp = tempfile::tempdir().unwrap();
+        generate_extension_template("demo", tmp.path()).unwrap();
+        let s = std::fs::read_to_string(tmp.path().join("demo/README.md")).unwrap();
+        assert!(s.starts_with("# demo\n"));
+        assert!(s.contains("libdemo.so"));
+        assert!(s.contains("libdemo.dylib"));
+        assert!(s.contains("demo.dll"));
+        assert!(s.contains("author.demo"));
+    }
+
+    #[test]
+    fn regenerating_overwrites_existing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        generate_extension_template("e", tmp.path()).unwrap();
+        std::fs::write(tmp.path().join("e/manifest.toml"), "junk").unwrap();
+        generate_extension_template("e", tmp.path()).unwrap();
+        let s = std::fs::read_to_string(tmp.path().join("e/manifest.toml")).unwrap();
+        assert!(s.contains("[extension]"));
+    }
+
+    #[test]
+    fn fails_when_output_dir_is_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(generate_extension_template("e", &file).is_err());
+    }
+}

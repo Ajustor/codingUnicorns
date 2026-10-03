@@ -168,3 +168,90 @@ fn shell_exists(path: &str) -> bool {
             .unwrap_or(false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_powershell_gets_standard_args() {
+        for sh in ["pwsh", "C:\\Tools\\PowerShell.exe", "PWSH.EXE"] {
+            let (path, args) = resolve_shell(sh);
+            assert_eq!(path, sh);
+            assert_eq!(args, ps_args());
+        }
+    }
+
+    #[test]
+    fn user_non_powershell_gets_no_args() {
+        let (path, args) = resolve_shell("/usr/bin/fish");
+        assert_eq!(path, "/usr/bin/fish");
+        assert!(args.is_empty());
+        let (path, args) = resolve_shell("cmd.exe");
+        assert_eq!(path, "cmd.exe");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn ps_args_match_constant() {
+        assert_eq!(
+            ps_args(),
+            vec!["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+        );
+    }
+
+    #[test]
+    fn discover_shells_has_platform_candidates() {
+        let shells = discover_shells();
+        assert!(!shells.is_empty());
+        #[cfg(windows)]
+        {
+            assert!(shells[0].path.ends_with("powershell.exe"));
+            assert_eq!(shells[0].args, ps_args());
+            assert_eq!(shells.last().unwrap().path, "cmd.exe");
+            assert!(shells
+                .iter()
+                .any(|s| s.path.ends_with("bash.exe") && s.args == vec!["--login"]));
+            assert!(shells.iter().any(|s| s.path == "wsl.exe"));
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(shells.last().unwrap().path, "/bin/sh");
+            assert!(shells.iter().any(|s| s.path == "/bin/bash"));
+        }
+    }
+
+    #[test]
+    fn shell_exists_checks_absolute_paths_on_disk() {
+        let exe = std::env::current_exe().unwrap();
+        assert!(shell_exists(&exe.to_string_lossy()));
+        let missing = std::env::temp_dir().join("definitely-missing-shell-xyz.exe");
+        assert!(!shell_exists(&missing.to_string_lossy()));
+    }
+
+    #[test]
+    fn shell_exists_searches_path_for_relative_names() {
+        assert!(!shell_exists("definitely-not-a-shell-xyz"));
+        #[cfg(windows)]
+        assert!(shell_exists("cmd.exe"));
+        #[cfg(not(windows))]
+        assert!(shell_exists("sh"));
+    }
+
+    #[test]
+    fn auto_resolution_returns_an_existing_shell() {
+        let (path, _args) = resolve_shell("");
+        assert!(!path.is_empty());
+        assert!(shell_exists(&path));
+    }
+
+    #[test]
+    fn available_shells_are_named_by_file_name() {
+        let shells = list_available_shells();
+        assert!(!shells.is_empty(), "at least the fallback shell exists");
+        for (name, path) in &shells {
+            assert!(path.ends_with(name.as_str()), "{name} vs {path}");
+            assert!(!name.contains('\\') && !name.contains('/'));
+        }
+    }
+}
