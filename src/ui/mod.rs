@@ -1,9 +1,9 @@
 pub mod breadcrumbs;
 pub mod debugger;
-pub mod minimap;
 pub mod git_panel;
 pub mod layout;
 pub mod merge_panel;
+pub mod minimap;
 pub mod palette;
 pub mod run_panel;
 pub mod search;

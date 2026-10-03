@@ -97,15 +97,12 @@ impl FileTree {
         opened
     }
 
-    fn show_entry_recursive(
-        ui: &mut egui::Ui,
-        entry: &mut FileEntry,
-        ctx: &mut ShowContext<'_>,
-    ) {
+    fn show_entry_recursive(ui: &mut egui::Ui, entry: &mut FileEntry, ctx: &mut ShowContext<'_>) {
         let indent = entry.depth as f32 * 14.0;
 
         // Inline rename mode
-        let is_renaming = ctx.rename_state
+        let is_renaming = ctx
+            .rename_state
             .as_ref()
             .map(|(p, _)| p == &entry.path)
             .unwrap_or(false);
@@ -181,7 +178,11 @@ impl FileTree {
                 });
             } else {
                 let (icon, color) = file_icon(&entry.name);
-                let is_selected = ctx.selected.as_ref().map(|s| s == &entry.path).unwrap_or(false);
+                let is_selected = ctx
+                    .selected
+                    .as_ref()
+                    .map(|s| s == &entry.path)
+                    .unwrap_or(false);
                 let icon_label = egui::RichText::new(icon).color(color);
                 ui.label(icon_label);
                 let resp = ui.selectable_label(

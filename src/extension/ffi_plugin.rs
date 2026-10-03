@@ -148,7 +148,8 @@ impl FfiLangPlugin {
 
     fn call_tokenize_document(&self, text: &str, tsx: bool) -> Option<String> {
         let func = if tsx {
-            self.tokenize_document_tsx_fn.or(self.tokenize_document_fn)?
+            self.tokenize_document_tsx_fn
+                .or(self.tokenize_document_fn)?
         } else {
             self.tokenize_document_fn?
         };
@@ -410,6 +411,9 @@ mod token_parse_tests {
         let json = r#"[{"text":"$","kind":"string"},{"text":"\"hi \"","kind":"string"},{"text":"{","kind":"normal"},{"text":"name","kind":"normal"},{"text":"}","kind":"normal"},{"text":" x\"","kind":"string"}]"#;
         let toks = parse_token_json(json).expect("should parse");
         assert_eq!(toks.len(), 6);
-        assert_eq!(toks.iter().filter(|t| t.kind == TokenKind::String).count(), 3);
+        assert_eq!(
+            toks.iter().filter(|t| t.kind == TokenKind::String).count(),
+            3
+        );
     }
 }

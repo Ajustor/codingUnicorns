@@ -8,9 +8,17 @@ pub enum ClaudeEvent {
     /// A complete assistant text block.
     AssistantText(String),
     /// Claude is invoking a tool.
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     /// Final event of the turn.
-    Result { text: String, cost_usd: f64, session_id: Option<String> },
+    Result {
+        text: String,
+        cost_usd: f64,
+        session_id: Option<String>,
+    },
 }
 
 /// Parse one stdout line into zero or more events.
@@ -26,22 +34,37 @@ pub fn parse_line(line: &str) -> Vec<ClaudeEvent> {
     match v.get("type").and_then(|t| t.as_str()) {
         Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("init") => {
             match v.get("session_id").and_then(|s| s.as_str()) {
-                Some(id) => vec![ClaudeEvent::Init { session_id: id.to_string() }],
+                Some(id) => vec![ClaudeEvent::Init {
+                    session_id: id.to_string(),
+                }],
                 None => vec![],
             }
         }
         Some("assistant") => parse_assistant(&v),
         Some("result") => vec![ClaudeEvent::Result {
-            text: v.get("result").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-            cost_usd: v.get("total_cost_usd").and_then(|c| c.as_f64()).unwrap_or(0.0),
-            session_id: v.get("session_id").and_then(|s| s.as_str()).map(|s| s.to_string()),
+            text: v
+                .get("result")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string(),
+            cost_usd: v
+                .get("total_cost_usd")
+                .and_then(|c| c.as_f64())
+                .unwrap_or(0.0),
+            session_id: v
+                .get("session_id")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string()),
         }],
         _ => vec![],
     }
 }
 
 fn parse_assistant(v: &Value) -> Vec<ClaudeEvent> {
-    let Some(content) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array())
+    let Some(content) = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
     else {
         return vec![];
     };
@@ -56,8 +79,16 @@ fn parse_assistant(v: &Value) -> Vec<ClaudeEvent> {
                 }
             }
             Some("tool_use") => out.push(ClaudeEvent::ToolUse {
-                id: block.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string(),
-                name: block.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                id: block
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                name: block
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 input: block.get("input").cloned().unwrap_or(Value::Null),
             }),
             _ => {}
@@ -73,7 +104,12 @@ mod tests {
     #[test]
     fn parses_init_session_id() {
         let line = r#"{"type":"system","subtype":"init","session_id":"abc123","model":"x"}"#;
-        assert_eq!(parse_line(line), vec![ClaudeEvent::Init { session_id: "abc123".into() }]);
+        assert_eq!(
+            parse_line(line),
+            vec![ClaudeEvent::Init {
+                session_id: "abc123".into()
+            }]
+        );
     }
 
     #[test]
@@ -95,7 +131,11 @@ mod tests {
         let line = r#"{"type":"result","result":"done","total_cost_usd":0.01,"session_id":"abc"}"#;
         assert_eq!(
             parse_line(line),
-            vec![ClaudeEvent::Result { text: "done".into(), cost_usd: 0.01, session_id: Some("abc".into()) }]
+            vec![ClaudeEvent::Result {
+                text: "done".into(),
+                cost_usd: 0.01,
+                session_id: Some("abc".into())
+            }]
         );
     }
 

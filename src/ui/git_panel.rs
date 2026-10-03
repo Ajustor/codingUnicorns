@@ -314,7 +314,10 @@ impl GitPanel {
                                                 ),
                                                 egui::pos2(rect.left() + line_x, rect.bottom()),
                                             ],
-                                            egui::Stroke::new(1.5, egui::Color32::from_gray(100)),
+                                            egui::Stroke::new(
+                                                1.5_f32,
+                                                egui::Color32::from_gray(100),
+                                            ),
                                         );
                                     }
 
@@ -323,7 +326,7 @@ impl GitPanel {
                                     painter.circle_stroke(
                                         dot_center,
                                         4.0,
-                                        egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+                                        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(60)),
                                     );
 
                                     // Text: hash + message + branch tags

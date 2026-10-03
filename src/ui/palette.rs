@@ -182,7 +182,10 @@ impl CommandPalette {
             for cmd in PaletteCommand::all() {
                 let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
-                    || self.matcher.fuzzy_match(&haystack, &effective_query).is_some()
+                    || self
+                        .matcher
+                        .fuzzy_match(&haystack, &effective_query)
+                        .is_some()
                 {
                     self.entries.push(PaletteEntry::Command(cmd.clone()));
                 }
@@ -213,7 +216,10 @@ impl CommandPalette {
             for cmd in PaletteCommand::all() {
                 let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
-                    || self.matcher.fuzzy_match(&haystack, &effective_query).is_some()
+                    || self
+                        .matcher
+                        .fuzzy_match(&haystack, &effective_query)
+                        .is_some()
                 {
                     self.entries.push(PaletteEntry::Command(cmd.clone()));
                 }
@@ -315,8 +321,7 @@ impl CommandPalette {
                                     );
                                     let resp = ui.selectable_label(
                                         is_selected,
-                                        egui::RichText::new(label)
-                                            .color(palette.accent),
+                                        egui::RichText::new(label).color(palette.accent),
                                     );
                                     if is_selected {
                                         resp.scroll_to_me(None);

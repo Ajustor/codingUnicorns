@@ -64,10 +64,22 @@ pub struct Palette {
 
 impl Palette {
     pub fn from_theme(theme: &crate::config::Theme) -> Self {
-        let bg = Color32::from_rgb(theme.background[0], theme.background[1], theme.background[2]);
-        let fg = Color32::from_rgb(theme.foreground[0], theme.foreground[1], theme.foreground[2]);
+        let bg = Color32::from_rgb(
+            theme.background[0],
+            theme.background[1],
+            theme.background[2],
+        );
+        let fg = Color32::from_rgb(
+            theme.foreground[0],
+            theme.foreground[1],
+            theme.foreground[2],
+        );
         let accent = Color32::from_rgb(theme.accent[0], theme.accent[1], theme.accent[2]);
-        let toward = if is_dark(bg) { Color32::WHITE } else { Color32::BLACK };
+        let toward = if is_dark(bg) {
+            Color32::WHITE
+        } else {
+            Color32::BLACK
+        };
         let alpha = |c: Color32, a: u8| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
         Self {
             bg,
@@ -112,7 +124,15 @@ pub struct Spacing {
 
 impl Default for Spacing {
     fn default() -> Self {
-        Self { xs: 2.0, sm: 4.0, md: 8.0, lg: 12.0, round_sm: 4.0, round_md: 6.0, round_lg: 8.0 }
+        Self {
+            xs: 2.0,
+            sm: 4.0,
+            md: 8.0,
+            lg: 12.0,
+            round_sm: 4.0,
+            round_md: 6.0,
+            round_lg: 8.0,
+        }
     }
 }
 
@@ -123,26 +143,41 @@ pub fn apply_theme(ctx: &egui::Context, config: &crate::config::Config) -> (Pale
     let p = Palette::from_theme(&config.theme);
     let spacing = Spacing::default();
 
-    let mut v = if is_dark(p.bg) { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut v = if is_dark(p.bg) {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     v.panel_fill = p.surface;
     v.window_fill = p.surface_raised;
     v.extreme_bg_color = p.bg;
     v.override_text_color = Some(p.text);
     v.hyperlink_color = p.accent;
     v.selection.bg_fill = p.selection;
-    v.selection.stroke = egui::Stroke::new(1.0, p.accent);
+    v.selection.stroke = egui::Stroke::new(1.0_f32, p.accent);
     v.widgets.inactive.weak_bg_fill = p.surface;
     v.widgets.hovered.weak_bg_fill = p.border;
     v.widgets.active.weak_bg_fill = p.border_strong;
-    v.window_stroke = egui::Stroke::new(1.0, p.border);
+    v.window_stroke = egui::Stroke::new(1.0_f32, p.border);
     ctx.set_visuals(v);
 
     ctx.style_mut(|style| {
         use egui::{FontFamily, FontId, TextStyle};
-        style.text_styles.insert(TextStyle::Small, FontId::new(12.0, FontFamily::Proportional));
-        style.text_styles.insert(TextStyle::Body, FontId::new(13.0, FontFamily::Proportional));
-        style.text_styles.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
-        style.text_styles.insert(TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional));
+        style.text_styles.insert(
+            TextStyle::Small,
+            FontId::new(12.0, FontFamily::Proportional),
+        );
+        style
+            .text_styles
+            .insert(TextStyle::Body, FontId::new(13.0, FontFamily::Proportional));
+        style.text_styles.insert(
+            TextStyle::Button,
+            FontId::new(13.0, FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            TextStyle::Heading,
+            FontId::new(16.0, FontFamily::Proportional),
+        );
     });
 
     (p, spacing)
@@ -173,7 +208,10 @@ mod tests {
     #[test]
     fn on_picks_contrasting_text() {
         assert_eq!(on(Color32::from_rgb(0, 122, 204)), Color32::WHITE);
-        assert_eq!(on(Color32::from_rgb(166, 226, 46)), Color32::from_rgb(20, 20, 20));
+        assert_eq!(
+            on(Color32::from_rgb(166, 226, 46)),
+            Color32::from_rgb(20, 20, 20)
+        );
     }
 
     fn dark_theme() -> crate::config::Theme {
