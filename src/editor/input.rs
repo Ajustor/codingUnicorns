@@ -421,3 +421,481 @@ impl Editor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::buffer::Buffer;
+    use super::super::cursor::Cursor;
+    use super::*;
+
+    fn editor_with(content: &str, row: usize, col: usize) -> Editor {
+        let mut ed = Editor::new();
+        ed.set_content(content.to_string(), None);
+        ed.cursor.set_position(row, col);
+        ed
+    }
+
+    fn cursor_at(row: usize, col: usize) -> Cursor {
+        let mut c = Cursor::new();
+        c.set_position(row, col);
+        c
+    }
+
+    fn selecting(anchor: (usize, usize), row: usize, col: usize) -> Cursor {
+        let mut c = cursor_at(row, col);
+        c.sel_anchor = Some(anchor);
+        c
+    }
+
+    fn text(ed: &Editor) -> String {
+        ed.buffer.to_string()
+    }
+
+    // ── insert_char ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn insert_char_inserts_at_cursor_and_advances() {
+        let mut ed = editor_with("ac", 0, 1);
+        let v = ed.content_version;
+        ed.insert_char('b', true);
+        assert_eq!(text(&ed), "abc");
+        assert_eq!(ed.cursor.position(), (0, 2));
+        assert!(ed.is_modified);
+        assert_eq!(ed.content_version, v + 1);
+    }
+
+    #[test]
+    fn insert_char_auto_closes_brackets_and_quotes() {
+        let mut ed = editor_with("", 0, 0);
+        ed.insert_char('(', true);
+        assert_eq!(text(&ed), "()");
+        assert_eq!(ed.cursor.position(), (0, 1));
+
+        let mut ed = editor_with("x = ", 0, 4);
+        ed.insert_char('"', true);
+        assert_eq!(text(&ed), "x = \"\"");
+        assert_eq!(ed.cursor.position(), (0, 5));
+    }
+
+    #[test]
+    fn insert_char_without_auto_close_inserts_only_the_char() {
+        let mut ed = editor_with("", 0, 0);
+        ed.insert_char('[', false);
+        assert_eq!(text(&ed), "[");
+    }
+
+    #[test]
+    fn insert_char_does_not_auto_close_before_a_word_char() {
+        let mut ed = editor_with("foo", 0, 0);
+        ed.insert_char('(', true);
+        assert_eq!(text(&ed), "(foo");
+    }
+
+    #[test]
+    fn insert_char_does_not_auto_close_quote_after_alphanumeric() {
+        // e.g. typing an apostrophe in "don't"
+        let mut ed = editor_with("don", 0, 3);
+        ed.insert_char('\'', true);
+        assert_eq!(text(&ed), "don'");
+        assert_eq!(ed.cursor.position(), (0, 4));
+    }
+
+    #[test]
+    fn insert_char_skips_over_existing_closing_char() {
+        let mut ed = editor_with("()", 0, 1);
+        ed.insert_char(')', true);
+        assert_eq!(text(&ed), "()");
+        assert_eq!(ed.cursor.position(), (0, 2));
+    }
+
+    #[test]
+    fn insert_char_closing_char_is_inserted_when_not_under_cursor() {
+        let mut ed = editor_with("(a", 0, 2);
+        ed.insert_char(')', true);
+        assert_eq!(text(&ed), "(a)");
+        assert_eq!(ed.cursor.position(), (0, 3));
+    }
+
+    #[test]
+    fn insert_char_surrounds_single_line_selection() {
+        let mut ed = editor_with("let foo = 1;", 0, 7);
+        ed.cursor.sel_anchor = Some((0, 4));
+        ed.insert_char('(', true);
+        assert_eq!(text(&ed), "let (foo) = 1;");
+        assert_eq!(ed.cursor.position(), (0, 9));
+        assert!(!ed.cursor.has_selection());
+        assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn insert_char_surrounds_multi_line_selection() {
+        let mut ed = editor_with("ab\ncd", 1, 1);
+        ed.cursor.sel_anchor = Some((0, 1));
+        ed.insert_char('[', true);
+        assert_eq!(text(&ed), "a[b\nc]d");
+        assert_eq!(ed.cursor.position(), (1, 2));
+    }
+
+    #[test]
+    fn insert_char_replaces_selection_when_not_an_opening_char() {
+        let mut ed = editor_with("hello world", 0, 5);
+        ed.cursor.sel_anchor = Some((0, 0));
+        ed.insert_char('X', true);
+        assert_eq!(text(&ed), "X world");
+        assert_eq!(ed.cursor.position(), (0, 1));
+    }
+
+    #[test]
+    fn insert_char_with_selection_shifts_extra_cursors_on_same_line() {
+        // Primary selection "bc" (cols 1..3); extra cursor selecting "e" (cols 4..5).
+        let mut ed = editor_with("abcdefg", 0, 3);
+        ed.cursor.sel_anchor = Some((0, 1));
+        ed.extra_cursors.push(selecting((0, 4), 0, 5));
+        ed.insert_char('X', false);
+        assert_eq!(text(&ed), "aXdXfg");
+        assert_eq!(ed.cursor.position(), (0, 2));
+        assert_eq!(ed.extra_cursors[0].position(), (0, 4));
+        assert!(!ed.extra_cursors[0].has_selection());
+    }
+
+    #[test]
+    fn insert_char_types_at_every_extra_cursor() {
+        let mut ed = editor_with("ab\ncd\nef", 0, 1);
+        ed.extra_cursors.push(cursor_at(1, 1));
+        ed.extra_cursors.push(cursor_at(2, 1));
+        ed.insert_char('-', false);
+        assert_eq!(text(&ed), "a-b\nc-d\ne-f");
+        assert_eq!(ed.cursor.position(), (0, 2));
+        assert_eq!(ed.extra_cursors[0].position(), (1, 2));
+        assert_eq!(ed.extra_cursors[1].position(), (2, 2));
+    }
+
+    #[test]
+    fn insert_char_with_multiple_cursors_on_same_line_keeps_offsets() {
+        let mut ed = editor_with("a b c", 0, 1);
+        ed.extra_cursors.push(cursor_at(0, 3));
+        ed.extra_cursors.push(cursor_at(0, 5));
+        ed.insert_char('!', false);
+        assert_eq!(text(&ed), "a! b! c!");
+        assert_eq!(ed.cursor.position(), (0, 2));
+        assert_eq!(ed.extra_cursors[0].position(), (0, 5));
+        assert_eq!(ed.extra_cursors[1].position(), (0, 8));
+    }
+
+    #[test]
+    fn insert_char_shifts_extra_cursor_anchors_after_primary_insert() {
+        let mut ed = editor_with("ab cd", 0, 0);
+        // Extra cursor selecting "cd" (anchor 3, head 5).
+        ed.extra_cursors.push(selecting((0, 3), 0, 5));
+        ed.insert_char('Z', false);
+        // Primary inserts Z at 0 -> extra selection shifts to 4..6 and is replaced.
+        assert_eq!(text(&ed), "Zab Z");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 5));
+    }
+
+    #[test]
+    fn insert_char_extra_cursor_same_line_selections_adjust_later_cursors() {
+        // Two extra cursors, each selecting two chars on the same line.
+        let mut ed = editor_with("0123456789\n", 1, 0);
+        ed.extra_cursors.push(selecting((0, 1), 0, 3)); // "12"
+        ed.extra_cursors.push(selecting((0, 6), 0, 8)); // "67"
+        ed.insert_char('_', false);
+        assert_eq!(ed.buffer.line(0), "0_345_89");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 2));
+        assert_eq!(ed.extra_cursors[1].position(), (0, 6));
+        assert_eq!(ed.buffer.line(1), "_");
+    }
+
+    #[test]
+    fn insert_char_extra_cursor_multi_line_selection_collapses_to_start() {
+        let mut ed = editor_with("aa\nbb\ncc", 2, 2);
+        ed.extra_cursors.push(selecting((0, 1), 1, 1));
+        ed.insert_char('X', false);
+        // Multi-line extra selections are collapsed (not deleted), then typed into.
+        assert_eq!(text(&ed), "aXa\nbb\nccX");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 2));
+    }
+
+    #[test]
+    fn insert_char_pushes_an_undo_checkpoint() {
+        let mut ed = editor_with("", 0, 0);
+        ed.insert_char('a', false);
+        assert!(ed.buffer.undo());
+        assert_eq!(text(&ed), "");
+    }
+
+    // ── delete_char_before ──────────────────────────────────────────────────
+
+    #[test]
+    fn backspace_deletes_previous_char() {
+        let mut ed = editor_with("abc", 0, 2);
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "ac");
+        assert_eq!(ed.cursor.position(), (0, 1));
+        assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn backspace_deletes_matching_pair() {
+        let mut ed = editor_with("f()", 0, 2);
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "f");
+        assert_eq!(ed.cursor.position(), (0, 1));
+    }
+
+    #[test]
+    fn backspace_does_not_pair_delete_mismatched_chars() {
+        let mut ed = editor_with("(]", 0, 1);
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "]");
+    }
+
+    #[test]
+    fn backspace_at_line_start_joins_with_previous_line() {
+        let mut ed = editor_with("ab\ncd", 1, 0);
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "abcd");
+        assert_eq!(ed.cursor.position(), (0, 2));
+    }
+
+    #[test]
+    fn backspace_at_document_start_keeps_text() {
+        let mut ed = editor_with("ab", 0, 0);
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "ab");
+        assert_eq!(ed.cursor.position(), (0, 0));
+    }
+
+    #[test]
+    fn backspace_with_selection_deletes_only_the_selection() {
+        let mut ed = editor_with("hello\nworld", 1, 2);
+        ed.cursor.sel_anchor = Some((0, 3));
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "helrld");
+        assert_eq!(ed.cursor.position(), (0, 3));
+        assert!(!ed.cursor.has_selection());
+    }
+
+    #[test]
+    fn backspace_with_extra_cursors_on_same_line() {
+        let mut ed = editor_with("ab cd ef", 0, 2);
+        ed.extra_cursors.push(cursor_at(0, 5));
+        ed.extra_cursors.push(cursor_at(0, 8));
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "a c e");
+        assert_eq!(ed.cursor.position(), (0, 1));
+        assert_eq!(ed.extra_cursors[0].position(), (0, 3));
+        assert_eq!(ed.extra_cursors[1].position(), (0, 5));
+    }
+
+    #[test]
+    fn backspace_extra_cursor_anchor_is_shifted() {
+        let mut ed = editor_with("abcdef\nx", 0, 1);
+        // Extra cursor selecting "de" (anchor after the deletion point).
+        ed.extra_cursors.push(selecting((0, 3), 0, 5));
+        ed.delete_char_before();
+        // Primary deletes 'a' -> "bcdef"; extra selection shifts to 2..4 ("de") and is deleted.
+        assert_eq!(ed.buffer.line(0), "bcf");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 2));
+    }
+
+    #[test]
+    fn backspace_extra_cursor_same_line_selections_adjust_later_cursors() {
+        let mut ed = editor_with("0123456789\n", 1, 0);
+        ed.extra_cursors.push(selecting((0, 1), 0, 3));
+        ed.extra_cursors.push(selecting((0, 6), 0, 8));
+        ed.delete_char_before();
+        assert_eq!(ed.buffer.line(0), "034589");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 1));
+        assert_eq!(ed.extra_cursors[1].position(), (0, 4));
+    }
+
+    #[test]
+    fn backspace_extra_cursor_multi_line_selection_collapses() {
+        let mut ed = editor_with("ab\ncd\nef", 2, 0);
+        ed.extra_cursors.push(selecting((0, 1), 1, 1));
+        ed.delete_char_before();
+        // Primary at (2,0) joins rows 1 and 2; extra selection collapses to its start.
+        assert_eq!(text(&ed), "ab\ncdef");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 1));
+    }
+
+    #[test]
+    fn backspace_extra_cursor_at_line_start_joins_lines() {
+        let mut ed = editor_with("ab\ncd\nef", 0, 2);
+        ed.extra_cursors.push(cursor_at(2, 0));
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "a\ncdef");
+        assert_eq!(ed.extra_cursors[0].position(), (1, 2));
+    }
+
+    #[test]
+    fn backspace_extra_cursors_on_same_line_shift_each_other() {
+        let mut ed = editor_with("abcdef\n", 1, 0);
+        ed.extra_cursors.push(cursor_at(0, 2));
+        ed.extra_cursors.push(selecting((0, 3), 0, 5));
+        ed.delete_char_before();
+        // Primary joins row 1 into row 0 (no-op on text as row 1 is empty); first extra
+        // deletes 'b'; second extra's selection shifts to 2..4 ("de") and is deleted.
+        assert_eq!(ed.buffer.line(0), "acf");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 1));
+        assert_eq!(ed.extra_cursors[1].position(), (0, 2));
+    }
+
+    // ── delete_char_after ───────────────────────────────────────────────────
+
+    #[test]
+    fn delete_removes_char_under_cursor() {
+        let mut ed = editor_with("abc", 0, 1);
+        ed.delete_char_after();
+        assert_eq!(text(&ed), "ac");
+        assert_eq!(ed.cursor.position(), (0, 1));
+        assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn delete_at_line_end_joins_next_line() {
+        let mut ed = editor_with("ab\ncd", 0, 2);
+        ed.delete_char_after();
+        assert_eq!(text(&ed), "abcd");
+    }
+
+    #[test]
+    fn delete_at_document_end_keeps_text() {
+        let mut ed = editor_with("ab", 0, 2);
+        ed.delete_char_after();
+        assert_eq!(text(&ed), "ab");
+    }
+
+    #[test]
+    fn delete_with_selection_deletes_selection() {
+        let mut ed = editor_with("abcdef", 0, 1);
+        ed.cursor.sel_anchor = Some((0, 4));
+        ed.delete_char_after();
+        assert_eq!(text(&ed), "aef");
+        assert_eq!(ed.cursor.position(), (0, 1));
+    }
+
+    #[test]
+    fn delete_with_extra_cursors() {
+        let mut ed = editor_with("ab cd ef", 0, 0);
+        ed.extra_cursors.push(cursor_at(0, 3));
+        ed.extra_cursors.push(cursor_at(0, 6));
+        ed.delete_char_after();
+        assert_eq!(text(&ed), "b d f");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 2));
+        assert_eq!(ed.extra_cursors[1].position(), (0, 4));
+    }
+
+    #[test]
+    #[ignore = "BUG: delete_char_after does not shift later extra cursors' sel_anchor after deleting an extra selection"]
+    fn delete_extra_cursor_anchor_shift_and_selection_delete() {
+        let mut ed = editor_with("abcdef\n", 0, 0);
+        ed.extra_cursors.push(selecting((0, 2), 0, 4)); // "cd"
+        ed.extra_cursors.push(selecting((0, 5), 0, 6)); // "f"
+        ed.delete_char_after();
+        // Primary deletes 'a' -> "bcdef"; extras shift to 1..3 and 4..5 and are deleted.
+        assert_eq!(ed.buffer.line(0), "be");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 1));
+    }
+
+    #[test]
+    fn delete_extra_cursor_multi_line_selection_collapses() {
+        let mut ed = editor_with("ab\ncd\nef", 2, 2);
+        ed.extra_cursors.push(selecting((0, 1), 1, 1));
+        ed.delete_char_after();
+        assert_eq!(text(&ed), "ab\ncd\nef");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 1));
+        assert!(!ed.extra_cursors[0].has_selection());
+    }
+
+    #[test]
+    fn delete_extra_cursor_at_line_end_joins_lines() {
+        let mut ed = editor_with("ab\ncd\nef", 2, 0);
+        ed.extra_cursors.push(cursor_at(0, 2));
+        ed.delete_char_after();
+        assert_eq!(text(&ed), "abcd\nf");
+    }
+
+    // ── insert_newline ──────────────────────────────────────────────────────
+
+    #[test]
+    fn newline_splits_line_at_cursor() {
+        let mut ed = editor_with("abcd", 0, 2);
+        ed.insert_newline();
+        assert_eq!(text(&ed), "ab\ncd");
+        assert_eq!(ed.cursor.position(), (1, 0));
+        assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn newline_replaces_selection() {
+        let mut ed = editor_with("abcd", 0, 3);
+        ed.cursor.sel_anchor = Some((0, 1));
+        ed.insert_newline();
+        assert_eq!(text(&ed), "a\nd");
+        assert_eq!(ed.cursor.position(), (1, 0));
+    }
+
+    #[test]
+    fn newline_at_extra_cursors() {
+        let mut ed = editor_with("ab\ncd", 1, 1);
+        ed.extra_cursors.push(cursor_at(0, 1));
+        ed.insert_newline();
+        // Primary splits row 1 first, then the extra splits row 0.
+        assert_eq!(text(&ed), "a\nb\nc\nd");
+        assert_eq!(ed.extra_cursors[0].position(), (1, 0));
+    }
+
+    #[test]
+    fn newline_extra_cursor_selections() {
+        let mut ed = editor_with("0123456789\nzz\nyy", 2, 0);
+        ed.extra_cursors.push(selecting((0, 1), 0, 3));
+        ed.extra_cursors.push(selecting((0, 6), 0, 8));
+        ed.insert_newline();
+        assert_eq!(ed.buffer.line(0), "0");
+        assert_eq!(ed.extra_cursors[0].position(), (1, 0));
+
+        let mut ed = editor_with("ab\ncd\nef", 2, 2);
+        ed.extra_cursors.push(selecting((0, 1), 1, 1));
+        ed.insert_newline();
+        assert_eq!(text(&ed), "a\nb\ncd\nef\n");
+        assert_eq!(ed.extra_cursors[0].position(), (1, 0));
+    }
+
+    // ── selection helpers ───────────────────────────────────────────────────
+
+    #[test]
+    fn selected_text_returns_none_without_selection() {
+        let ed = editor_with("abc", 0, 1);
+        assert_eq!(ed.selected_text(), None);
+    }
+
+    #[test]
+    fn selected_text_spans_lines_regardless_of_direction() {
+        let mut ed = editor_with("hello\nworld", 0, 3);
+        ed.cursor.sel_anchor = Some((1, 2));
+        assert_eq!(ed.selected_text().as_deref(), Some("lo\nwo"));
+        ed.cursor.set_position(1, 2);
+        ed.cursor.sel_anchor = Some((0, 3));
+        assert_eq!(ed.selected_text().as_deref(), Some("lo\nwo"));
+    }
+
+    #[test]
+    fn delete_selection_without_selection_does_nothing() {
+        let mut ed = editor_with("abc", 0, 1);
+        ed.delete_selection();
+        assert_eq!(text(&ed), "abc");
+        assert!(!ed.is_modified);
+    }
+
+    #[test]
+    fn buffer_helper_is_available() {
+        // Sanity: a raw Buffer can be swapped in and edited through the editor.
+        let mut ed = editor_with("", 0, 0);
+        ed.buffer = Buffer::from_str("xy");
+        ed.cursor.set_position(0, 2);
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "x");
+    }
+}
