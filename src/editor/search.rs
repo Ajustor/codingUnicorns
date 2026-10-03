@@ -4,7 +4,7 @@ impl Editor {
     /// Build the matcher for the current find settings (plain or regex,
     /// case-sensitive or not). Shared by find and replace so they always agree.
     /// Returns `None` for an empty query or an invalid regex.
-    fn find_regex(&self) -> Option<regex::Regex> {
+    pub(super) fn find_regex(&self) -> Option<regex::Regex> {
         if self.find_query.is_empty() {
             return None;
         }

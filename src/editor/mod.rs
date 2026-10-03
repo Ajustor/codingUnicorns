@@ -2363,85 +2363,43 @@ impl Editor {
                     let line = self.buffer.line(line_idx);
                     let x_start = rect.min.x + gutter_width;
 
-                    // Find bar match highlight — precise character-level boxes
-                    if !self.find_query.is_empty() && self.find_matches.contains(&line_idx) {
-                        let haystack_raw = self.buffer.line(line_idx);
-                        let (haystack, needle) = if self.find_case_sensitive {
-                            (haystack_raw.clone(), self.find_query.clone())
-                        } else {
-                            (haystack_raw.to_lowercase(), self.find_query.to_lowercase())
-                        };
-                        // Collect all match start byte-offsets in this line.
-                        let mut search_pos = 0usize;
-                        while search_pos <= haystack.len() {
-                            let found = if self.find_use_regex {
-                                regex::Regex::new(&if self.find_case_sensitive {
-                                    needle.clone()
-                                } else {
-                                    format!("(?i){}", self.find_query)
-                                })
-                                .ok()
-                                .and_then(|re| re.find(&haystack[search_pos..]))
-                                .map(|m| (m.start(), m.end()))
+                    // Find bar match highlight — precise character-level boxes.
+                    // Uses the same matcher as find/replace, on the original line,
+                    // so offsets are always valid char boundaries.
+                    if self.find_matches.contains(&line_idx) {
+                        if let Some(re) = self.find_regex() {
+                            let haystack = self.buffer.line(line_idx);
+                            let is_active =
+                                self.find_matches.get(self.find_current) == Some(&line_idx);
+                            let color = if is_active {
+                                find_highlight_active
                             } else {
-                                haystack[search_pos..]
-                                    .find(&needle)
-                                    .map(|s| (s, s + needle.len()))
+                                find_highlight
                             };
-                            match found {
-                                None => break,
-                                Some((rel_start, rel_end)) => {
-                                    let abs_start = search_pos + rel_start;
-                                    let abs_end = search_pos + rel_end;
-                                    // Convert byte offset → char count for pixel measurement
-                                    let pre_chars = haystack_raw[..abs_start].chars().count();
-                                    let span_chars =
-                                        haystack_raw[abs_start..abs_end].chars().count();
-                                    let pre_text: String =
-                                        haystack_raw.chars().take(pre_chars).collect();
-                                    let span_text: String = haystack_raw
-                                        .chars()
-                                        .skip(pre_chars)
-                                        .take(span_chars)
-                                        .collect();
-                                    let pre_w = ui.fonts(|f| {
+                            for m in re.find_iter(&haystack).filter(|m| !m.is_empty()) {
+                                let measure = |text: &str| {
+                                    ui.fonts(|f| {
                                         f.layout_no_wrap(
-                                            pre_text,
+                                            text.to_owned(),
                                             font_id.clone(),
                                             egui::Color32::WHITE,
                                         )
                                         .size()
                                         .x
-                                    });
-                                    let span_w = ui.fonts(|f| {
-                                        f.layout_no_wrap(
-                                            span_text,
-                                            font_id.clone(),
-                                            egui::Color32::WHITE,
-                                        )
-                                        .size()
-                                        .x
-                                    });
-                                    let hx = x_start + pre_w - self.scroll_offset.x;
-                                    if hx < rect.max.x && hx + span_w > x_start {
-                                        // Active match: bright yellow; other matches: dim
-                                        let is_active = self.find_matches.get(self.find_current)
-                                            == Some(&line_idx);
-                                        let color = if is_active {
-                                            find_highlight_active
-                                        } else {
-                                            find_highlight
-                                        };
-                                        painter.rect_filled(
-                                            egui::Rect::from_min_size(
-                                                egui::pos2(hx, y + 1.0),
-                                                egui::vec2(span_w.max(4.0), line_height - 2.0),
-                                            ),
-                                            2.0,
-                                            color,
-                                        );
-                                    }
-                                    search_pos = abs_end.max(abs_start + 1);
+                                    })
+                                };
+                                let pre_w = measure(&haystack[..m.start()]);
+                                let span_w = measure(m.as_str());
+                                let hx = x_start + pre_w - self.scroll_offset.x;
+                                if hx < rect.max.x && hx + span_w > x_start {
+                                    painter.rect_filled(
+                                        egui::Rect::from_min_size(
+                                            egui::pos2(hx, y + 1.0),
+                                            egui::vec2(span_w.max(4.0), line_height - 2.0),
+                                        ),
+                                        2.0,
+                                        color,
+                                    );
                                 }
                             }
                         }
@@ -4404,6 +4362,22 @@ mod tests {
     }
 
     // ── Find / replace & goto-line dialogs ──────────────────────────────────
+
+    #[test]
+    fn find_highlight_survives_case_folding_that_changes_byte_length() {
+        // 'İ' (2 bytes) lowercases to "i̇" (3 bytes); the old highlighter sliced the
+        // original line with offsets from the lowercased copy and panicked.
+        let (mut h, mut ed) = setup("İİİ foo\né foo é foo");
+        ed.show_find = true;
+        ed.find_query = "FOO".into();
+        ed.update_find_matches();
+        assert_eq!(ed.find_matches, vec![0, 1]);
+        h.idle(&mut ed);
+        ed.find_use_regex = true;
+        ed.find_query = "f.o|^".into(); // empty matches must be skipped, not loop
+        ed.update_find_matches();
+        h.idle(&mut ed);
+    }
 
     #[test]
     fn find_bar_renders_matches_and_escape_closes_it() {
