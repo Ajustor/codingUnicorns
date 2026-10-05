@@ -4,6 +4,23 @@ use super::workspace_search::{find_definition_in_buffer, search_workspace_for_sy
 use super::CodingUnicorns;
 
 impl CodingUnicorns {
+    /// Refresh the Problems panel cache when any server published diagnostics.
+    pub(crate) fn sync_problems(&mut self) {
+        let lsp = &self.lsp;
+        self.problems_panel
+            .sync(lsp.diagnostics_revision(), || lsp.workspace_diagnostics());
+    }
+
+    /// Open `path` and put the cursor at 0-based `line`/`col` (clamped),
+    /// recording the jump in the navigation history.
+    pub fn goto_location(&mut self, path: PathBuf, line: usize, col: usize) {
+        self.push_nav_and_goto(path, line);
+        let (row, _) = self.editor.cursor.position();
+        let len = self.editor.buffer.line(row).chars().count();
+        self.editor.cursor.set_position(row, col.min(len));
+        self.editor.scroll_to_cursor = true;
+    }
+
     pub(crate) fn ensure_lsp_for_file(&mut self, path: &std::path::Path) {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if let Some(workspace) = self.workspace_path.clone() {
