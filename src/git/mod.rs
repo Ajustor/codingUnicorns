@@ -2,6 +2,7 @@ pub mod blame;
 pub mod branches;
 pub mod commit;
 pub mod merge;
+pub mod remote;
 pub mod staging;
 pub mod status;
 
