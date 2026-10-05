@@ -6,6 +6,9 @@ pub(super) struct AnsiPerformer {
     /// Bytes to write back to the PTY in answer to terminal queries (e.g. the
     /// cursor-position report that replies to `ESC[6n`). Drained by `Terminal::update`.
     pub(super) responses: Vec<u8>,
+    /// Set by `CSI ?2004h` / cleared by `CSI ?2004l`: pasted text must be
+    /// wrapped in `ESC[200~ … ESC[201~`.
+    pub(super) bracketed_paste: bool,
 }
 
 impl AnsiPerformer {
@@ -13,6 +16,7 @@ impl AnsiPerformer {
         Self {
             buf: ScreenBuffer::new(200, 50),
             responses: Vec::new(),
+            bracketed_paste: false,
         }
     }
 }
@@ -33,7 +37,7 @@ impl Perform for AnsiPerformer {
         }
     }
 
-    fn csi_dispatch(&mut self, params: &Params, _: &[u8], _: bool, action: char) {
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _: bool, action: char) {
         let ns: Vec<u16> = params
             .iter()
             .map(|p| p.first().copied().unwrap_or(0))
@@ -60,6 +64,10 @@ impl Perform for AnsiPerformer {
                 } else if n0 == 5 {
                     self.responses.extend_from_slice(b"\x1b[0n");
                 }
+            }
+            // DEC private modes; only bracketed paste (2004) is tracked.
+            'l' | 'h' if intermediates == b"?" && ns.contains(&2004) => {
+                self.bracketed_paste = action == 'h';
             }
             'l' | 'h' => {}
             _ => {}
@@ -314,6 +322,19 @@ mod tests {
         t.p.responses.clear();
         t.feed(b"\x1b[n\x1b[99n");
         assert!(t.p.responses.is_empty());
+    }
+
+    #[test]
+    fn bracketed_paste_mode_is_tracked() {
+        let mut t = Term::new();
+        assert!(!t.p.bracketed_paste);
+        t.feed(b"\x1b[?2004h");
+        assert!(t.p.bracketed_paste);
+        // Non-private `CSI 2004 l` and other private modes leave it alone.
+        t.feed(b"\x1b[2004l\x1b[?25l");
+        assert!(t.p.bracketed_paste);
+        t.feed(b"\x1b[?1049;2004l");
+        assert!(!t.p.bracketed_paste);
     }
 
     #[test]
