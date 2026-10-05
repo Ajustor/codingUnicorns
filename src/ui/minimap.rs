@@ -1,6 +1,6 @@
 use crate::lsp::client::{DiagSeverity, Diagnostic};
 
-const MINIMAP_WIDTH: f32 = 80.0;
+pub const MINIMAP_WIDTH: f32 = 80.0;
 const LINE_PX: f32 = 1.5; // height per line in minimap (pixels)
 
 /// Pre-computed per-line data for the minimap code structure view.
