@@ -1,17 +1,32 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use serde_json::{json, Value};
 
 use super::transport::DapTransport;
-use super::types::{Breakpoint, DapConfig, DebugSessionState, StackFrame, Variable};
+use super::types::{
+    Breakpoint, DapConfig, DebugSessionState, Scope, StackFrame, Variable, WatchResult,
+};
 
 pub struct DapClient {
     transport: DapTransport,
     next_seq: u64,
     pub state: DebugSessionState,
     pub call_stack: Vec<StackFrame>,
-    pub variables: Vec<Variable>,
+    /// Index in `call_stack` of the frame whose scopes are shown.
+    pub selected_frame: usize,
+    /// Scopes of the selected frame, in adapter order.
+    pub scopes: Vec<Scope>,
+    /// Fetched children per `variablesReference` (scopes and structured
+    /// variables share this namespace in DAP). Invalidated on every stop.
+    pub children: HashMap<i64, Vec<Variable>>,
+    /// Watch expressions, evaluated on every stop and frame change.
+    watch_exprs: Vec<String>,
+    /// Latest result per watch expression.
+    pub watch_results: HashMap<String, WatchResult>,
+    /// Pending `evaluate` requests: request seq → expression.
+    pending_evals: HashMap<u64, String>,
     pub output_log: Vec<String>,
     workspace: PathBuf,
     launch_config: Value,
@@ -19,8 +34,8 @@ pub struct DapClient {
     pending_stack_seq: Option<u64>,
     /// seq of pending scopes request.
     pending_scopes_seq: Option<u64>,
-    /// seq of pending variables request.
-    pending_vars_seq: Option<u64>,
+    /// Pending `variables` requests: request seq → variablesReference.
+    pending_vars: HashMap<u64, i64>,
     /// Whether the adapter sent the `initialized` event.
     initialized: bool,
     /// Breakpoints that need to be sent after the `initialized` event.
@@ -73,13 +88,18 @@ impl DapClient {
             next_seq: seq + 1,
             state: DebugSessionState::Launching,
             call_stack: vec![],
-            variables: vec![],
+            selected_frame: 0,
+            scopes: vec![],
+            children: HashMap::new(),
+            watch_exprs: vec![],
+            watch_results: HashMap::new(),
+            pending_evals: HashMap::new(),
             output_log: vec![],
             workspace: workspace.to_path_buf(),
             launch_config,
             pending_stack_seq: None,
             pending_scopes_seq: None,
-            pending_vars_seq: None,
+            pending_vars: HashMap::new(),
             initialized: false,
             pending_breakpoints: vec![],
             launch_sent: false,
@@ -146,10 +166,16 @@ impl DapClient {
         if args.get("cwd").is_none() {
             args["cwd"] = json!(self.workspace.to_string_lossy());
         }
+        // launch.json entries may ask to attach to a running process instead.
+        let command = if args["request"] == "attach" {
+            "attach"
+        } else {
+            "launch"
+        };
         let _ = self.transport.send(&json!({
             "seq": seq,
             "type": "request",
-            "command": "launch",
+            "command": command,
             "arguments": args
         }));
     }
@@ -220,6 +246,118 @@ impl DapClient {
         self.transport.is_alive.load(Ordering::Relaxed)
     }
 
+    /// Request the children of `variables_reference` unless they are already
+    /// fetched or in flight. Used for lazy expansion of scopes and variables.
+    pub fn request_variables(&mut self, variables_reference: i64) {
+        if variables_reference <= 0
+            || self.children.contains_key(&variables_reference)
+            || self.is_loading(variables_reference)
+        {
+            return;
+        }
+        let seq = self.next_seq();
+        self.pending_vars.insert(seq, variables_reference);
+        let _ = self.transport.send(&json!({
+            "seq": seq,
+            "type": "request",
+            "command": "variables",
+            "arguments": { "variablesReference": variables_reference }
+        }));
+    }
+
+    /// Whether a `variables` request for this reference is in flight.
+    pub fn is_loading(&self, variables_reference: i64) -> bool {
+        self.pending_vars
+            .values()
+            .any(|r| *r == variables_reference)
+    }
+
+    /// Show the scopes of another frame of the current call stack.
+    pub fn select_frame(&mut self, idx: usize) {
+        if idx >= self.call_stack.len() || !matches!(self.state, DebugSessionState::Paused { .. }) {
+            return;
+        }
+        self.selected_frame = idx;
+        self.request_scopes();
+        self.evaluate_watches();
+    }
+
+    /// Replace the watch list. New expressions are evaluated right away when
+    /// paused; results of removed ones are dropped.
+    pub fn set_watches(&mut self, exprs: &[String]) {
+        self.watch_results.retain(|e, _| exprs.contains(e));
+        self.pending_evals.retain(|_, e| exprs.contains(e));
+        let added: Vec<String> = exprs
+            .iter()
+            .filter(|e| !self.watch_exprs.contains(e))
+            .cloned()
+            .collect();
+        self.watch_exprs = exprs.to_vec();
+        for expr in added {
+            self.evaluate_watch(expr);
+        }
+    }
+
+    /// Re-evaluate every watch expression in the selected frame.
+    fn evaluate_watches(&mut self) {
+        self.pending_evals.clear();
+        for expr in self.watch_exprs.clone() {
+            self.evaluate_watch(expr);
+        }
+    }
+
+    /// Send `evaluate` (context "watch") for one expression. Outside of a
+    /// pause — or while the stack trace is still loading — it stays `Pending`
+    /// and is evaluated once the frame is known.
+    fn evaluate_watch(&mut self, expr: String) {
+        let paused = matches!(self.state, DebugSessionState::Paused { .. });
+        if !paused || self.pending_stack_seq.is_some() {
+            self.watch_results
+                .entry(expr)
+                .or_insert(WatchResult::Pending);
+            return;
+        }
+        let mut args = json!({ "expression": expr, "context": "watch" });
+        if let Some(frame) = self.call_stack.get(self.selected_frame) {
+            args["frameId"] = json!(frame.id);
+        }
+        let seq = self.next_seq();
+        self.watch_results
+            .insert(expr.clone(), WatchResult::Pending);
+        self.pending_evals.insert(seq, expr);
+        let _ = self.transport.send(&json!({
+            "seq": seq,
+            "type": "request",
+            "command": "evaluate",
+            "arguments": args
+        }));
+    }
+
+    /// Forget scopes/variables of the previous frame or stop; late responses
+    /// to the dropped requests are then ignored.
+    fn clear_frame_data(&mut self) {
+        self.scopes.clear();
+        self.children.clear();
+        self.pending_vars.clear();
+        self.pending_scopes_seq = None;
+    }
+
+    /// Ask for the scopes of the selected frame (replacing the current ones).
+    fn request_scopes(&mut self) {
+        self.clear_frame_data();
+        let Some(frame_id) = self.call_stack.get(self.selected_frame).map(|f| f.id) else {
+            return;
+        };
+        let seq = self.next_seq();
+        self.pending_scopes_seq = Some(seq);
+        let _ = self.transport.send(&json!({
+            "seq": seq,
+            "type": "request",
+            "command": "scopes",
+            "arguments": { "frameId": frame_id }
+        }));
+    }
+
     /// Drain incoming messages and update internal state.
     /// Returns `true` if the session was just paused (caller may want to refresh the editor).
     pub fn poll(&mut self) -> bool {
@@ -246,6 +384,10 @@ impl DapClient {
                             let thread_id = msg["body"]["threadId"].as_i64().unwrap_or(1);
                             self.state = DebugSessionState::Paused { thread_id };
                             just_paused = true;
+                            // Variable references are only valid for one stop.
+                            self.selected_frame = 0;
+                            self.clear_frame_data();
+                            self.pending_evals.clear();
                             // Request the call stack.
                             let seq = self.next_seq();
                             self.pending_stack_seq = Some(seq);
@@ -303,53 +445,42 @@ impl DapClient {
                                 }
                             }
                             self.pending_stack_seq = None;
-                            // Request scopes for the top frame.
-                            if let Some(frame) = self.call_stack.first() {
-                                let frame_id = frame.id;
-                                let seq = self.next_seq();
-                                self.pending_scopes_seq = Some(seq);
-                                let _ = self.transport.send(&json!({
-                                    "seq": seq,
-                                    "type": "request",
-                                    "command": "scopes",
-                                    "arguments": { "frameId": frame_id }
-                                }));
-                            }
+                            // Show the scopes of the top frame.
+                            self.selected_frame = 0;
+                            self.request_scopes();
+                            self.evaluate_watches();
+                        }
+                        "evaluate" if self.pending_evals.contains_key(&seq) => {
+                            let expr = self.pending_evals.remove(&seq).unwrap_or_default();
+                            self.watch_results.insert(expr, parse_evaluate(&msg));
                         }
                         "scopes" if Some(seq) == self.pending_scopes_seq => {
                             self.pending_scopes_seq = None;
-                            // Request variables for the first scope (locals).
-                            if let Some(scope) =
-                                msg["body"]["scopes"].as_array().and_then(|a| a.first())
-                            {
-                                let vars_ref = scope["variablesReference"].as_i64().unwrap_or(0);
-                                if vars_ref > 0 {
-                                    let seq = self.next_seq();
-                                    self.pending_vars_seq = Some(seq);
-                                    let _ = self.transport.send(&json!({
-                                        "seq": seq,
-                                        "type": "request",
-                                        "command": "variables",
-                                        "arguments": { "variablesReference": vars_ref }
-                                    }));
-                                }
+                            self.scopes = msg["body"]["scopes"]
+                                .as_array()
+                                .map(|a| a.iter().map(parse_scope).collect())
+                                .unwrap_or_default();
+                            // Eagerly fetch every cheap scope; expensive ones
+                            // (e.g. Globals, Registers) wait for an expand.
+                            let eager: Vec<i64> = self
+                                .scopes
+                                .iter()
+                                .filter(|s| !s.expensive)
+                                .map(|s| s.variables_reference)
+                                .collect();
+                            for r in eager {
+                                self.request_variables(r);
                             }
                         }
-                        "variables" if Some(seq) == self.pending_vars_seq => {
-                            self.pending_vars_seq = None;
-                            self.variables.clear();
-                            if let Some(vars) = msg["body"]["variables"].as_array() {
-                                for v in vars.iter().take(100) {
-                                    self.variables.push(Variable {
-                                        name: v["name"].as_str().unwrap_or("").to_string(),
-                                        value: v["value"].as_str().unwrap_or("").to_string(),
-                                        var_type: v["type"].as_str().map(|s| s.to_string()),
-                                        variables_reference: v["variablesReference"]
-                                            .as_i64()
-                                            .unwrap_or(0),
-                                    });
-                                }
-                            }
+                        "variables" if self.pending_vars.contains_key(&seq) => {
+                            let vars_ref = self.pending_vars.remove(&seq).unwrap_or(0);
+                            let vars: Vec<Variable> = msg["body"]["variables"]
+                                .as_array()
+                                .map(|a| a.iter().take(MAX_VARIABLES).map(parse_variable).collect())
+                                .unwrap_or_default();
+                            // A failed request stores an empty list so the UI stops
+                            // showing "loading…" and does not retry every frame.
+                            self.children.insert(vars_ref, vars);
                         }
                         "setBreakpoints" => {
                             // Update verified status (informational only for now).
@@ -376,6 +507,44 @@ impl DapClient {
             "${file}",
             path.to_string_lossy().as_ref(),
         );
+    }
+}
+
+/// Children kept per `variables` response (protects the UI from huge arrays).
+const MAX_VARIABLES: usize = 100;
+
+fn parse_scope(s: &Value) -> Scope {
+    Scope {
+        name: s["name"].as_str().unwrap_or("Scope").to_string(),
+        variables_reference: s["variablesReference"].as_i64().unwrap_or(0),
+        expensive: s["expensive"].as_bool().unwrap_or(false),
+    }
+}
+
+fn parse_variable(v: &Value) -> Variable {
+    Variable {
+        name: v["name"].as_str().unwrap_or("").to_string(),
+        value: v["value"].as_str().unwrap_or("").to_string(),
+        var_type: v["type"].as_str().map(|s| s.to_string()),
+        variables_reference: v["variablesReference"].as_i64().unwrap_or(0),
+    }
+}
+
+/// Turn an `evaluate` response into a watch result (errors shown inline).
+fn parse_evaluate(msg: &Value) -> WatchResult {
+    if msg["success"].as_bool().unwrap_or(true) {
+        let body = &msg["body"];
+        WatchResult::Value {
+            value: body["result"].as_str().unwrap_or("").to_string(),
+            var_type: body["type"].as_str().map(|s| s.to_string()),
+            variables_reference: body["variablesReference"].as_i64().unwrap_or(0),
+        }
+    } else {
+        let err = msg["body"]["error"]["format"]
+            .as_str()
+            .or_else(|| msg["message"].as_str())
+            .unwrap_or("evaluation failed");
+        WatchResult::Error(err.to_string())
     }
 }
 
@@ -660,6 +829,19 @@ mod tests {
     }
 
     #[test]
+    fn attach_request_sends_attach_instead_of_launch() {
+        let mut h = harness_with(json!({"request": "attach", "connect": {"port": 5678}}));
+        h.sent();
+        h.push(
+            json!({"type": "response", "command": "initialize", "request_seq": 1, "success": true}),
+        );
+        h.client.poll();
+        let sent = h.sent();
+        assert_eq!(commands(&sent), vec!["attach"]);
+        assert_eq!(sent[0]["arguments"]["connect"]["port"], 5678);
+    }
+
+    #[test]
     fn launch_keeps_explicit_cwd() {
         let mut h = harness_with(json!({"cwd": "/elsewhere"}));
         h.push(json!({"type": "event", "event": "initialized"}));
@@ -738,11 +920,295 @@ mod tests {
             ]}
         }));
         h.client.poll();
-        assert_eq!(h.client.variables.len(), 2);
-        assert_eq!(h.client.variables[0].name, "x");
-        assert_eq!(h.client.variables[0].var_type.as_deref(), Some("int"));
-        assert_eq!(h.client.variables[1].variables_reference, 5);
-        assert_eq!(h.client.variables[1].var_type, None);
+        let vars = &h.client.children[&77];
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars[0].name, "x");
+        assert_eq!(vars[0].var_type.as_deref(), Some("int"));
+        assert_eq!(vars[1].variables_reference, 5);
+        assert_eq!(vars[1].var_type, None);
+        assert!(!h.client.is_loading(77));
+        assert!(h.sent().is_empty());
+    }
+
+    /// Drive a stop up to the `scopes` response; returns the scopes seq.
+    fn stop_with_frames(h: &mut Harness, frames: Value) -> u64 {
+        h.sent();
+        h.push(json!({"type": "event", "event": "stopped", "body": {"threadId": 1}}));
+        h.client.poll();
+        let stack_seq = h.sent()[0]["seq"].as_u64().unwrap();
+        h.push(json!({
+            "type": "response", "command": "stackTrace", "request_seq": stack_seq,
+            "body": {"stackFrames": frames}
+        }));
+        h.client.poll();
+        let sent = h.sent();
+        assert_eq!(commands(&sent), vec!["scopes"]);
+        sent[0]["seq"].as_u64().unwrap()
+    }
+
+    fn var_requests(sent: &[Value]) -> Vec<(u64, i64)> {
+        sent.iter()
+            .filter(|m| m["command"] == "variables")
+            .map(|m| {
+                (
+                    m["seq"].as_u64().unwrap(),
+                    m["arguments"]["variablesReference"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn all_cheap_scopes_are_fetched_and_expensive_ones_lazily() {
+        let mut h = harness();
+        let scopes_seq = stop_with_frames(&mut h, json!([{"id": 1, "name": "f"}]));
+        h.push(json!({
+            "type": "response", "command": "scopes", "request_seq": scopes_seq,
+            "body": {"scopes": [
+                {"name": "Locals", "variablesReference": 10},
+                {"name": "Globals", "variablesReference": 20, "expensive": true},
+                {"name": "Registers", "variablesReference": 30, "expensive": false},
+                {"name": "Empty", "variablesReference": 0}
+            ]}
+        }));
+        h.client.poll();
+        assert_eq!(h.client.scopes.len(), 4);
+        assert_eq!(h.client.scopes[0].name, "Locals");
+        assert!(h.client.scopes[1].expensive);
+        assert!(!h.client.scopes[2].expensive);
+        let reqs = var_requests(&h.sent());
+        assert_eq!(
+            reqs.iter().map(|r| r.1).collect::<Vec<_>>(),
+            vec![10, 30],
+            "expensive and empty scopes are not fetched eagerly"
+        );
+        assert!(h.client.is_loading(10) && h.client.is_loading(30));
+
+        // Expanding the expensive scope fetches it once, even if asked twice.
+        h.client.request_variables(20);
+        h.client.request_variables(20);
+        let lazy = var_requests(&h.sent());
+        assert_eq!(lazy.len(), 1);
+        assert_eq!(lazy[0].1, 20);
+
+        // Responses land under their own reference, whatever the order.
+        h.push(
+            json!({"type": "response", "command": "variables", "request_seq": lazy[0].0,
+            "body": {"variables": [{"name": "G", "value": "1"}]}}),
+        );
+        h.push(
+            json!({"type": "response", "command": "variables", "request_seq": reqs[0].0,
+            "body": {"variables": [{"name": "l", "value": "2", "variablesReference": 40}]}}),
+        );
+        h.client.poll();
+        assert_eq!(h.client.children[&20][0].name, "G");
+        assert_eq!(h.client.children[&10][0].name, "l");
+        assert!(!h.client.children.contains_key(&30));
+
+        // Already fetched → no new request.
+        h.client.request_variables(10);
+        h.client.request_variables(0);
+        assert!(h.sent().is_empty());
+    }
+
+    #[test]
+    fn structured_variables_expand_lazily_and_failures_stop_loading() {
+        let mut h = harness();
+        let scopes_seq = stop_with_frames(&mut h, json!([{"id": 1, "name": "f"}]));
+        h.push(
+            json!({"type": "response", "command": "scopes", "request_seq": scopes_seq,
+            "body": {"scopes": [{"name": "Locals", "variablesReference": 10}]}}),
+        );
+        h.client.poll();
+        h.sent();
+        h.client.request_variables(40);
+        let reqs = var_requests(&h.sent());
+        assert_eq!(reqs[0].1, 40);
+        h.push(
+            json!({"type": "response", "command": "variables", "request_seq": reqs[0].0,
+            "success": false, "message": "gone"}),
+        );
+        h.client.poll();
+        assert_eq!(h.client.children.get(&40).map(|v| v.len()), Some(0));
+        assert!(!h.client.is_loading(40));
+    }
+
+    #[test]
+    fn new_stop_invalidates_variables_and_ignores_late_responses() {
+        let mut h = harness();
+        let scopes_seq = stop_with_frames(&mut h, json!([{"id": 1, "name": "f"}]));
+        h.push(
+            json!({"type": "response", "command": "scopes", "request_seq": scopes_seq,
+            "body": {"scopes": [{"name": "Locals", "variablesReference": 10}]}}),
+        );
+        h.client.poll();
+        let old = var_requests(&h.sent());
+        h.client.children.insert(99, vec![]);
+
+        h.push(json!({"type": "event", "event": "stopped", "body": {"threadId": 1}}));
+        h.client.poll();
+        assert!(h.client.scopes.is_empty());
+        assert!(h.client.children.is_empty());
+        // Late answer to the previous stop's request is dropped.
+        h.push(
+            json!({"type": "response", "command": "variables", "request_seq": old[0].0,
+            "body": {"variables": [{"name": "stale"}]}}),
+        );
+        h.client.poll();
+        assert!(h.client.children.is_empty());
+    }
+
+    fn evals(sent: &[Value]) -> Vec<&Value> {
+        sent.iter().filter(|m| m["command"] == "evaluate").collect()
+    }
+
+    #[test]
+    fn watches_are_pending_until_stopped_then_evaluated_in_top_frame() {
+        let mut h = harness();
+        h.sent();
+        h.client
+            .set_watches(&["a + 1".to_string(), "bad(".to_string()]);
+        assert!(h.sent().is_empty(), "not paused → nothing evaluated");
+        assert_eq!(h.client.watch_results["a + 1"], WatchResult::Pending);
+
+        h.push(json!({"type": "event", "event": "stopped", "body": {"threadId": 1}}));
+        h.client.poll();
+        assert_eq!(commands(&h.sent()), vec!["stackTrace"]);
+        // Added while the stack is loading → still deferred.
+        h.client
+            .set_watches(&["a + 1".to_string(), "bad(".to_string(), "c".to_string()]);
+        assert!(h.sent().is_empty());
+        let stack_seq = h.client.next_seq - 1;
+        h.push(
+            json!({"type": "response", "command": "stackTrace", "request_seq": stack_seq,
+            "body": {"stackFrames": [{"id": 31, "name": "f"}, {"id": 32, "name": "g"}]}}),
+        );
+        h.client.poll();
+        let sent = h.sent();
+        let ev = evals(&sent);
+        assert_eq!(ev.len(), 3);
+        assert_eq!(ev[0]["arguments"]["expression"], "a + 1");
+        assert_eq!(ev[0]["arguments"]["context"], "watch");
+        assert_eq!(ev[0]["arguments"]["frameId"], 31);
+
+        h.push(json!({"type": "response", "command": "evaluate",
+            "request_seq": ev[0]["seq"], "success": true,
+            "body": {"result": "42", "type": "int", "variablesReference": 0}}));
+        h.push(json!({"type": "response", "command": "evaluate",
+            "request_seq": ev[1]["seq"], "success": false, "message": "SyntaxError",
+            "body": {"error": {"id": 1, "format": "invalid syntax"}}}));
+        h.push(json!({"type": "response", "command": "evaluate",
+            "request_seq": ev[2]["seq"], "success": false, "message": "not defined"}));
+        h.client.poll();
+        assert_eq!(
+            h.client.watch_results["a + 1"],
+            WatchResult::Value {
+                value: "42".into(),
+                var_type: Some("int".into()),
+                variables_reference: 0
+            }
+        );
+        assert_eq!(
+            h.client.watch_results["bad("],
+            WatchResult::Error("invalid syntax".into())
+        );
+        assert_eq!(
+            h.client.watch_results["c"],
+            WatchResult::Error("not defined".into())
+        );
+
+        // Selecting another frame re-evaluates there.
+        h.client.select_frame(1);
+        let sent = h.sent();
+        let ev = evals(&sent);
+        assert_eq!(ev.len(), 3);
+        assert!(ev.iter().all(|m| m["arguments"]["frameId"] == 32));
+    }
+
+    #[test]
+    fn watch_added_while_paused_is_evaluated_immediately_and_removal_drops_it() {
+        let mut h = harness();
+        let scopes_seq = stop_with_frames(&mut h, json!([{"id": 5, "name": "f"}]));
+        let _ = scopes_seq;
+        h.client.set_watches(&["x".to_string()]);
+        let sent = h.sent();
+        let ev = evals(&sent);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["arguments"]["frameId"], 5);
+        let seq = ev[0]["seq"].clone();
+
+        // Re-setting the same list does not re-evaluate.
+        h.client.set_watches(&["x".to_string()]);
+        assert!(h.sent().is_empty());
+
+        // Removed before the answer → late response ignored.
+        h.client.set_watches(&[]);
+        h.push(
+            json!({"type": "response", "command": "evaluate", "request_seq": seq,
+            "body": {"result": "1"}}),
+        );
+        h.client.poll();
+        assert!(h.client.watch_results.is_empty());
+    }
+
+    #[test]
+    fn structured_watch_result_is_expandable() {
+        let mut h = harness();
+        stop_with_frames(&mut h, json!([{"id": 5, "name": "f"}]));
+        h.client.set_watches(&["obj".to_string()]);
+        let sent = h.sent();
+        let seq = evals(&sent)[0]["seq"].clone();
+        h.push(
+            json!({"type": "response", "command": "evaluate", "request_seq": seq,
+            "body": {"result": "{...}", "variablesReference": 70}}),
+        );
+        h.client.poll();
+        assert!(matches!(
+            h.client.watch_results["obj"],
+            WatchResult::Value {
+                variables_reference: 70,
+                var_type: None,
+                ..
+            }
+        ));
+        h.client.request_variables(70);
+        assert_eq!(var_requests(&h.sent())[0].1, 70);
+    }
+
+    #[test]
+    fn selecting_a_frame_requests_its_scopes() {
+        let mut h = harness();
+        let scopes_seq = stop_with_frames(
+            &mut h,
+            json!([{"id": 1, "name": "top"}, {"id": 2, "name": "caller"}]),
+        );
+        h.push(
+            json!({"type": "response", "command": "scopes", "request_seq": scopes_seq,
+            "body": {"scopes": [{"name": "Locals", "variablesReference": 10}]}}),
+        );
+        h.client.poll();
+        h.sent();
+
+        h.client.select_frame(1);
+        assert_eq!(h.client.selected_frame, 1);
+        assert!(h.client.scopes.is_empty() && h.client.children.is_empty());
+        let sent = h.sent();
+        assert_eq!(commands(&sent), vec!["scopes"]);
+        assert_eq!(sent[0]["arguments"]["frameId"], 2);
+        // The previous frame's scopes response is now stale.
+        h.push(
+            json!({"type": "response", "command": "scopes", "request_seq": scopes_seq,
+            "body": {"scopes": [{"name": "Old", "variablesReference": 5}]}}),
+        );
+        h.client.poll();
+        assert!(h.client.scopes.is_empty());
+
+        // Out of range or not paused → ignored.
+        h.client.select_frame(7);
+        assert_eq!(h.client.selected_frame, 1);
+        h.client.state = DebugSessionState::Running;
+        h.client.select_frame(0);
+        assert_eq!(h.client.selected_frame, 1);
         assert!(h.sent().is_empty());
     }
 
@@ -776,7 +1242,8 @@ mod tests {
         h.push(json!({"type": "event", "event": "module"}));
         h.client.poll();
         assert!(h.client.call_stack.is_empty());
-        assert!(h.client.variables.is_empty());
+        assert!(h.client.scopes.is_empty());
+        assert!(h.client.children.is_empty());
         assert!(h.sent().is_empty());
     }
 
@@ -808,7 +1275,7 @@ mod tests {
     #[test]
     fn variables_are_capped_at_100() {
         let mut h = harness();
-        h.client.pending_vars_seq = Some(8);
+        h.client.pending_vars.insert(8, 3);
         let vars: Vec<Value> = (0..150)
             .map(|i| json!({"name": format!("v{i}"), "value": "0"}))
             .collect();
@@ -817,8 +1284,8 @@ mod tests {
             "body": {"variables": vars}}),
         );
         h.client.poll();
-        assert_eq!(h.client.variables.len(), 100);
-        assert_eq!(h.client.variables[99].name, "v99");
+        assert_eq!(h.client.children[&3].len(), 100);
+        assert_eq!(h.client.children[&3][99].name, "v99");
     }
 
     #[test]
