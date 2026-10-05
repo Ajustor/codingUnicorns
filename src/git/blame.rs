@@ -15,11 +15,11 @@ pub fn blame_file(path: &std::path::Path) -> Vec<BlameEntry> {
         Some(w) => w,
         None => return vec![],
     };
-    let rel = match path.strip_prefix(workdir) {
-        Ok(r) => r,
-        Err(_) => return vec![],
+    let rel = match super::relative_to_workdir(path, workdir) {
+        Some(r) => r,
+        None => return vec![],
     };
-    let blame = match repo.blame_file(rel, None) {
+    let blame = match repo.blame_file(&rel, None) {
         Ok(b) => b,
         Err(_) => return vec![],
     };

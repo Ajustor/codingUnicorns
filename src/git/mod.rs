@@ -8,7 +8,20 @@ pub mod status;
 pub use blame::{blame_file, BlameEntry};
 pub use branches::{BranchGraphEntry, BranchInfo};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// `path` relative to the repository `workdir`.
+///
+/// Falls back to comparing canonical paths when a plain prefix match fails,
+/// so symlinked locations (e.g. macOS `/var` -> `/private/var`) still resolve.
+pub fn relative_to_workdir(path: &Path, workdir: &Path) -> Option<PathBuf> {
+    if let Ok(rel) = path.strip_prefix(workdir) {
+        return Some(rel.to_path_buf());
+    }
+    let path = path.canonicalize().ok()?;
+    let workdir = workdir.canonicalize().ok()?;
+    path.strip_prefix(workdir).ok().map(Path::to_path_buf)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct FileStatus {

@@ -39,8 +39,15 @@ pub fn parse_conflict_file(content: &str) -> Option<ParsedConflict> {
             let mut ours: Vec<String> = vec![];
             let mut theirs: Vec<String> = vec![];
             i += 1;
-            while i < lines.len() && !lines[i].starts_with("=======") {
+            while i < lines.len()
+                && !lines[i].starts_with("=======")
+                && !lines[i].starts_with("|||||||")
+            {
                 ours.push(lines[i].to_string());
+                i += 1;
+            }
+            // diff3/zdiff3 conflict style: skip the common-ancestor section.
+            while i < lines.len() && !lines[i].starts_with("=======") {
                 i += 1;
             }
             i += 1; // skip =======
@@ -140,6 +147,22 @@ y
         );
         assert_eq!(p.result_content, "a\nmid");
         assert_eq!(p.theirs_content, "b\nmid\nx\ny");
+    }
+
+    #[test]
+    fn diff3_base_section_is_dropped() {
+        let src = "<<<<<<< HEAD
+ours
+||||||| base
+base
+=======
+theirs
+>>>>>>> x
+";
+        let p = parse_conflict_file(src).unwrap();
+        assert_eq!(p.hunks[0].ours, ["ours"]);
+        assert_eq!(p.hunks[0].theirs, ["theirs"]);
+        assert_eq!(p.result_content, "ours");
     }
 
     #[test]

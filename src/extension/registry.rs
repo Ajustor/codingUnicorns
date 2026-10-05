@@ -361,10 +361,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("ws");
         install(&ws, "rust-lang", &manifest("acme.rust", "1.1.0"));
-        let folder = tmp.path().join("folder");
-        install(&folder, ".", &manifest("acme.folder", "0.5.0"));
-        let broken = tmp.path().join("broken");
-        install(&broken, ".", "not toml [");
+        let folder = install(tmp.path(), "folder", &manifest("acme.folder", "0.5.0"));
+        let broken = install(tmp.path(), "broken", "not toml [");
 
         let mut r = registry(tmp.path());
         with_source(

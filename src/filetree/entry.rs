@@ -117,8 +117,8 @@ impl FileEntry {
 fn should_ignore(path: &Path, repo: Option<&git2::Repository>) -> bool {
     if let Some(repo) = repo {
         if let Some(workdir) = repo.workdir() {
-            if let Ok(relative) = path.strip_prefix(workdir) {
-                if let Ok(ignored) = repo.status_should_ignore(relative) {
+            if let Some(relative) = crate::git::relative_to_workdir(path, workdir) {
+                if let Ok(ignored) = repo.status_should_ignore(&relative) {
                     return ignored;
                 }
             }
