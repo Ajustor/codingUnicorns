@@ -11,7 +11,7 @@ use super::transport::LspTransport;
 
 /// Comparison key for a document URI: the decoded path, case-folded on
 /// Windows (case-insensitive filesystem, servers often lowercase `c:`).
-fn normalized_path_key(uri: &str) -> String {
+pub(crate) fn normalized_path_key(uri: &str) -> String {
     let p = uri_to_path_string(uri, cfg!(windows));
     if cfg!(windows) {
         p.to_lowercase()
@@ -166,6 +166,51 @@ pub struct DocumentSymbol {
     pub line: u32,
 }
 
+/// One result of a `workspace/symbol` query.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspaceSymbol {
+    pub name: String,
+    pub kind: String,
+    /// Enclosing symbol (module, class, …) as reported by the server.
+    pub container: Option<String>,
+    pub path: PathBuf,
+    pub line: u32,
+    pub col: u32,
+}
+
+/// Human-readable name of an LSP `SymbolKind` number.
+pub fn symbol_kind_name(kind: u64) -> &'static str {
+    match kind {
+        1 => "File",
+        2 => "Module",
+        3 => "Namespace",
+        4 => "Package",
+        5 => "Class",
+        6 => "Method",
+        7 => "Property",
+        8 => "Field",
+        9 => "Constructor",
+        10 => "Enum",
+        11 => "Interface",
+        12 => "Function",
+        13 => "Variable",
+        14 => "Constant",
+        15 => "String",
+        16 => "Number",
+        17 => "Boolean",
+        18 => "Array",
+        19 => "Object",
+        20 => "Key",
+        21 => "Null",
+        22 => "EnumMember",
+        23 => "Struct",
+        24 => "Event",
+        25 => "Operator",
+        26 => "TypeParameter",
+        _ => "Symbol",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodeAction {
     pub title: String,
@@ -198,6 +243,8 @@ struct LspClientInner {
 
 pub struct LspClient {
     pub diagnostics: HashMap<String, Vec<Diagnostic>>,
+    /// Bumped on every `publishDiagnostics`, so callers can cache derived views.
+    pub diagnostics_generation: u64,
     pub completions: Vec<CompletionItem>,
     pub is_connected: bool,
     inner: Option<LspClientInner>,
@@ -218,6 +265,7 @@ impl LspClient {
     pub fn new() -> Self {
         Self {
             diagnostics: HashMap::new(),
+            diagnostics_generation: 0,
             completions: vec![],
             is_connected: false,
             inner: None,
@@ -315,6 +363,9 @@ impl LspClient {
                                 "hover": { "contentFormat": ["plaintext", "markdown"] },
                                 "completion": { "completionItem": { "snippetSupport": false } },
                                 "publishDiagnostics": {}
+                            },
+                            "workspace": {
+                                "symbol": {}
                             }
                         }
                     }
@@ -473,6 +524,7 @@ impl LspClient {
                 // Notification (method, no id).
                 (None, Some("textDocument/publishDiagnostics")) => {
                     Self::process_diagnostics_msg(&mut self.diagnostics, &msg);
+                    self.diagnostics_generation = self.diagnostics_generation.wrapping_add(1);
                 }
                 // Work-done progress — track busy state (solution load / indexing).
                 (None, Some("$/progress")) => {
@@ -689,28 +741,11 @@ impl LspClient {
             Some(r) if r.is_array() => r.as_array().unwrap(),
             _ => return vec![],
         };
-        let kind_str = |k: u64| match k {
-            1 => "File",
-            2 => "Module",
-            5 => "Class",
-            6 => "Method",
-            7 => "Property",
-            8 => "Field",
-            9 => "Constructor",
-            10 => "Enum",
-            11 => "Interface",
-            12 => "Function",
-            13 => "Variable",
-            14 => "Constant",
-            23 => "Struct",
-            26 => "TypeParameter",
-            _ => "Symbol",
-        };
         let mut symbols = Vec::new();
         for item in result {
             let name = item["name"].as_str().unwrap_or("").to_string();
             let kind_num = item["kind"].as_u64().unwrap_or(0);
-            let kind = kind_str(kind_num).to_string();
+            let kind = symbol_kind_name(kind_num).to_string();
             // DocumentSymbol format uses `range`, SymbolInformation uses `location.range`
             let line = item["range"]["start"]["line"]
                 .as_u64()
@@ -721,6 +756,49 @@ impl LspClient {
             }
         }
         symbols
+    }
+
+    /// Request `workspace/symbol` for `query`. Returns the request id.
+    pub fn request_workspace_symbols(&mut self, query: &str) -> u64 {
+        let Some(inner) = &mut self.inner else {
+            return 0;
+        };
+        let id = Self::next_id(inner);
+        let _ = inner.transport.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "workspace/symbol",
+            "params": { "query": query }
+        }));
+        id
+    }
+
+    /// Parse a `workspace/symbol` response. Accepts both `SymbolInformation[]`
+    /// (`location.range`) and `WorkspaceSymbol[]` (whose `location` may be just
+    /// `{ uri }`, in which case the position defaults to the top of the file).
+    pub fn parse_workspace_symbols(response: &Value) -> Vec<WorkspaceSymbol> {
+        let Some(result) = response.get("result").and_then(|r| r.as_array()) else {
+            return vec![];
+        };
+        result
+            .iter()
+            .filter_map(|item| {
+                let name = item["name"].as_str().filter(|n| !n.is_empty())?;
+                let uri = item["location"]["uri"].as_str()?;
+                let start = &item["location"]["range"]["start"];
+                Some(WorkspaceSymbol {
+                    name: name.to_string(),
+                    kind: symbol_kind_name(item["kind"].as_u64().unwrap_or(0)).to_string(),
+                    container: item["containerName"]
+                        .as_str()
+                        .filter(|c| !c.is_empty())
+                        .map(|c| c.to_string()),
+                    path: uri_to_path(uri),
+                    line: start["line"].as_u64().unwrap_or(0) as u32,
+                    col: start["character"].as_u64().unwrap_or(0) as u32,
+                })
+            })
+            .collect()
     }
 
     /// Request find-all-references. Returns the request id.
@@ -1592,6 +1670,80 @@ mod tests {
         assert_eq!(syms[4].line, 0, "missing range defaults to 0");
         assert!(LspClient::parse_document_symbols(&json!({"result": null})).is_empty());
         assert!(LspClient::parse_document_symbols(&json!({"result": {}})).is_empty());
+    }
+
+    #[test]
+    fn workspace_symbols_request_and_disconnected_noop() {
+        assert_eq!(LspClient::new().request_workspace_symbols("q"), 0);
+        let mut h = connected();
+        let id = h.client.request_workspace_symbols("Foo");
+        assert_eq!(id, 2);
+        let sent = h.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["method"], "workspace/symbol");
+        assert_eq!(sent[0]["id"], 2);
+        assert_eq!(sent[0]["params"], json!({"query": "Foo"}));
+    }
+
+    #[test]
+    fn parse_workspace_symbols_both_formats() {
+        let resp = json!({"result": [
+            {"name": "Foo", "kind": 23, "containerName": "crate::a",
+             "location": {"uri": "file:///src/a.rs",
+                          "range": {"start": {"line": 4, "character": 11}}}},
+            // WorkspaceSymbol with a location lacking a range.
+            {"name": "bar", "kind": 12, "containerName": "",
+             "location": {"uri": "file:///my%20dir/b.rs"}},
+            {"name": "", "kind": 12, "location": {"uri": "file:///c.rs"}},
+            {"name": "nouri", "kind": 12},
+            {"name": "Odd", "kind": 999, "location": {"uri": "file:///d.rs"}}
+        ]});
+        let syms = LspClient::parse_workspace_symbols(&resp);
+        assert_eq!(syms.len(), 3);
+        assert_eq!(
+            syms[0],
+            WorkspaceSymbol {
+                name: "Foo".into(),
+                kind: "Struct".into(),
+                container: Some("crate::a".into()),
+                path: PathBuf::from("/src/a.rs"),
+                line: 4,
+                col: 11,
+            }
+        );
+        assert_eq!(syms[1].kind, "Function");
+        assert_eq!(syms[1].container, None, "empty container dropped");
+        assert_eq!(syms[1].path, PathBuf::from("/my dir/b.rs"));
+        assert_eq!((syms[1].line, syms[1].col), (0, 0));
+        assert_eq!(syms[2].kind, "Symbol");
+        assert!(LspClient::parse_workspace_symbols(&json!({"result": null})).is_empty());
+        assert!(LspClient::parse_workspace_symbols(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn symbol_kind_names_cover_the_spec() {
+        assert_eq!(symbol_kind_name(3), "Namespace");
+        assert_eq!(symbol_kind_name(22), "EnumMember");
+        assert_eq!(symbol_kind_name(26), "TypeParameter");
+        assert_eq!(symbol_kind_name(0), "Symbol");
+        for k in 1..=26 {
+            assert_ne!(symbol_kind_name(k), "Symbol", "kind {k}");
+        }
+    }
+
+    #[test]
+    fn publish_diagnostics_bumps_generation() {
+        let mut h = connected();
+        assert_eq!(h.client.diagnostics_generation, 0);
+        h.tx.send(json!({"method": "textDocument/publishDiagnostics",
+            "params": {"uri": "u", "diagnostics": []}}))
+            .unwrap();
+        h.tx.send(json!({"method": "window/logMessage", "params": {}}))
+            .unwrap();
+        h.client.poll();
+        assert_eq!(h.client.diagnostics_generation, 1);
+        h.client.poll();
+        assert_eq!(h.client.diagnostics_generation, 1, "no new publish");
     }
 
     #[test]
