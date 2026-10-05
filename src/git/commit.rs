@@ -100,6 +100,13 @@ impl GitStatus {
             .find_remote("origin")
             .map_err(|e| format!("Remote error: {e}"))?;
         fetch_remote(&mut remote, &[&branch_name])?;
+        if repo.state() != git2::RepositoryState::Clean {
+            self.refresh();
+            return Err(
+                "Cannot pull: a merge is already in progress. Resolve and commit it first."
+                    .to_string(),
+            );
+        }
         let remote_ref = format!("refs/remotes/origin/{}", branch_name);
         let remote_oid = repo
             .find_reference(&remote_ref)
@@ -112,27 +119,92 @@ impl GitStatus {
         let (analysis, _) = repo
             .merge_analysis(&[&annotated])
             .map_err(|e| format!("Merge analysis error: {e}"))?;
-        if analysis.is_fast_forward() {
-            let mut reference = repo
-                .find_reference(&format!("refs/heads/{}", branch_name))
-                .map_err(|e| format!("Branch ref error: {e}"))?;
-            reference
-                .set_target(remote_oid, "fast-forward pull")
-                .map_err(|e| format!("Fast-forward error: {e}"))?;
-            repo.set_head(&format!("refs/heads/{}", branch_name))
-                .map_err(|e| format!("Set HEAD error: {e}"))?;
-            repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
-                .map_err(|e| format!("Checkout error: {e}"))?;
-        } else if analysis.is_up_to_date() {
-            // nothing to do
+        let result = if analysis.is_up_to_date() {
+            Ok(())
+        } else if analysis.is_fast_forward() {
+            fast_forward(&repo, &branch_name, remote_oid)
+        } else if analysis.is_normal() {
+            merge_upstream(&repo, &branch_name, &annotated)
         } else {
-            return Err(
-                "Cannot fast-forward: diverged history. Please merge manually.".to_string(),
-            );
-        }
+            Err("Cannot pull: unsupported merge analysis result".to_string())
+        };
+        // Refresh even on failure: a conflicted merge must show its files.
         self.refresh();
-        Ok(())
+        result
     }
+}
+
+/// Map a checkout/merge error caused by uncommitted local changes.
+fn local_changes_error(context: &str, e: git2::Error) -> String {
+    if e.code() == git2::ErrorCode::Conflict {
+        format!("Pull would overwrite local changes: commit or stash them first ({e})")
+    } else {
+        format!("{context} error: {e}")
+    }
+}
+
+/// Move `branch` to `target`, updating the working tree without discarding
+/// uncommitted changes (the checkout fails instead).
+fn fast_forward(
+    repo: &git2::Repository,
+    branch_name: &str,
+    target: git2::Oid,
+) -> Result<(), String> {
+    let commit = repo
+        .find_commit(target)
+        .map_err(|e| format!("Find commit error: {e}"))?;
+    repo.checkout_tree(
+        commit.as_object(),
+        Some(git2::build::CheckoutBuilder::new().safe()),
+    )
+    .map_err(|e| local_changes_error("Checkout", e))?;
+    let refname = format!("refs/heads/{}", branch_name);
+    repo.find_reference(&refname)
+        .map_err(|e| format!("Branch ref error: {e}"))?
+        .set_target(target, "pull: fast-forward")
+        .map_err(|e| format!("Fast-forward error: {e}"))?;
+    repo.set_head(&refname)
+        .map_err(|e| format!("Set HEAD error: {e}"))?;
+    Ok(())
+}
+
+/// Merge the fetched upstream into the current branch. Without conflicts the
+/// merge commit is created right away; with conflicts the repository is left
+/// in merging state (markers in the files) for the merge view, and the
+/// regular commit flow concludes it.
+fn merge_upstream(
+    repo: &git2::Repository,
+    branch_name: &str,
+    upstream: &git2::AnnotatedCommit,
+) -> Result<(), String> {
+    repo.merge(&[upstream], None, None)
+        .map_err(|e| local_changes_error("Merge", e))?;
+    let mut index = repo.index().map_err(|e| format!("Index error: {e}"))?;
+    if index.has_conflicts() {
+        return Err("Merge conflicts: resolve them then commit".to_string());
+    }
+    let tree_oid = index
+        .write_tree()
+        .map_err(|e| format!("Write tree error: {e}"))?;
+    let tree = repo
+        .find_tree(tree_oid)
+        .map_err(|e| format!("Find tree error: {e}"))?;
+    let sig = repo
+        .signature()
+        .map_err(|e| format!("Signature error: {e}"))?;
+    let head = repo
+        .head()
+        .and_then(|h| h.peel_to_commit())
+        .map_err(|e| format!("HEAD error: {e}"))?;
+    let theirs = repo
+        .find_commit(upstream.id())
+        .map_err(|e| format!("Find commit error: {e}"))?;
+    let message = format!("Merge remote-tracking branch 'origin/{branch_name}'");
+    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &[&head, &theirs])
+        .map_err(|e| format!("Commit error: {e}"))?;
+    repo.cleanup_state()
+        .map_err(|e| format!("Cleanup state error: {e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -317,19 +389,6 @@ mod tests {
     }
 
     #[test]
-    fn push_non_fast_forward_is_reported_as_rejected() {
-        let (r, _bare, url) = with_origin();
-        let (_other_dir, other) = clone(&url);
-        commit_in(&other, "b.txt", "remote", "remote work");
-        push_from(&other);
-        r.write("a.txt", "local");
-        r.commit_all("local work");
-        let mut s = r.status();
-        let err = s.push().unwrap_err();
-        assert!(err.contains("non-fast-forward"), "{err}");
-    }
-
-    #[test]
     fn push_and_pull_report_missing_repo() {
         let dir = tempfile::tempdir().unwrap();
         if git2::Repository::discover(dir.path()).is_ok() {
@@ -370,21 +429,115 @@ mod tests {
     }
 
     #[test]
-    fn pull_refuses_diverged_history() {
+    fn pull_merges_diverged_history_with_merge_commit() {
         let (r, _bare, url) = with_origin();
         let (_other_dir, other) = clone(&url);
-        commit_in(&other, "b.txt", "remote", "remote work");
+        let remote_tip = commit_in(&other, "b.txt", "remote", "remote work");
         push_from(&other);
         r.write("a.txt", "local");
         let local = r.commit_all("local work");
 
         let mut s = r.status();
+        s.pull().unwrap();
+        let fresh = git2::Repository::open(r.path()).unwrap();
+        let c = fresh.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(
+            c.message(),
+            Some("Merge remote-tracking branch 'origin/main'")
+        );
+        assert_eq!(c.parent_id(0).unwrap(), local);
+        assert_eq!(c.parent_id(1).unwrap(), remote_tip);
+        assert_eq!(c.author().name(), Some("Test"), "repo identity");
+        assert_eq!(fresh.state(), git2::RepositoryState::Clean);
+        assert_eq!(r.read("a.txt"), "local");
+        assert_eq!(r.read("b.txt"), "remote");
+        assert!(s.files.is_empty(), "{:?}", s.files);
+        // Merged but not pushed yet: two local commits ahead.
+        assert_eq!((s.ahead, s.behind), (2, 0));
+        s.push().unwrap();
+        assert_eq!((s.ahead, s.behind), (0, 0));
+    }
+
+    #[test]
+    fn pull_with_conflicts_leaves_merge_for_the_merge_view() {
+        let (r, _bare, url) = with_origin();
+        let (_other_dir, other) = clone(&url);
+        let remote_tip = commit_in(&other, "a.txt", "theirs\n", "remote work");
+        push_from(&other);
+        r.write("a.txt", "ours\n");
+        let local = r.commit_all("local work");
+
+        let mut s = r.status();
         let err = s.pull().unwrap_err();
-        assert!(err.contains("diverged"), "{err}");
-        assert_eq!(r.head_oid(), local, "local branch untouched");
-        // The fetch did update the tracking ref, so we now know we're behind.
+        assert_eq!(err, "Merge conflicts: resolve them then commit");
+        assert_eq!(r.head_oid(), local, "no commit yet");
+        let fresh = git2::Repository::open(r.path()).unwrap();
+        assert_eq!(fresh.state(), git2::RepositoryState::Merge);
+        assert!(fresh.index().unwrap().has_conflicts());
+        let parsed = crate::git::merge::parse_conflict_file(&r.read("a.txt")).unwrap();
+        assert_eq!(parsed.hunks[0].ours, ["ours"]);
+        assert_eq!(parsed.hunks[0].theirs, ["theirs"]);
+        assert!(
+            s.files.iter().any(|f| f.path == "a.txt"),
+            "conflicted file listed: {:?}",
+            s.files
+        );
+
+        // A second pull refuses while the merge is in progress.
+        assert!(s
+            .pull()
+            .unwrap_err()
+            .contains("merge is already in progress"));
+
+        // Resolve, stage and commit through the normal flow.
+        r.write("a.txt", "resolved\n");
         s.refresh();
-        assert_eq!((s.ahead, s.behind), (1, 1));
+        s.stage_file("a.txt");
+        s.commit("Merge remote-tracking branch 'origin/main'")
+            .unwrap();
+        let fresh = git2::Repository::open(r.path()).unwrap();
+        let c = fresh.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(c.parent_count(), 2);
+        assert_eq!(c.parent_id(1).unwrap(), remote_tip);
+        assert_eq!(fresh.state(), git2::RepositoryState::Clean);
+    }
+
+    #[test]
+    fn pull_fast_forward_keeps_unrelated_local_changes_and_refuses_overwrite() {
+        let (r, _bare, url) = with_origin();
+        let (_other_dir, other) = clone(&url);
+        let remote_tip = commit_in(&other, "b.txt", "remote", "remote work");
+        push_from(&other);
+
+        // Uncommitted change to a file the pull touches: refused, nothing lost.
+        r.write("b.txt", "local draft");
+        let before = r.head_oid();
+        let mut s = r.status();
+        let err = s.pull().unwrap_err();
+        assert!(err.contains("local changes"), "{err}");
+        assert_eq!(r.head_oid(), before);
+        assert_eq!(r.read("b.txt"), "local draft");
+
+        // Unrelated uncommitted change: fast-forward proceeds and keeps it.
+        r.remove("b.txt");
+        r.write("a.txt", "edited");
+        s.pull().unwrap();
+        assert_eq!(r.head_oid(), remote_tip);
+        assert_eq!(r.read("a.txt"), "edited");
+        assert_eq!(r.read("b.txt"), "remote");
+    }
+
+    #[test]
+    fn push_non_fast_forward_is_reported_as_rejected() {
+        let (r, _bare, url) = with_origin();
+        let (_other_dir, other) = clone(&url);
+        commit_in(&other, "b.txt", "remote", "remote work");
+        push_from(&other);
+        r.write("a.txt", "local");
+        r.commit_all("local work");
+        let mut s = r.status();
+        let err = s.push().unwrap_err();
+        assert!(err.contains("non-fast-forward"), "{err}");
     }
 
     #[test]

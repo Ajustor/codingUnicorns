@@ -122,7 +122,11 @@ impl GitStatus {
                             FileChangeKind::None
                         };
 
-                        let wt_status = if st.contains(git2::Status::WT_MODIFIED) {
+                        // Unmerged paths only carry CONFLICTED: list them as
+                        // worktree changes so they can be resolved and staged.
+                        let wt_status = if st.contains(git2::Status::WT_MODIFIED)
+                            || st.contains(git2::Status::CONFLICTED)
+                        {
                             FileChangeKind::Modified
                         } else if st.contains(git2::Status::WT_NEW) {
                             FileChangeKind::Untracked
