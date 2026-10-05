@@ -79,8 +79,9 @@ impl CodingUnicorns {
             let mut editor2 = Editor::new();
             let mut tab_manager2 = TabManager::new();
             if let Some(ref path) = self.editor.current_path.clone() {
-                if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok((content, lossy)) = crate::editor::text_format::read_text_file(path) {
                     editor2.set_content(content.clone(), Some(path.clone()));
+                    editor2.decoded_lossy = lossy;
                     tab_manager2.open(path.clone(), content);
                 }
             }

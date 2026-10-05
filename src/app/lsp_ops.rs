@@ -274,9 +274,21 @@ impl CodingUnicorns {
     /// Apply rename edits from LSP to files on disk.
     #[allow(clippy::type_complexity)]
     pub fn apply_rename_edits(&mut self, edits: Vec<(PathBuf, Vec<(u32, u32, u32, String)>)>) {
+        use crate::editor::text_format;
         for (path, file_edits) in edits {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+            let Ok((raw, lossy)) = text_format::read_text_file(&path) else {
+                continue;
+            };
+            // Rewriting a lossily decoded file would corrupt its non-UTF-8 bytes.
+            if lossy {
+                log::warn!("rename: skipping non-UTF-8 file {}", path.display());
+                continue;
+            }
+            {
+                // Edit LF-only text, then write back the file's own line ending and BOM.
+                // `split` (not `lines`) keeps a trailing newline.
+                let (content, format) = text_format::normalize(raw);
+                let mut lines: Vec<String> = content.split('\n').map(str::to_string).collect();
                 // Sort edits in reverse order so positions stay valid
                 let mut sorted_edits = file_edits.clone();
                 sorted_edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
@@ -292,10 +304,10 @@ impl CodingUnicorns {
                     }
                 }
                 let new_content = lines.join("\n");
-                let _ = std::fs::write(&path, new_content);
+                let _ = std::fs::write(&path, text_format::encode(&new_content, format));
                 // Reload if it's the current file
                 if self.editor.current_path.as_deref() == Some(&path) {
-                    if let Ok(c) = std::fs::read_to_string(&path) {
+                    if let Ok((c, _)) = text_format::read_text_file(&path) {
                         let p = path.clone();
                         self.editor.set_content(c, Some(p));
                     }
