@@ -34,14 +34,19 @@ pub(super) fn find_next_occurrence(
         return None;
     }
     let total = buf.num_lines();
-    let row_order: Vec<usize> = (from_row..total).chain(0..from_row).collect();
-    for row_idx in row_order {
+    // (row, first match column, last match column). The start row is visited
+    // twice: from `from_col` onwards first, then — after wrapping around — its
+    // columns before `from_col`.
+    let row_order = std::iter::once((from_row, from_col, usize::MAX))
+        .chain((from_row + 1..total).map(|r| (r, 0, usize::MAX)))
+        .chain((0..from_row.min(total)).map(|r| (r, 0, usize::MAX)))
+        .chain((from_col > 0).then(|| (from_row, 0, from_col - 1)));
+    for (row_idx, start_col, max_col) in row_order {
         let line_chars: Vec<char> = buf.line(row_idx).chars().collect();
-        let start_col = if row_idx == from_row { from_col } else { 0 };
         if line_chars.len() < word_len {
             continue;
         }
-        let end = line_chars.len() - word_len;
+        let end = (line_chars.len() - word_len).min(max_col);
         if start_col > end {
             continue;
         }
@@ -104,11 +109,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: wrap-around never revisits the start row's columns before from_col"]
     fn find_next_occurrence_wraps_to_earlier_column_of_start_row() {
         // Doc promises wrapping to the beginning; a match earlier on the start row is missed.
         let buf = Buffer::from_str("a foo\nb");
         assert_eq!(find_next_occurrence(&buf, "foo", 0, 3), Some((0, 2)));
+    }
+
+    #[test]
+    fn find_next_occurrence_wraps_back_to_only_match_on_single_line() {
+        let buf = Buffer::from_str("foo bar");
+        assert_eq!(find_next_occurrence(&buf, "foo", 0, 3), Some((0, 0)));
+        assert_eq!(find_next_occurrence(&buf, "bar", 0, 7), Some((0, 4)));
     }
 
     #[test]

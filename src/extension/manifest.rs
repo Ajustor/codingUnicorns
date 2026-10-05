@@ -35,6 +35,39 @@ pub struct ExtensionManifest {
     pub dependencies: Dependencies,
 }
 
+impl ExtensionManifest {
+    /// Parse a `manifest.toml` and validate it. Every install path must use
+    /// this (not raw `toml::from_str`) because `extension.id` becomes a
+    /// directory name under the extensions dir.
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let manifest: Self = toml::from_str(s)?;
+        validate_extension_id(&manifest.extension.id)?;
+        Ok(manifest)
+    }
+}
+
+/// Reject extension ids that are not a single, safe path component.
+/// Allowed: non-empty, only `[A-Za-z0-9._-]`, and not `.` / `..`.
+/// This rules out separators (`/`, `\`), drive prefixes (`C:`), and
+/// parent-directory traversal.
+pub fn validate_extension_id(id: &str) -> anyhow::Result<()> {
+    if id.is_empty() {
+        anyhow::bail!("extension id must not be empty");
+    }
+    if id == "." || id == ".." {
+        anyhow::bail!("extension id `{id}` is not allowed");
+    }
+    if let Some(c) = id
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+    {
+        anyhow::bail!(
+            "extension id `{id}` contains invalid character `{c}` (allowed: A-Z a-z 0-9 . _ -)"
+        );
+    }
+    Ok(())
+}
+
 /// External tools/packages that must be installed for this module to work.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Dependencies {
@@ -111,6 +144,46 @@ cargo = ["ruff"]
 go = ["golang.org/x/tools/gopls@latest"]
 dotnet = ["csharp-ls@0.16.0"]
 "#;
+
+    #[test]
+    fn validate_extension_id_accepts_safe_ids() {
+        for id in ["acme.python", "a", "my-ext_2", "A.B.C", "...a", "a.."] {
+            assert!(validate_extension_id(id).is_ok(), "{id}");
+        }
+    }
+
+    #[test]
+    fn validate_extension_id_rejects_unsafe_ids() {
+        for id in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            r"a\b",
+            "/abs",
+            r"\abs",
+            r"C:\x",
+            "C:x",
+            r"a\..\..",
+            "a/../..",
+            "sp ace",
+            "nul\0",
+            "\u{e9}t\u{e9}",
+        ] {
+            assert!(validate_extension_id(id).is_err(), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_traversal_id_and_accepts_valid() {
+        let ok = ExtensionManifest::parse(FULL).unwrap();
+        assert_eq!(ok.extension.id, "acme.python");
+        let bad = FULL.replace("acme.python", "../evil");
+        let err = ExtensionManifest::parse(&bad).unwrap_err().to_string();
+        assert!(err.contains("extension id"), "{err}");
+        assert!(ExtensionManifest::parse("").is_err());
+    }
 
     #[test]
     fn parses_full_manifest() {

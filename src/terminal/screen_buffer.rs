@@ -7,7 +7,16 @@ pub(super) const DEFAULT_FG: Color32 = Color32::from_rgb(212, 212, 212);
 pub(super) struct Cell {
     pub(super) ch: char,
     pub(super) fg: Color32,
+    /// Background colour; `None` means the terminal's default background.
+    pub(super) bg: Option<Color32>,
     pub(super) bold: bool,
+}
+
+impl Cell {
+    /// True when the cell would render differently from a blank default cell.
+    pub(super) fn is_styled_or_printed(&self) -> bool {
+        self.ch != ' ' || self.fg != DEFAULT_FG || self.bg.is_some() || self.bold
+    }
 }
 
 impl Default for Cell {
@@ -15,6 +24,7 @@ impl Default for Cell {
         Self {
             ch: ' ',
             fg: DEFAULT_FG,
+            bg: None,
             bold: false,
         }
     }
@@ -30,6 +40,7 @@ pub(super) struct ScreenBuffer {
     pub(super) cols: usize,
     term_rows: usize,
     pub(super) current_fg: Color32,
+    pub(super) current_bg: Option<Color32>,
     pub(super) current_bold: bool,
     max_scrollback: usize,
 }
@@ -44,6 +55,7 @@ impl ScreenBuffer {
             cols,
             term_rows: rows,
             current_fg: DEFAULT_FG,
+            current_bg: None,
             current_bold: false,
             max_scrollback: 10_000,
         }
@@ -61,6 +73,7 @@ impl ScreenBuffer {
                 *cell = Cell {
                     ch,
                     fg: self.current_fg,
+                    bg: self.current_bg,
                     bold: self.current_bold,
                 };
             }
@@ -179,23 +192,52 @@ impl ScreenBuffer {
             match params[i] {
                 0 => {
                     self.current_fg = DEFAULT_FG;
+                    self.current_bg = None;
                     self.current_bold = false;
                 }
                 1 => self.current_bold = true,
                 22 => self.current_bold = false,
                 39 => self.current_fg = DEFAULT_FG,
+                49 => self.current_bg = None,
                 30..=37 => self.current_fg = ansi_color(params[i] - 30, false),
                 90..=97 => self.current_fg = ansi_color(params[i] - 90, true),
-                38 if params.get(i + 1) == Some(&5) => {
-                    if let Some(&n) = params.get(i + 2) {
-                        self.current_fg = color_256(n);
-                        i += 2;
+                40..=47 => self.current_bg = Some(ansi_color(params[i] - 40, false)),
+                100..=107 => self.current_bg = Some(ansi_color(params[i] - 100, true)),
+                code @ (38 | 48) => {
+                    // Extended colour: `5;n` (256-colour) or `2;r;g;b` (truecolor).
+                    // Always consume the arguments so they are never misread as
+                    // standalone SGR codes, even when the sequence is truncated.
+                    let (color, consumed) = parse_extended_color(&params[i + 1..]);
+                    if let Some(c) = color {
+                        if code == 38 {
+                            self.current_fg = c;
+                        } else {
+                            self.current_bg = Some(c);
+                        }
                     }
+                    i += consumed;
                 }
                 _ => {}
             }
             i += 1;
         }
+    }
+}
+
+/// Parse the arguments following an SGR `38` / `48`. Returns the colour (if
+/// complete and valid) and how many parameters were consumed.
+fn parse_extended_color(args: &[u16]) -> (Option<Color32>, usize) {
+    let comp = |v: u16| v.min(255) as u8;
+    match args.first() {
+        Some(5) => match args.get(1) {
+            Some(&n) => (Some(color_256(n)), 2),
+            None => (None, args.len()),
+        },
+        Some(2) => match args.get(1..4) {
+            Some(&[r, g, b]) => (Some(Color32::from_rgb(comp(r), comp(g), comp(b))), 4),
+            _ => (None, args.len()),
+        },
+        _ => (None, 0),
     }
 }
 
@@ -488,7 +530,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: 24-bit SGR (38;2;r;g;b) unsupported; r/g/b are misread as standalone SGR codes"]
     fn sgr_truecolor() {
         let mut b = ScreenBuffer::new(1, 1);
         b.set_sgr(&[38, 2, 10, 31, 0]);
@@ -496,7 +537,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: background SGR 48;5;n / 48;2;r;g;b leaks n/r/g/b into the foreground color"]
     fn sgr_background_256_does_not_change_foreground() {
         let mut b = ScreenBuffer::new(1, 1);
         b.set_sgr(&[48, 5, 31]);
@@ -504,10 +544,62 @@ mod tests {
     }
 
     #[test]
+    fn sgr_background_colors() {
+        let mut b = ScreenBuffer::new(1, 1);
+        b.set_sgr(&[48, 5, 31]);
+        assert_eq!(b.current_bg, Some(color_256(31)));
+        b.set_sgr(&[48, 2, 1, 2, 3]);
+        assert_eq!(b.current_bg, Some(Color32::from_rgb(1, 2, 3)));
+        assert_eq!(b.current_fg, DEFAULT_FG);
+        b.set_sgr(&[41]);
+        assert_eq!(b.current_bg, Some(ansi_color(1, false)));
+        b.set_sgr(&[102]);
+        assert_eq!(b.current_bg, Some(ansi_color(2, true)));
+        b.set_sgr(&[49]);
+        assert_eq!(b.current_bg, None);
+        b.set_sgr(&[44]);
+        b.set_sgr(&[0]);
+        assert_eq!(b.current_bg, None);
+        b.set_sgr(&[45]);
+        b.write_char('x');
+        assert_eq!(b.rows[0][0].bg, Some(ansi_color(5, false)));
+        assert!(b.rows[0][0].is_styled_or_printed());
+    }
+
+    #[test]
+    fn sgr_extended_colors_consume_their_arguments() {
+        let mut b = ScreenBuffer::new(1, 1);
+        // 38;5;1 followed by bold: the `1` palette index must not set bold.
+        b.set_sgr(&[38, 5, 1]);
+        assert!(!b.current_bold);
+        assert_eq!(b.current_fg, color_256(1));
+        // Truecolor then a real code after it is still honoured.
+        b.set_sgr(&[38, 2, 0, 1, 31, 1]);
+        assert_eq!(b.current_fg, Color32::from_rgb(0, 1, 31));
+        assert!(b.current_bold);
+        // Background truecolor with components that look like fg codes.
+        b.set_sgr(&[0, 48, 2, 31, 32, 33]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+        assert_eq!(b.current_bg, Some(Color32::from_rgb(31, 32, 33)));
+        // Truncated truecolor is ignored and its partial args are not reinterpreted.
+        b.set_sgr(&[0, 38, 2, 31, 1]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+        assert!(!b.current_bold);
+        // Out-of-range components clamp.
+        b.set_sgr(&[38, 2, 300, 0, 0]);
+        assert_eq!(b.current_fg, Color32::from_rgb(255, 0, 0));
+        // Unknown colour space: just skip the 38.
+        b.set_sgr(&[0, 38, 31]);
+        assert_eq!(b.current_fg, ansi_color(1, false));
+    }
+
+    #[test]
     fn cell_default_is_blank() {
         let c = Cell::default();
         assert_eq!(c.ch, ' ');
         assert_eq!(c.fg, DEFAULT_FG);
+        assert_eq!(c.bg, None);
+        assert!(!c.is_styled_or_printed());
         assert!(!c.bold);
         assert_eq!(c.clone().ch, ' ');
     }

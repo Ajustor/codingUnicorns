@@ -25,6 +25,10 @@ pub struct DapClient {
     initialized: bool,
     /// Breakpoints that need to be sent after the `initialized` event.
     pending_breakpoints: Vec<(PathBuf, Vec<usize>)>,
+    /// Whether `launch` has been sent. Per the DAP spec it goes out right after the
+    /// `initialize` response; some adapters (e.g. debugpy) only emit `initialized`
+    /// once they have received it.
+    launch_sent: bool,
 }
 
 impl DapClient {
@@ -38,12 +42,14 @@ impl DapClient {
 
     /// Build a client on top of an already-connected transport and send `initialize`.
     fn from_transport(mut transport: DapTransport, cfg: &DapConfig, workspace: &Path) -> Self {
-        // Substitute ${workspaceFolder} in launch_config.
-        let launch_config_str = cfg.launch_config.to_string();
-        let launch_config_str =
-            launch_config_str.replace("${workspaceFolder}", &workspace.to_string_lossy());
-        let launch_config: Value =
-            serde_json::from_str(&launch_config_str).unwrap_or(cfg.launch_config.clone());
+        // Substitute ${workspaceFolder} in launch_config (on parsed string
+        // values, so backslashes in Windows paths need no JSON escaping).
+        let mut launch_config = cfg.launch_config.clone();
+        substitute_variable(
+            &mut launch_config,
+            "${workspaceFolder}",
+            &workspace.to_string_lossy(),
+        );
 
         // Send initialize request.
         let seq = 1u64;
@@ -76,6 +82,7 @@ impl DapClient {
             pending_vars_seq: None,
             initialized: false,
             pending_breakpoints: vec![],
+            launch_sent: false,
         }
     }
 
@@ -105,7 +112,6 @@ impl DapClient {
     }
 
     fn flush_breakpoints_for(&mut self, file: &Path, lines: &[usize]) {
-        let uri = format!("file://{}", file.display());
         let bps: Vec<Value> = lines.iter().map(|l| json!({ "line": l })).collect();
         let seq = self.next_seq();
         let _ = self.transport.send(&json!({
@@ -118,7 +124,6 @@ impl DapClient {
                 "sourceModified": false
             }
         }));
-        let _ = uri;
     }
 
     fn send_configuration_done(&mut self) {
@@ -131,6 +136,10 @@ impl DapClient {
     }
 
     fn send_launch(&mut self) {
+        if self.launch_sent {
+            return;
+        }
+        self.launch_sent = true;
         let seq = self.next_seq();
         let mut args = self.launch_config.clone();
         // Inject workspaceFolder if not already present.
@@ -224,13 +233,14 @@ impl DapClient {
                     match event {
                         "initialized" => {
                             self.initialized = true;
-                            // Send all pending breakpoints then launch.
+                            // Adapters that emit `initialized` before answering
+                            // `initialize` still need `launch` first (no-op if sent).
+                            self.send_launch();
                             let bps = self.pending_breakpoints.clone();
                             for (file, lines) in &bps {
                                 self.flush_breakpoints_for(file, lines);
                             }
                             self.send_configuration_done();
-                            self.send_launch();
                         }
                         "stopped" => {
                             let thread_id = msg["body"]["threadId"].as_i64().unwrap_or(1);
@@ -270,6 +280,15 @@ impl DapClient {
                     let command = msg["command"].as_str().unwrap_or("");
                     let seq = msg["request_seq"].as_u64().unwrap_or(0);
                     match command {
+                        "initialize" => {
+                            if msg["success"].as_bool().unwrap_or(true) {
+                                self.send_launch();
+                            } else {
+                                let err = msg["message"].as_str().unwrap_or("initialize failed");
+                                self.output_log.push(format!("[dap] {err}"));
+                                self.state = DebugSessionState::Terminated;
+                            }
+                        }
                         "stackTrace" if Some(seq) == self.pending_stack_seq => {
                             self.call_stack.clear();
                             if let Some(frames) = msg["body"]["stackFrames"].as_array() {
@@ -352,11 +371,30 @@ impl DapClient {
 
     /// Substitute `${file}` in the launch config with the given path.
     pub fn set_file_variable(&mut self, path: &Path) {
-        let s = self.launch_config.to_string();
-        let s = s.replace("${file}", path.to_string_lossy().as_ref());
-        if let Ok(v) = serde_json::from_str::<Value>(&s) {
-            self.launch_config = v;
+        substitute_variable(
+            &mut self.launch_config,
+            "${file}",
+            path.to_string_lossy().as_ref(),
+        );
+    }
+}
+
+/// Replace `var` with `replacement` in every string value of a JSON tree.
+/// Works on parsed values, so the replacement is never re-parsed as JSON.
+fn substitute_variable(value: &mut Value, var: &str, replacement: &str) {
+    match value {
+        Value::String(s) if s.contains(var) => *s = s.replace(var, replacement),
+        Value::Array(items) => {
+            for item in items {
+                substitute_variable(item, var, replacement);
+            }
         }
+        Value::Object(map) => {
+            for v in map.values_mut() {
+                substitute_variable(v, var, replacement);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -467,7 +505,24 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: ${workspaceFolder}/${file} substitution breaks on backslash (Windows) paths"]
+    fn substitution_walks_nested_values_and_keeps_special_chars() {
+        let mut v = json!({
+            "args": ["${file}", "--x=${file}", 3, null],
+            "env": {"P": "${file}", "n": {"deep": "a ${file} b"}},
+            "${file}": true
+        });
+        let p = r#"C:\dir "q"\a.py"#;
+        substitute_variable(&mut v, "${file}", p);
+        assert_eq!(v["args"][0], p);
+        assert_eq!(v["args"][1], format!("--x={p}"));
+        assert_eq!(v["args"][2], 3);
+        assert_eq!(v["env"]["P"], p);
+        assert_eq!(v["env"]["n"]["deep"], format!("a {p} b"));
+        // Keys are left untouched.
+        assert_eq!(v["${file}"], true);
+    }
+
+    #[test]
     fn substitution_handles_backslash_paths() {
         let (_tx, rx) = unbounded();
         let transport = DapTransport::from_parts(
@@ -544,17 +599,50 @@ mod tests {
         h.push(json!({"type": "event", "event": "initialized"}));
         assert!(!h.client.poll());
         let sent = h.sent();
+        // No initialize response yet: launch still goes out before configuration.
         assert_eq!(
             commands(&sent),
-            vec!["setBreakpoints", "configurationDone", "launch"]
+            vec!["launch", "setBreakpoints", "configurationDone"]
         );
-        let bp = &sent[0]["arguments"];
+        let bp = &sent[1]["arguments"];
         assert_eq!(bp["source"]["name"], "a.py");
         assert_eq!(bp["breakpoints"], json!([{"line": 9}]));
         assert_eq!(bp["sourceModified"], false);
         // launch gets cwd injected from the workspace.
-        assert_eq!(sent[2]["arguments"]["cwd"], "/ws");
-        assert_eq!(sent[2]["arguments"]["type"], "test");
+        assert_eq!(sent[0]["arguments"]["cwd"], "/ws");
+        assert_eq!(sent[0]["arguments"]["type"], "test");
+    }
+
+    #[test]
+    fn launch_is_sent_on_initialize_response_before_initialized_event() {
+        // debugpy-style adapters only emit `initialized` after receiving `launch`.
+        let mut h = harness();
+        h.sent();
+        h.client.set_breakpoints(Path::new("/ws/a.py"), &[3]);
+        h.push(
+            json!({"type": "response", "command": "initialize", "request_seq": 1, "success": true}),
+        );
+        h.client.poll();
+        assert_eq!(commands(&h.sent()), vec!["launch"]);
+
+        h.push(json!({"type": "event", "event": "initialized"}));
+        h.client.poll();
+        assert_eq!(
+            commands(&h.sent()),
+            vec!["setBreakpoints", "configurationDone"],
+            "launch must not be sent twice"
+        );
+    }
+
+    #[test]
+    fn failed_initialize_terminates_without_launch() {
+        let mut h = harness();
+        h.sent();
+        h.push(json!({"type": "response", "command": "initialize", "request_seq": 1, "success": false, "message": "boom"}));
+        h.client.poll();
+        assert!(h.sent().is_empty());
+        assert_eq!(h.client.state, DebugSessionState::Terminated);
+        assert!(h.client.output_log.iter().any(|l| l.contains("boom")));
     }
 
     #[test]
@@ -589,11 +677,12 @@ mod tests {
     }
 
     #[test]
-    fn set_file_variable_keeps_config_if_result_is_invalid_json() {
+    fn set_file_variable_handles_quotes_in_path() {
         let mut h = harness();
-        // A quote in the path would break the JSON string; the old config is kept.
+        // Substitution works on parsed JSON strings, so a quote in the path is
+        // substituted verbatim instead of breaking the config.
         h.client.set_file_variable(Path::new("/ws/we\"ird.py"));
-        assert_eq!(h.client.launch_config["program"], "${file}");
+        assert_eq!(h.client.launch_config["program"], "/ws/we\"ird.py");
     }
 
     #[test]

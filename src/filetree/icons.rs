@@ -2,7 +2,12 @@ use egui_phosphor::regular as ph;
 
 /// Returns (phosphor icon char, color) for a given filename.
 pub fn file_icon(name: &str) -> (&'static str, egui::Color32) {
-    let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+    // `Path::extension` semantics: `go`, `lock` and `.go` have no extension.
+    let ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     match ext.as_str() {
         "rs" => (ph::FILE_RS, egui::Color32::from_rgb(222, 99, 52)),
         "py" => (ph::FILE_PY, egui::Color32::from_rgb(53, 114, 165)),
@@ -127,10 +132,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: an extension-less file whose whole name is an extension (e.g. `go`, `lock`) gets that language's icon"]
     fn bare_name_without_dot_is_not_treated_as_extension() {
         let generic = (ph::FILE, Color32::from_gray(160));
         assert_eq!(file_icon("lock"), generic);
         assert_eq!(file_icon("go"), generic);
+    }
+
+    #[test]
+    fn dotfile_named_like_an_extension_is_generic() {
+        let generic = (ph::FILE, Color32::from_gray(160));
+        assert_eq!(file_icon(".go"), generic);
+        assert_eq!(file_icon(".lock"), generic);
+        assert_eq!(file_icon(".eslintrc.json").0, ph::BRACKETS_CURLY);
     }
 }

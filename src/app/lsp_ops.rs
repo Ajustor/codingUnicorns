@@ -22,7 +22,7 @@ impl CodingUnicorns {
     pub fn notify_lsp_change(&mut self, path: &std::path::Path, content: &str, version: i32) {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if let Some(client) = self.lsp.get_mut(ext) {
-                let uri = format!("file://{}", path.display());
+                let uri = crate::lsp::client::path_to_uri(path);
                 client.did_change(&uri, version, content);
             }
         }
@@ -36,7 +36,7 @@ impl CodingUnicorns {
         if !client.is_connected {
             return None;
         }
-        let uri = format!("file://{}", path.display());
+        let uri = crate::lsp::client::path_to_uri(path);
         Some(client.request_hover(&uri, line, col))
     }
 
@@ -49,7 +49,7 @@ impl CodingUnicorns {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if let Some(client) = self.lsp.get_mut(ext) {
                     if client.is_connected {
-                        let uri = format!("file://{}", path.display());
+                        let uri = crate::lsp::client::path_to_uri(&path);
                         self.pending_definition_id =
                             Some(client.request_definition(&uri, row as u32, col as u32));
                         lsp_sent = true;
@@ -156,7 +156,7 @@ impl CodingUnicorns {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if let Some(client) = self.lsp.get_mut(ext) {
                     if client.is_connected {
-                        let uri = format!("file://{}", path.display());
+                        let uri = crate::lsp::client::path_to_uri(&path);
                         self.pending_references_id =
                             Some(client.request_references(&uri, row as u32, col as u32));
                     }
@@ -215,7 +215,7 @@ impl CodingUnicorns {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if let Some(client) = self.lsp.get_mut(ext) {
                     if client.is_connected {
-                        let uri = format!("file://{}", path.display());
+                        let uri = crate::lsp::client::path_to_uri(&path);
                         let diag_messages: Vec<String> = self
                             .editor
                             .diagnostics

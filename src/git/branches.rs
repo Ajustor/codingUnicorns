@@ -110,17 +110,19 @@ impl GitStatus {
             .map_err(|e| e.message().to_string())?;
         repo.checkout_tree(&object, None)
             .map_err(|e| e.message().to_string())?;
-        if let Some(reference) = reference {
-            repo.set_head(
-                reference
-                    .name()
-                    .unwrap_or(&format!("refs/heads/{}", branch_name)),
-            )
-            .map_err(|e| e.message().to_string())?;
-        } else {
-            repo.set_head(&format!("refs/heads/{}", branch_name))
-                .map_err(|e| e.message().to_string())?;
+        match reference.as_ref().and_then(|r| r.name()) {
+            // A reference (branch, tag, remote): libgit2 attaches HEAD to a
+            // local branch and detaches for anything else.
+            Some(name) => repo.set_head(name),
+            // Not a reference (commit sha, `HEAD~1`, ...): detach at it.
+            None => {
+                let commit = object
+                    .peel_to_commit()
+                    .map_err(|e| e.message().to_string())?;
+                repo.set_head_detached(commit.id())
+            }
         }
+        .map_err(|e| e.message().to_string())?;
         self.refresh();
         Ok(())
     }
@@ -169,14 +171,26 @@ impl GitStatus {
     pub fn create_branch(&mut self, name: &str, from_branch: &str) -> Result<(), String> {
         let repo_path = self.repo_path.as_ref().ok_or("No repository")?;
         let repo = git2::Repository::discover(repo_path).map_err(|e| e.message().to_string())?;
-        let reference = repo
-            .find_reference(&format!("refs/heads/{}", from_branch))
-            .map_err(|e| e.message().to_string())?;
-        let commit = reference
+        // Local branch first, then remote-tracking branch (`origin/x`).
+        let (branch, is_remote) = match repo.find_branch(from_branch, git2::BranchType::Local) {
+            Ok(b) => (b, false),
+            Err(local_err) => match repo.find_branch(from_branch, git2::BranchType::Remote) {
+                Ok(b) => (b, true),
+                Err(_) => return Err(local_err.message().to_string()),
+            },
+        };
+        let commit = branch
+            .get()
             .peel_to_commit()
             .map_err(|e| e.message().to_string())?;
-        repo.branch(name, &commit, false)
+        let mut new_branch = repo
+            .branch(name, &commit, false)
             .map_err(|e| e.message().to_string())?;
+        if is_remote {
+            // Like `git branch <name> origin/x`: track the remote branch.
+            // Best effort; the branch itself was created successfully.
+            let _ = new_branch.set_upstream(Some(from_branch));
+        }
         self.refresh();
         Ok(())
     }
@@ -415,7 +429,6 @@ mod tests {
     /// unborn branch. Not reachable from the current UI (which only passes
     /// local branch names) but the API is wrong.
     #[test]
-    #[ignore = "BUG: checkout_branch(<commit sha>) leaves HEAD on unborn branch refs/heads/<sha> instead of detaching"]
     fn checkout_commit_hash_detaches_head() {
         let r = diverged();
         let base = r.repo.revparse_single("main~1").unwrap().id();
@@ -485,7 +498,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: committing after a non-ff merge_branch creates a single-parent commit and leaves the repo in MERGE state"]
     fn commit_after_merge_records_both_parents() {
         let r = diverged();
         let feature_tip = r
@@ -561,7 +573,6 @@ mod tests {
     /// The git panel offers "Create new branch from here" on *remote*
     /// branches, passing names like `origin/feature`.
     #[test]
-    #[ignore = "BUG: create_branch only looks under refs/heads/, so creating from a remote branch (origin/x) always fails"]
     fn create_branch_from_remote_branch() {
         let r = diverged();
         let tip = r.repo.revparse_single("feature").unwrap().id();
@@ -571,6 +582,82 @@ mod tests {
         let mut s = r.status();
         s.create_branch("feature-local", "origin/feature").unwrap();
         assert_eq!(r.repo.revparse_single("feature-local").unwrap().id(), tip);
+    }
+
+    #[test]
+    fn create_branch_from_remote_sets_upstream_when_remote_exists() {
+        let r = diverged();
+        let (_origin_dir, url) = crate::git::tests::bare_origin();
+        r.repo.remote("origin", &url).unwrap();
+        let tip = r.repo.revparse_single("feature").unwrap().id();
+        r.repo
+            .reference("refs/remotes/origin/feature", tip, true, "t")
+            .unwrap();
+        let mut s = r.status();
+        s.create_branch("feature-local", "origin/feature").unwrap();
+        let b = r
+            .repo
+            .find_branch("feature-local", git2::BranchType::Local)
+            .unwrap();
+        assert_eq!(
+            b.upstream().unwrap().name().unwrap(),
+            Some("origin/feature")
+        );
+        // Local branches still win and get no upstream.
+        s.create_branch("main-2", "main").unwrap();
+        let b = r
+            .repo
+            .find_branch("main-2", git2::BranchType::Local)
+            .unwrap();
+        assert!(b.upstream().is_err());
+    }
+
+    #[test]
+    fn checkout_relative_revision_detaches_head() {
+        let r = diverged();
+        let base = r.repo.revparse_single("main~1").unwrap().id();
+        let mut s = r.status();
+        s.checkout_branch("main~1").unwrap();
+        assert!(r.repo.head_detached().unwrap());
+        assert_eq!(r.head_oid(), base);
+        assert!(r.repo.find_reference("refs/heads/main~1").is_err());
+        // And back onto a branch re-attaches HEAD.
+        s.checkout_branch("main").unwrap();
+        assert!(!r.repo.head_detached().unwrap());
+        assert_eq!(r.head_name(), "main");
+    }
+
+    #[test]
+    fn commit_after_conflicted_merge_resolution_records_both_parents() {
+        let r = TestRepo::new();
+        r.write("f.txt", "base\n");
+        r.commit_all("base");
+        r.branch("other");
+        r.write("f.txt", "ours\n");
+        r.commit_all("ours");
+        r.switch("other");
+        r.write("f.txt", "theirs\n");
+        let theirs = r.commit_all("theirs");
+        r.switch("main");
+        let mut s = r.status();
+        s.merge_branch("other").unwrap();
+        r.write("f.txt", "resolved\n");
+        s.refresh();
+        s.stage_file("f.txt");
+        assert!(s.last_error.is_none(), "{:?}", s.last_error);
+        s.commit("Merge other").unwrap();
+        let fresh = git2::Repository::open(r.path()).unwrap();
+        let c = fresh.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(c.parent_count(), 2);
+        assert_eq!(c.parent_id(1).unwrap(), theirs);
+        assert_eq!(fresh.state(), git2::RepositoryState::Clean);
+        // A following ordinary commit is single-parent again.
+        r.write("g.txt", "g");
+        s.refresh();
+        s.stage_file("g.txt");
+        s.commit("after").unwrap();
+        let c = fresh.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(c.parent_count(), 1);
     }
 
     #[test]

@@ -165,8 +165,12 @@ impl Editor {
         let mut files_checked = 0;
 
         while let Some((dir, depth)) = stack.pop() {
-            if depth > 8 || files_checked > 1000 {
+            if files_checked > 1000 {
                 break;
+            }
+            if depth > 8 {
+                // Too deep: skip this directory but keep searching the others.
+                continue;
             }
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
@@ -476,7 +480,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: hitting a directory deeper than 8 levels aborts the whole workspace search (break instead of continue)"]
     fn workspace_lookup_continues_past_deep_directories() {
         let dir = tempfile::tempdir().unwrap();
         // "aaa" is pushed first so the deep "zzz" chain is popped (and aborts) before it.

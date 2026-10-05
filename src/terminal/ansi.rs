@@ -40,17 +40,6 @@ impl Perform for AnsiPerformer {
             .collect();
         let n0 = ns.first().copied().unwrap_or(0);
         let n1 = ns.get(1).copied().unwrap_or(0);
-        // TEMP DEBUG — log only DSR queries (ESC[5n / ESC[6n) to keep noise low.
-        if action == 'n' {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(std::env::temp_dir().join("cu_csi.txt"))
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "DSR query 'n' {ns:?}");
-            }
-        }
         match action {
             'A' => self.buf.move_cursor('A', n0.max(1) as usize),
             'B' => self.buf.move_cursor('B', n0.max(1) as usize),
@@ -254,11 +243,29 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: 24-bit SGR (38;2;r;g;b) unsupported; components misread as SGR codes"]
     fn sgr_truecolor_sequence() {
         let mut t = Term::new();
         t.feed(b"\x1b[38;2;10;31;0mX");
         assert_eq!(t.p.buf.rows[0][0].fg, egui::Color32::from_rgb(10, 31, 0));
+    }
+
+    #[test]
+    fn sgr_background_sequence_keeps_foreground() {
+        let mut t = Term::new();
+        t.feed(b"\x1b[48;2;1;31;1mX\x1b[48;5;196mY");
+        let cells = &t.p.buf.rows[0];
+        assert_eq!(cells[0].fg, DEFAULT_FG);
+        assert!(!cells[0].bold);
+        assert_eq!(cells[0].bg, Some(egui::Color32::from_rgb(1, 31, 1)));
+        assert_eq!(cells[1].bg, Some(color_256(196)));
+    }
+
+    #[test]
+    fn dsr_query_does_not_write_debug_log() {
+        // DSR replies go to `responses` only (no leftover debug file logging).
+        let mut t = Term::new();
+        t.feed(b"\x1b[6n");
+        assert_eq!(t.p.responses, b"\x1b[1;1R");
     }
 
     #[test]
