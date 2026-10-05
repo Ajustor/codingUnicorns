@@ -371,6 +371,20 @@ impl Terminal {
                         to_send.push_str(text);
                         false
                     }
+                    // egui-winit turns Ctrl+C / Ctrl+X / Ctrl+V into these and emits no
+                    // Key event; the terminal has no selection, so forward the control codes.
+                    egui::Event::Copy => {
+                        to_send.push('');
+                        false
+                    }
+                    egui::Event::Cut => {
+                        to_send.push('');
+                        false
+                    }
+                    egui::Event::Paste(text) => {
+                        to_send.push_str(text);
+                        false
+                    }
                     egui::Event::Key {
                         key,
                         pressed: true,
@@ -661,6 +675,22 @@ mod tests {
         let _ = ctx.run(raw, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| t.show_content(ui, &cfg));
         });
+    }
+
+    #[test]
+    fn focused_terminal_forwards_clipboard_events() {
+        // egui-winit sends these (no Key event) for Ctrl+C / Ctrl+X / Ctrl+V.
+        let (mut t, _tx, out) = fake_terminal();
+        t.focused = true;
+        run_frame(
+            &mut t,
+            vec![
+                egui::Event::Copy,
+                egui::Event::Cut,
+                egui::Event::Paste("echo hi".into()),
+            ],
+        );
+        assert_eq!(out.take(), b"echo hi");
     }
 
     #[test]
