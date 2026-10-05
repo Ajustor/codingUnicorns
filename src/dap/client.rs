@@ -166,10 +166,16 @@ impl DapClient {
         if args.get("cwd").is_none() {
             args["cwd"] = json!(self.workspace.to_string_lossy());
         }
+        // launch.json entries may ask to attach to a running process instead.
+        let command = if args["request"] == "attach" {
+            "attach"
+        } else {
+            "launch"
+        };
         let _ = self.transport.send(&json!({
             "seq": seq,
             "type": "request",
-            "command": "launch",
+            "command": command,
             "arguments": args
         }));
     }
@@ -820,6 +826,19 @@ mod tests {
         assert_eq!(commands(&sent), vec!["setBreakpoints", "setBreakpoints"]);
         assert_eq!(sent[0]["arguments"]["breakpoints"], json!([{"line": 4}]));
         assert_eq!(sent[1]["arguments"]["breakpoints"], json!([]));
+    }
+
+    #[test]
+    fn attach_request_sends_attach_instead_of_launch() {
+        let mut h = harness_with(json!({"request": "attach", "connect": {"port": 5678}}));
+        h.sent();
+        h.push(
+            json!({"type": "response", "command": "initialize", "request_seq": 1, "success": true}),
+        );
+        h.client.poll();
+        let sent = h.sent();
+        assert_eq!(commands(&sent), vec!["attach"]);
+        assert_eq!(sent[0]["arguments"]["connect"]["port"], 5678);
     }
 
     #[test]
