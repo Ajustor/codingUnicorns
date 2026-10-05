@@ -250,8 +250,20 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     Some(_) => LspStatus::Ready,
                 }
             };
-            app.status_bar
-                .show(ui, &app.editor, &app.git_status, lsp_status, app.palette);
+            let counts = app.problems_panel.counts();
+            let problems = (lsp_status != LspStatus::Inactive
+                || counts.errors + counts.warnings > 0)
+                .then_some((counts.errors, counts.warnings));
+            if app.status_bar.show(
+                ui,
+                &app.editor,
+                &app.git_status,
+                lsp_status,
+                problems,
+                app.palette,
+            ) {
+                app.problems_panel.open = !app.problems_panel.open;
+            }
         });
 
     if app.show_terminal {
@@ -777,6 +789,22 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     }
                 }
             });
+    }
+
+    // Problems panel (bottom, Ctrl+Shift+M)
+    if app.problems_panel.open {
+        let target = TopBottomPanel::bottom("problems_panel")
+            .resizable(true)
+            .min_height(80.0)
+            .default_height(180.0)
+            .show(ctx, |ui| {
+                app.problems_panel
+                    .show(ui, app.workspace_path.as_deref(), app.palette)
+            })
+            .inner;
+        if let Some((path, line, col)) = target {
+            app.goto_location(path, line, col);
+        }
     }
 
     // References panel (bottom)

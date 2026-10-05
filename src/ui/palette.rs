@@ -1,7 +1,38 @@
 use crate::filetree::FileTree;
+use crate::lsp::client::{DocumentSymbol, WorkspaceSymbol};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// Quiet time after the last keystroke before `workspace/symbol` is sent.
+pub const WORKSPACE_SYMBOL_DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// What the palette is searching, picked by the query's first character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteMode {
+    /// No prefix: workspace files (plus matching commands).
+    Files,
+    /// `>`: commands only.
+    Commands,
+    /// `#`: LSP `workspace/symbol`.
+    WorkspaceSymbols,
+    /// `@`: symbols of the current file (LSP `documentSymbol`).
+    DocumentSymbols,
+}
+
+impl PaletteMode {
+    /// Split `query` into its mode and the (trimmed) search text.
+    pub fn parse(query: &str) -> (Self, &str) {
+        let mode = match query.chars().next() {
+            Some('>') => Self::Commands,
+            Some('#') => Self::WorkspaceSymbols,
+            Some('@') => Self::DocumentSymbols,
+            _ => return (Self::Files, query),
+        };
+        (mode, query[1..].trim())
+    }
+}
 
 #[allow(dead_code)] // kept for the signature of show()
 const _FILETREE_USED: () = ();
@@ -20,6 +51,9 @@ pub enum PaletteCommand {
     FindReplace,
     RestartLsp,
     CheckForUpdates,
+    ShowProblems,
+    GoToWorkspaceSymbol,
+    GoToFileSymbol,
 }
 
 impl PaletteCommand {
@@ -37,6 +71,9 @@ impl PaletteCommand {
             PaletteCommand::FindReplace,
             PaletteCommand::RestartLsp,
             PaletteCommand::CheckForUpdates,
+            PaletteCommand::ShowProblems,
+            PaletteCommand::GoToWorkspaceSymbol,
+            PaletteCommand::GoToFileSymbol,
         ]
     }
 
@@ -54,6 +91,9 @@ impl PaletteCommand {
             Self::FindReplace => "Find & Replace",
             Self::RestartLsp => "Restart LSP Server",
             Self::CheckForUpdates => "Check for Updates",
+            Self::ShowProblems => "Problems: Show",
+            Self::GoToWorkspaceSymbol => "Go to Symbol in Workspace…",
+            Self::GoToFileSymbol => "Go to Symbol in File…",
         }
     }
 
@@ -71,6 +111,9 @@ impl PaletteCommand {
             Self::FindReplace => "Ctrl+H",
             Self::RestartLsp => "",
             Self::CheckForUpdates => "",
+            Self::ShowProblems => "Ctrl+Shift+M",
+            Self::GoToWorkspaceSymbol => "Ctrl+T",
+            Self::GoToFileSymbol => "",
         }
     }
 
@@ -88,6 +131,9 @@ impl PaletteCommand {
             Self::FindReplace => "search and substitute replace text",
             Self::RestartLsp => "restart language server diagnostics",
             Self::CheckForUpdates => "upgrade new version release install",
+            Self::ShowProblems => "errors warnings lint workspace problems panel",
+            Self::GoToWorkspaceSymbol => "# jump navigate type function class project",
+            Self::GoToFileSymbol => "@ outline jump navigate function method current",
         }
     }
 }
@@ -96,6 +142,8 @@ impl PaletteCommand {
 enum PaletteEntry {
     File(PathBuf),
     Command(PaletteCommand),
+    WorkspaceSymbol(WorkspaceSymbol),
+    DocumentSymbol(DocumentSymbol),
 }
 
 pub struct CommandPalette {
@@ -107,6 +155,22 @@ pub struct CommandPalette {
     selected_idx: usize,
     /// All workspace files, cached when the palette opens.
     cached_files: Vec<PathBuf>,
+    // ── Symbol modes (`#` / `@`) ────────────────────────────────────────────
+    /// Latest `workspace/symbol` results (filled by the app).
+    workspace_symbols: Vec<WorkspaceSymbol>,
+    /// True while `workspace/symbol` requests are in flight.
+    pub workspace_symbols_pending: bool,
+    /// Drop the current results when the next response for a new query lands.
+    replace_workspace_symbols: bool,
+    /// Last `#` query handed to the app, and the last edit (text + time).
+    ws_query_sent: Option<String>,
+    ws_query_edited: Option<(String, Instant)>,
+    /// Symbols of the file at `document_symbols_path` (filled by the app).
+    pub document_symbols: Vec<DocumentSymbol>,
+    pub document_symbols_path: Option<PathBuf>,
+    doc_symbols_requested: bool,
+    /// `(path, line, col)` picked from a symbol mode; taken by the app.
+    pub picked_location: Option<(PathBuf, usize, usize)>,
 }
 
 impl CommandPalette {
@@ -118,16 +182,34 @@ impl CommandPalette {
             matcher: SkimMatcherV2::default(),
             selected_idx: 0,
             cached_files: vec![],
+            workspace_symbols: vec![],
+            workspace_symbols_pending: false,
+            replace_workspace_symbols: false,
+            ws_query_sent: None,
+            ws_query_edited: None,
+            document_symbols: vec![],
+            document_symbols_path: None,
+            doc_symbols_requested: false,
+            picked_location: None,
         }
+    }
+
+    fn reset(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.entries.clear();
+        self.selected_idx = 0;
+        self.cached_files.clear();
+        self.workspace_symbols.clear();
+        self.workspace_symbols_pending = false;
+        self.ws_query_sent = None;
+        self.ws_query_edited = None;
+        self.doc_symbols_requested = false;
     }
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
         if self.open {
-            self.query.clear();
-            self.entries.clear();
-            self.selected_idx = 0;
-            self.cached_files.clear();
+            self.reset("");
         }
     }
 
@@ -135,11 +217,77 @@ impl CommandPalette {
     pub fn toggle_commands(&mut self) {
         self.open = !self.open;
         if self.open {
-            self.query = ">".to_string();
-            self.entries.clear();
-            self.selected_idx = 0;
-            self.cached_files.clear();
+            self.reset(">");
         }
+    }
+
+    /// Open (or re-target) the palette with `prefix` typed, e.g. `#` for
+    /// workspace symbols (Ctrl+T) or `@` for symbols in the current file.
+    pub fn open_with(&mut self, prefix: &str) {
+        self.open = true;
+        self.reset(prefix);
+    }
+
+    pub fn mode(&self) -> PaletteMode {
+        PaletteMode::parse(&self.query).0
+    }
+
+    /// The `#` query to send as `workspace/symbol`, once it has been stable for
+    /// [`WORKSPACE_SYMBOL_DEBOUNCE`] and differs from the last one sent.
+    pub fn take_workspace_symbol_query(&mut self, now: Instant) -> Option<String> {
+        if !self.open || self.mode() != PaletteMode::WorkspaceSymbols {
+            return None;
+        }
+        let (text, at) = self.ws_query_edited.as_ref()?;
+        if text.is_empty()
+            || self.ws_query_sent.as_deref() == Some(text.as_str())
+            || now.saturating_duration_since(*at) < WORKSPACE_SYMBOL_DEBOUNCE
+        {
+            return None;
+        }
+        let q = text.clone();
+        self.ws_query_sent = Some(q.clone());
+        self.workspace_symbols_pending = true;
+        self.replace_workspace_symbols = true;
+        Some(q)
+    }
+
+    /// True while a `#` query is waiting out its debounce (keep repainting).
+    pub fn workspace_symbol_debounce_pending(&self) -> bool {
+        self.open
+            && self.mode() == PaletteMode::WorkspaceSymbols
+            && self.ws_query_edited.as_ref().is_some_and(|(t, _)| {
+                !t.is_empty() && self.ws_query_sent.as_deref() != Some(t.as_str())
+            })
+    }
+
+    /// Feed one server's `workspace/symbol` answer. The first answer after a
+    /// new query replaces older results; later ones (other servers) append.
+    /// `still_pending` says whether more answers are expected.
+    pub fn receive_workspace_symbols(
+        &mut self,
+        symbols: Vec<WorkspaceSymbol>,
+        still_pending: bool,
+    ) {
+        if self.replace_workspace_symbols {
+            self.workspace_symbols.clear();
+            self.replace_workspace_symbols = false;
+        }
+        for s in symbols {
+            if !self.workspace_symbols.contains(&s) {
+                self.workspace_symbols.push(s);
+            }
+        }
+        self.workspace_symbols_pending = still_pending;
+    }
+
+    /// True once per opening of `@` mode: the app should fetch document symbols.
+    pub fn take_document_symbols_request(&mut self) -> bool {
+        if self.open && self.mode() == PaletteMode::DocumentSymbols && !self.doc_symbols_requested {
+            self.doc_symbols_requested = true;
+            return true;
+        }
+        false
     }
 
     pub fn is_open(&self) -> bool {
@@ -174,16 +322,61 @@ impl CommandPalette {
             )
         });
 
-        let commands_only = self.query.starts_with('>');
-        let effective_query = if commands_only {
-            self.query.trim_start_matches('>').trim().to_string()
-        } else {
-            self.query.clone()
-        };
+        let (mode, effective_query) = PaletteMode::parse(&self.query);
+        let effective_query = effective_query.to_string();
+        let commands_only = mode == PaletteMode::Commands;
+        if mode == PaletteMode::WorkspaceSymbols
+            && self.ws_query_edited.as_ref().map(|(t, _)| t.as_str())
+                != Some(effective_query.as_str())
+        {
+            self.ws_query_edited = Some((effective_query.clone(), Instant::now()));
+        }
 
         // Rebuild entry list whenever query changes (cheap enough each frame).
         self.entries.clear();
-        if commands_only {
+        if mode == PaletteMode::WorkspaceSymbols {
+            if !effective_query.is_empty() {
+                let mut scored: Vec<(i64, &WorkspaceSymbol)> = self
+                    .workspace_symbols
+                    .iter()
+                    .filter_map(|s| {
+                        let hay = match &s.container {
+                            Some(c) => format!("{} {}", s.name, c),
+                            None => s.name.clone(),
+                        };
+                        Some((self.matcher.fuzzy_match(&hay, &effective_query)?, s))
+                    })
+                    .collect();
+                // Stable: equal scores keep the server's order.
+                scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+                self.entries.extend(
+                    scored
+                        .into_iter()
+                        .take(100)
+                        .map(|(_, s)| PaletteEntry::WorkspaceSymbol(s.clone())),
+                );
+            }
+        } else if mode == PaletteMode::DocumentSymbols {
+            if effective_query.is_empty() {
+                self.entries.extend(
+                    self.document_symbols
+                        .iter()
+                        .map(|s| PaletteEntry::DocumentSymbol(s.clone())),
+                );
+            } else {
+                let mut scored: Vec<(i64, &DocumentSymbol)> = self
+                    .document_symbols
+                    .iter()
+                    .filter_map(|s| Some((self.matcher.fuzzy_match(&s.name, &effective_query)?, s)))
+                    .collect();
+                scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+                self.entries.extend(
+                    scored
+                        .into_iter()
+                        .map(|(_, s)| PaletteEntry::DocumentSymbol(s.clone())),
+                );
+            }
+        } else if commands_only {
             for cmd in PaletteCommand::all() {
                 let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
@@ -257,6 +450,12 @@ impl CommandPalette {
                         triggered_cmd = Some(c.clone());
                         close = true;
                     }
+                    PaletteEntry::WorkspaceSymbol(_) | PaletteEntry::DocumentSymbol(_) => {
+                        if let Some(loc) = self.symbol_location(entry) {
+                            self.picked_location = Some(loc);
+                            close = true;
+                        }
+                    }
                 }
             }
         }
@@ -272,10 +471,15 @@ impl CommandPalette {
             .fixed_size(egui::vec2(560.0, 420.0))
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
-                    let hint = if self.query.starts_with('>') {
-                        "Run command (> to search commands, clear for files)…"
-                    } else {
-                        "Search files… (type > for commands)"
+                    let hint = match mode {
+                        PaletteMode::Commands => {
+                            "Run command (> to search commands, clear for files)…"
+                        }
+                        PaletteMode::WorkspaceSymbols => "Search symbols in the workspace…",
+                        PaletteMode::DocumentSymbols => "Go to symbol in the current file…",
+                        PaletteMode::Files => {
+                            "Search files… (> commands, # workspace symbols, @ symbols in file)"
+                        }
                     };
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.query)
@@ -289,6 +493,9 @@ impl CommandPalette {
                     ui.separator();
 
                     let sel = self.selected_idx;
+                    if let Some(msg) = self.empty_message(mode, &effective_query) {
+                        ui.label(egui::RichText::new(msg).color(egui::Color32::GRAY));
+                    }
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for (i, entry) in self.entries.clone().iter().enumerate() {
                             let is_selected = i == sel;
@@ -336,6 +543,20 @@ impl CommandPalette {
                                         close = true;
                                     }
                                 }
+                                PaletteEntry::WorkspaceSymbol(_)
+                                | PaletteEntry::DocumentSymbol(_) => {
+                                    let label = symbol_label(entry, workspace.as_deref());
+                                    let resp = ui.selectable_label(is_selected, label);
+                                    if is_selected {
+                                        resp.scroll_to_me(None);
+                                    }
+                                    if resp.clicked() {
+                                        if let Some(loc) = self.symbol_location(entry) {
+                                            self.picked_location = Some(loc);
+                                            close = true;
+                                        }
+                                    }
+                                }
                             }
                         }
                     });
@@ -351,6 +572,90 @@ impl CommandPalette {
             self.selected_idx = 0;
         }
         (opened_file, triggered_cmd)
+    }
+
+    /// Where a symbol entry points: `(path, line, col)`, 0-based.
+    fn symbol_location(&self, entry: &PaletteEntry) -> Option<(PathBuf, usize, usize)> {
+        match entry {
+            PaletteEntry::WorkspaceSymbol(s) => {
+                Some((s.path.clone(), s.line as usize, s.col as usize))
+            }
+            PaletteEntry::DocumentSymbol(s) => self
+                .document_symbols_path
+                .clone()
+                .map(|p| (p, s.line as usize, 0)),
+            _ => None,
+        }
+    }
+
+    /// Placeholder shown above an empty symbol list.
+    fn empty_message(&self, mode: PaletteMode, query: &str) -> Option<&'static str> {
+        if !self.entries.is_empty() {
+            return None;
+        }
+        match mode {
+            PaletteMode::WorkspaceSymbols if query.is_empty() => {
+                Some("Type to search symbols (needs a running language server)")
+            }
+            PaletteMode::WorkspaceSymbols
+                if self.workspace_symbols_pending || self.workspace_symbol_debounce_pending() =>
+            {
+                Some("Searching…")
+            }
+            PaletteMode::WorkspaceSymbols => Some("No matching symbols"),
+            PaletteMode::DocumentSymbols if self.document_symbols_path.is_none() => {
+                Some("No file is open")
+            }
+            PaletteMode::DocumentSymbols => Some("No symbols found in this file"),
+            _ => None,
+        }
+    }
+}
+
+fn symbol_icon(kind: &str) -> &'static str {
+    match kind {
+        "Function" | "Method" | "Constructor" => "ƒ",
+        "Class" | "Struct" => "◻",
+        "Enum" | "EnumMember" => "⊞",
+        "Variable" | "Constant" | "Field" | "Property" => "≡",
+        "Interface" => "Ι",
+        "Module" | "Namespace" | "Package" => "▤",
+        _ => "•",
+    }
+}
+
+/// Two-line label: `icon name   kind · container` / `  relative/file.rs:line`.
+fn symbol_label(entry: &PaletteEntry, workspace: Option<&Path>) -> String {
+    match entry {
+        PaletteEntry::WorkspaceSymbol(s) => {
+            let file = workspace
+                .and_then(|ws| s.path.strip_prefix(ws).ok())
+                .unwrap_or(&s.path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let container = s
+                .container
+                .as_deref()
+                .map(|c| format!(" · {c}"))
+                .unwrap_or_default();
+            format!(
+                "{} {}    {}{}\n  {}:{}",
+                symbol_icon(&s.kind),
+                s.name,
+                s.kind,
+                container,
+                file,
+                s.line + 1
+            )
+        }
+        PaletteEntry::DocumentSymbol(s) => format!(
+            "{} {}    {}  :{}",
+            symbol_icon(&s.kind),
+            s.name,
+            s.kind,
+            s.line + 1
+        ),
+        _ => String::new(),
     }
 }
 
@@ -423,7 +728,7 @@ mod tests {
     #[test]
     fn every_command_has_metadata() {
         let all = PaletteCommand::all();
-        assert_eq!(all.len(), 12);
+        assert_eq!(all.len(), 15);
         let mut labels = std::collections::HashSet::new();
         for cmd in all {
             assert!(!cmd.label().trim().is_empty(), "{cmd:?} label");
@@ -458,9 +763,12 @@ mod tests {
                 PaletteCommand::FindReplace => 9,
                 PaletteCommand::RestartLsp => 10,
                 PaletteCommand::CheckForUpdates => 11,
+                PaletteCommand::ShowProblems => 12,
+                PaletteCommand::GoToWorkspaceSymbol => 13,
+                PaletteCommand::GoToFileSymbol => 14,
             }
         }
-        let mut seen = [false; 12];
+        let mut seen = [false; 15];
         for c in PaletteCommand::all() {
             assert!(!seen[index(c)], "{c:?} listed twice");
             seen[index(c)] = true;
@@ -718,7 +1026,7 @@ mod tests {
     #[test]
     fn arrow_and_tab_navigation_wraps() {
         let mut h = Harness::new(&[]);
-        h.query(">"); // 12 commands
+        h.query(">"); // every command
         let n = PaletteCommand::all().len();
         h.key(Key::ArrowUp);
         assert_eq!(h.p.selected_idx, n - 1, "up from top wraps to bottom");
@@ -739,7 +1047,7 @@ mod tests {
         let mut h = Harness::new(&[]);
         h.query(">");
         h.key(Key::ArrowUp);
-        assert_eq!(h.p.selected_idx, 11);
+        assert_eq!(h.p.selected_idx, PaletteCommand::all().len() - 1);
         h.query(">restart");
         assert_eq!(h.p.selected_idx, 0);
         h.query(">qqqzzz");
@@ -797,6 +1105,209 @@ mod tests {
         h.frame(vec![Event::PointerMoved(pos), press(true)]);
         let (file, _) = h.frame(vec![press(false)]);
         assert_eq!(file, Some(PathBuf::from("dir/only.rs")));
+    }
+
+    // ---- symbol modes ----
+
+    fn wsym(name: &str, container: Option<&str>, file: &str, line: u32) -> WorkspaceSymbol {
+        WorkspaceSymbol {
+            name: name.into(),
+            kind: "Function".into(),
+            container: container.map(Into::into),
+            path: PathBuf::from(file),
+            line,
+            col: 3,
+        }
+    }
+
+    fn dsym(name: &str, line: u32) -> DocumentSymbol {
+        DocumentSymbol {
+            name: name.into(),
+            kind: "Struct".into(),
+            line,
+        }
+    }
+
+    impl Harness {
+        fn ws_symbols(&self) -> Vec<String> {
+            self.p
+                .entries
+                .iter()
+                .filter_map(|e| match e {
+                    PaletteEntry::WorkspaceSymbol(s) => Some(s.name.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+        fn doc_symbols(&self) -> Vec<String> {
+            self.p
+                .entries
+                .iter()
+                .filter_map(|e| match e {
+                    PaletteEntry::DocumentSymbol(s) => Some(s.name.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn mode_is_picked_by_prefix() {
+        assert_eq!(PaletteMode::parse("main"), (PaletteMode::Files, "main"));
+        assert_eq!(PaletteMode::parse(""), (PaletteMode::Files, ""));
+        assert_eq!(PaletteMode::parse("> x "), (PaletteMode::Commands, "x"));
+        assert_eq!(
+            PaletteMode::parse("# Foo"),
+            (PaletteMode::WorkspaceSymbols, "Foo")
+        );
+        assert_eq!(PaletteMode::parse("@"), (PaletteMode::DocumentSymbols, ""));
+    }
+
+    #[test]
+    fn open_with_sets_prefix_and_resets_symbol_state() {
+        let mut p = CommandPalette::new();
+        p.workspace_symbols = vec![wsym("old", None, "a.rs", 0)];
+        p.ws_query_sent = Some("old".into());
+        p.open_with("#");
+        assert!(p.is_open());
+        assert_eq!(p.query, "#");
+        assert_eq!(p.mode(), PaletteMode::WorkspaceSymbols);
+        assert!(p.workspace_symbols.is_empty());
+        assert!(p.ws_query_sent.is_none());
+        // Already open: re-targets instead of closing.
+        p.open_with("@");
+        assert!(p.is_open());
+        assert_eq!(p.mode(), PaletteMode::DocumentSymbols);
+    }
+
+    #[test]
+    fn workspace_symbol_query_is_debounced_and_sent_once() {
+        let mut h = Harness::new(&["a.rs"]);
+        h.p.open_with("#");
+        h.query("#");
+        let later = Instant::now() + WORKSPACE_SYMBOL_DEBOUNCE * 2;
+        assert_eq!(h.p.take_workspace_symbol_query(later), None, "empty query");
+
+        h.query("#Foo");
+        assert!(h.p.workspace_symbol_debounce_pending());
+        assert_eq!(
+            h.p.take_workspace_symbol_query(Instant::now()),
+            None,
+            "too soon after typing"
+        );
+        let later = Instant::now() + WORKSPACE_SYMBOL_DEBOUNCE * 2;
+        assert_eq!(h.p.take_workspace_symbol_query(later), Some("Foo".into()));
+        assert!(h.p.workspace_symbols_pending);
+        assert!(!h.p.workspace_symbol_debounce_pending());
+        assert_eq!(h.p.take_workspace_symbol_query(later), None, "sent once");
+
+        h.query("#Foob");
+        let later = Instant::now() + WORKSPACE_SYMBOL_DEBOUNCE * 2;
+        assert_eq!(h.p.take_workspace_symbol_query(later), Some("Foob".into()));
+
+        // Other modes never ask.
+        h.query("Foo");
+        assert_eq!(h.p.take_workspace_symbol_query(later), None);
+    }
+
+    #[test]
+    fn workspace_symbol_answers_replace_then_append() {
+        let mut p = CommandPalette::new();
+        p.open_with("#");
+        p.workspace_symbols = vec![wsym("stale", None, "a.rs", 0)];
+        p.replace_workspace_symbols = true;
+        p.workspace_symbols_pending = true;
+        p.receive_workspace_symbols(vec![wsym("a", None, "a.rs", 1)], true);
+        assert_eq!(p.workspace_symbols.len(), 1);
+        assert!(p.workspace_symbols_pending);
+        p.receive_workspace_symbols(
+            vec![wsym("a", None, "a.rs", 1), wsym("b", None, "b.rs", 2)],
+            false,
+        );
+        let names: Vec<&str> = p
+            .workspace_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["a", "b"],
+            "second server appends, duplicates dropped"
+        );
+        assert!(!p.workspace_symbols_pending);
+    }
+
+    #[test]
+    fn workspace_symbols_are_listed_and_enter_navigates() {
+        let mut h = Harness::new(&["a.rs"]);
+        h.p.open_with("#");
+        h.p.workspace_symbols = vec![
+            wsym("parse_args", Some("cli"), "src/cli.rs", 9),
+            wsym("Parser", Some("syntax"), "src/syntax.rs", 2),
+            wsym("unrelated", None, "src/x.rs", 0),
+        ];
+        h.query("#");
+        assert!(h.ws_symbols().is_empty(), "empty query lists nothing");
+        h.query("#pars");
+        let listed = h.ws_symbols();
+        assert_eq!(listed.len(), 2, "{listed:?}");
+        assert!(!listed.contains(&"unrelated".to_string()));
+        assert!(h.files().is_empty() && h.commands().is_empty());
+        // Container names are searchable too.
+        h.query("#syntax");
+        assert_eq!(h.ws_symbols(), ["Parser"]);
+        let (file, cmd) = h.key(Key::Enter);
+        assert_eq!((file, cmd), (None, None));
+        assert_eq!(
+            h.p.picked_location,
+            Some((PathBuf::from("src/syntax.rs"), 2, 3))
+        );
+        assert!(!h.p.is_open());
+    }
+
+    #[test]
+    fn document_symbols_mode_filters_and_navigates() {
+        let mut h = Harness::new(&["a.rs"]);
+        h.p.open_with("@");
+        assert!(h.p.take_document_symbols_request());
+        assert!(!h.p.take_document_symbols_request(), "once per opening");
+        h.p.document_symbols = vec![dsym("Alpha", 1), dsym("beta", 5), dsym("Gamma", 9)];
+        h.query("@");
+        assert_eq!(h.doc_symbols(), ["Alpha", "beta", "Gamma"], "file order");
+        h.query("@gam");
+        assert_eq!(h.doc_symbols(), ["Gamma"]);
+
+        // No file known → Enter does nothing.
+        assert_eq!(h.key(Key::Enter), (None, None));
+        assert!(h.p.is_open());
+        assert_eq!(h.p.picked_location, None);
+
+        h.p.document_symbols_path = Some(PathBuf::from("cur.rs"));
+        h.query("@gam");
+        h.key(Key::Enter);
+        assert_eq!(h.p.picked_location, Some((PathBuf::from("cur.rs"), 9, 0)));
+        assert!(!h.p.is_open());
+
+        h.p.open_with("@");
+        assert!(
+            h.p.take_document_symbols_request(),
+            "re-requested on reopen"
+        );
+    }
+
+    #[test]
+    fn symbol_labels_show_kind_container_and_relative_file() {
+        let ws = PathBuf::from("ws");
+        let e = PaletteEntry::WorkspaceSymbol(WorkspaceSymbol {
+            path: ws.join("src").join("a.rs"),
+            ..wsym("run", Some("app"), "", 4)
+        });
+        assert_eq!(
+            symbol_label(&e, Some(&ws)),
+            "ƒ run    Function · app\n  src/a.rs:5"
+        );
+        let e = PaletteEntry::DocumentSymbol(dsym("S", 0));
+        assert_eq!(symbol_label(&e, None), "◻ S    Struct  :1");
     }
 
     // ---- fallback directory walk ----

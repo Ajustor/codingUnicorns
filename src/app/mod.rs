@@ -164,6 +164,12 @@ pub struct CodingUnicorns {
     pub session: session::SessionState,
     /// External file change detection (workspace watcher + save guard).
     pub file_watch: file_watch::FileWatchState,
+    /// Workspace-wide LSP diagnostics (bottom panel, Ctrl+Shift+M).
+    pub problems_panel: crate::ui::problems::ProblemsPanel,
+    /// In-flight `workspace/symbol` requests for the palette's `#` mode.
+    pub palette_ws_symbol_ids: Vec<(String, u64)>,
+    /// In-flight `documentSymbol` request for the palette's `@` mode.
+    pub palette_doc_symbols_id: Option<(String, u64)>,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -221,6 +227,16 @@ impl CodingUnicorns {
                     "toggle_md_preview",
                     Chord::ctrl_shift(egui::Key::V),
                     "Toggle Markdown preview",
+                ),
+                (
+                    "toggle_problems",
+                    Chord::ctrl_shift(egui::Key::M),
+                    "Toggle Problems panel",
+                ),
+                (
+                    "workspace_symbols",
+                    Chord::ctrl(egui::Key::T),
+                    "Go to symbol in workspace",
                 ),
             ] {
                 if let Some(other) = keybinds.register(id, chord, desc) {
@@ -316,6 +332,9 @@ impl CodingUnicorns {
             updater: crate::updater::Updater::new(),
             session: session::SessionState::load(),
             file_watch: file_watch::FileWatchState::new(Some(cc.egui_ctx.clone())),
+            problems_panel: crate::ui::problems::ProblemsPanel::new(),
+            palette_ws_symbol_ids: Vec::new(),
+            palette_doc_symbols_id: None,
         };
 
         if let Some(path) = initial_path {
@@ -545,6 +564,8 @@ impl eframe::App for CodingUnicorns {
                 "toggle_claude" => self.show_claude = !self.show_claude,
                 "command_palette_commands" => self.command_palette.toggle_commands(),
                 "toggle_md_preview" => self.show_md_preview = !self.show_md_preview,
+                "toggle_problems" => self.problems_panel.open = !self.problems_panel.open,
+                "workspace_symbols" => self.command_palette.open_with("#"),
                 _ => {}
             }
         }
@@ -658,6 +679,7 @@ impl eframe::App for CodingUnicorns {
 
         // Poll all LSP clients for incoming messages (also drives auto-restart).
         let (lsp_responses, reconnected_exts) = self.lsp.poll_all();
+        self.sync_problems();
         // Keep updating the "LSP loading…" status while a server is busy.
         if self.lsp.any_busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -680,8 +702,11 @@ impl eframe::App for CodingUnicorns {
                 }
             }
         }
-        for (_ext, msgs) in lsp_responses {
+        for (ext, msgs) in lsp_responses {
             for (id, response) in msgs {
+                if self.handle_palette_lsp_response(&ext, id, &response) {
+                    continue;
+                }
                 if Some(id) == self.pending_hover_id {
                     self.lsp_hover_result = LspClient::parse_hover(&response);
                     self.pending_hover_id = None;
@@ -1117,6 +1142,7 @@ impl eframe::App for CodingUnicorns {
             if let Some(path) = opened_file {
                 self.open_file(path);
             }
+            self.drive_palette_symbols(ctx);
             if let Some(cmd) = cmd {
                 use crate::ui::palette::PaletteCommand;
                 match cmd {
@@ -1147,6 +1173,9 @@ impl eframe::App for CodingUnicorns {
                         }
                         self.toast("LSP restarted");
                     }
+                    PaletteCommand::ShowProblems => self.problems_panel.open = true,
+                    PaletteCommand::GoToWorkspaceSymbol => self.command_palette.open_with("#"),
+                    PaletteCommand::GoToFileSymbol => self.command_palette.open_with("@"),
                     PaletteCommand::CheckForUpdates => {
                         if matches!(self.updater.state, crate::updater::UpdateState::Ready(_)) {
                             self.updater.dismissed = false;
