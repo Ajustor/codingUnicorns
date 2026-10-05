@@ -46,8 +46,10 @@ pub struct Editor {
     pub char_width: f32,
     pub show_find: bool,
     pub find_query: String,
-    find_matches: Vec<usize>,
+    find_matches: Vec<search::FindMatch>,
     find_current: usize,
+    /// Focus (and select) the find field on the next frame.
+    find_focus_pending: bool,
     pub show_goto_line: bool,
     pub goto_line_input: String,
     /// Set to true to scroll the viewport so the cursor is visible on the next frame.
@@ -202,6 +204,7 @@ impl Editor {
             find_query: String::new(),
             find_matches: vec![],
             find_current: 0,
+            find_focus_pending: false,
             show_goto_line: false,
             goto_line_input: String::new(),
             scroll_to_cursor: false,
@@ -403,17 +406,30 @@ impl Editor {
                                 .hint_text("Find…")
                                 .desired_width(160.0),
                         );
+                        if std::mem::take(&mut self.find_focus_pending) {
+                            resp.request_focus();
+                            // Select the whole query so typing replaces it.
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+                                let all = egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(self.find_query.chars().count()),
+                                );
+                                state.cursor.set_char_range(Some(all));
+                                state.store(ui.ctx(), resp.id);
+                            }
+                        }
                         if resp.changed() {
                             query_changed = true;
                         }
-                        if resp.lost_focus() {
-                            if ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
-                                do_find_next = true;
-                            } else if ui
-                                .input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.shift)
-                            {
+                        // A single-line TextEdit gives up focus on Enter: step to the
+                        // next/previous match and take focus back so Enter can repeat.
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if ui.input(|i| i.modifiers.shift) {
                                 do_find_prev = true;
+                            } else {
+                                do_find_next = true;
                             }
+                            resp.request_focus();
                         }
                         // Case-sensitive toggle (Aa)
                         let cs_color = if self.find_case_sensitive {
@@ -1516,13 +1532,12 @@ impl Editor {
 
                                         // Find
                                         egui::Key::F if modifiers.ctrl => {
-                                            self.show_find = true;
+                                            self.open_find(false);
                                         }
 
                                         // Find & Replace (Ctrl+H)
                                         egui::Key::H if modifiers.ctrl => {
-                                            self.show_find = true;
-                                            self.show_replace = true;
+                                            self.open_find(true);
                                         }
 
                                         // Go to line (Ctrl+G)
@@ -2007,7 +2022,7 @@ impl Editor {
                     }
 
                     if ui.button("Find    Ctrl+F").clicked() {
-                        self.show_find = true;
+                        self.open_find(false);
                         ui.close_menu();
                     }
                 });
@@ -2363,45 +2378,42 @@ impl Editor {
                     let line = self.buffer.line(line_idx);
                     let x_start = rect.min.x + gutter_width;
 
-                    // Find bar match highlight — precise character-level boxes.
-                    // Uses the same matcher as find/replace, on the original line,
-                    // so offsets are always valid char boundaries.
-                    if self.find_matches.contains(&line_idx) {
-                        if let Some(re) = self.find_regex() {
-                            let haystack = self.buffer.line(line_idx);
-                            let is_active =
-                                self.find_matches.get(self.find_current) == Some(&line_idx);
-                            let color = if is_active {
-                                find_highlight_active
-                            } else {
-                                find_highlight
-                            };
-                            for m in re.find_iter(&haystack).filter(|m| !m.is_empty()) {
-                                let measure = |text: &str| {
-                                    ui.fonts(|f| {
-                                        f.layout_no_wrap(
-                                            text.to_owned(),
-                                            font_id.clone(),
-                                            egui::Color32::WHITE,
-                                        )
-                                        .size()
-                                        .x
-                                    })
-                                };
-                                let pre_w = measure(&haystack[..m.start()]);
-                                let span_w = measure(m.as_str());
-                                let hx = x_start + pre_w - self.scroll_offset.x;
-                                if hx < rect.max.x && hx + span_w > x_start {
-                                    painter.rect_filled(
-                                        egui::Rect::from_min_size(
-                                            egui::pos2(hx, y + 1.0),
-                                            egui::vec2(span_w.max(4.0), line_height - 2.0),
-                                        ),
-                                        2.0,
-                                        color,
-                                    );
-                                }
-                            }
+                    // Find bar match highlight — precise character-level boxes, from the
+                    // char columns stored by `update_find_matches`.
+                    // Matches are sorted by row, so this line's are one contiguous slice.
+                    let first = self.find_matches.partition_point(|m| m.row < line_idx);
+                    let line_matches = self.find_matches[first..]
+                        .iter()
+                        .take_while(|m| m.row == line_idx);
+                    for (i, m) in line_matches.enumerate() {
+                        let color = if first + i == self.find_current {
+                            find_highlight_active
+                        } else {
+                            find_highlight
+                        };
+                        let measure = |cols: usize| {
+                            ui.fonts(|f| {
+                                f.layout_no_wrap(
+                                    line.chars().take(cols).collect(),
+                                    font_id.clone(),
+                                    egui::Color32::WHITE,
+                                )
+                                .size()
+                                .x
+                            })
+                        };
+                        let pre_w = measure(m.start);
+                        let span_w = measure(m.end) - pre_w;
+                        let hx = x_start + pre_w - self.scroll_offset.x;
+                        if hx < rect.max.x && hx + span_w > x_start {
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(hx, y + 1.0),
+                                    egui::vec2(span_w.max(4.0), line_height - 2.0),
+                                ),
+                                2.0,
+                                color,
+                            );
                         }
                     }
 
@@ -2913,7 +2925,7 @@ impl Editor {
                         visible_count,
                         diagnostics: &self.diagnostics,
                         line_diff: &self.line_diff,
-                        find_matches: &self.find_matches,
+                        find_matches: &self.find_match_rows(),
                         cursor_row: self.cursor.row,
                         extra_cursor_rows: self.extra_cursors.iter().map(|c| c.row).collect(),
                         line_height,
@@ -4371,7 +4383,7 @@ mod tests {
         ed.show_find = true;
         ed.find_query = "FOO".into();
         ed.update_find_matches();
-        assert_eq!(ed.find_matches, vec![0, 1]);
+        assert_eq!(ed.find_match_rows(), vec![0, 1]);
         h.idle(&mut ed);
         ed.find_use_regex = true;
         ed.find_query = "f.o|^".into(); // empty matches must be skipped, not loop
@@ -4380,12 +4392,58 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_f_focuses_find_field_and_enter_repeats_find_next() {
+        let (mut h, mut ed) = setup(
+            "foo
+foo
+foo
+bar",
+        );
+        h.idle(&mut ed); // editor takes focus
+        h.press(&mut ed, Key::F, CTRL);
+        assert!(ed.show_find);
+        h.idle(&mut ed); // find bar drawn, field focus requested
+        h.idle(&mut ed);
+
+        // Typing goes to the find field, not the buffer.
+        h.type_text(&mut ed, "foo");
+        assert_eq!(ed.find_query, "foo");
+        assert_eq!(
+            text(&ed),
+            "foo
+foo
+foo
+bar"
+        );
+        assert_eq!(ed.find_current, 0);
+
+        // Enter steps forward and keeps the field focused, so it can repeat.
+        h.press(&mut ed, Key::Enter, NONE);
+        h.idle(&mut ed);
+        assert_eq!(ed.find_current, 1);
+        h.press(&mut ed, Key::Enter, NONE);
+        h.idle(&mut ed);
+        assert_eq!(ed.find_current, 2);
+        h.press(&mut ed, Key::Enter, SHIFT);
+        h.idle(&mut ed);
+        assert_eq!(ed.find_current, 1, "Shift+Enter goes back");
+        assert_eq!(
+            text(&ed),
+            "foo
+foo
+foo
+bar",
+            "Enter never reaches the buffer"
+        );
+    }
+
+    #[test]
     fn find_bar_renders_matches_and_escape_closes_it() {
         let (mut h, mut ed) = setup("Foo bar\nfoo foo\nnone");
         ed.show_find = true;
         ed.find_query = "foo".into();
         ed.update_find_matches();
-        assert_eq!(ed.find_matches, vec![0, 1]);
+        assert_eq!(ed.find_match_rows(), vec![0, 1]);
         h.idle(&mut ed);
         ed.find_use_regex = true;
         ed.find_query = "f.o".into();
@@ -4393,7 +4451,7 @@ mod tests {
         h.idle(&mut ed);
         ed.find_case_sensitive = true;
         ed.update_find_matches();
-        assert_eq!(ed.find_matches, vec![1]);
+        assert_eq!(ed.find_match_rows(), vec![1]);
         h.idle(&mut ed);
         ed.find_query = "zzz".into();
         ed.update_find_matches();
