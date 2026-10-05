@@ -116,13 +116,17 @@ impl Buffer {
             return;
         }
         let line_start = self.rope.line_to_char(row);
-        let prev_line_end = line_start - 1;
-        if prev_line_end < self.rope.len_chars() {
-            let ch = self.rope.char(prev_line_end);
-            if ch == '\n' {
-                self.rope.remove(prev_line_end..prev_line_end + 1);
-            }
+        if line_start == 0 || line_start > self.rope.len_chars() {
+            return;
         }
+        let last = line_start - 1;
+        let start = match self.rope.char(last) {
+            // CRLF is a single line break: remove both chars.
+            '\n' if last > 0 && self.rope.char(last - 1) == '\r' => last - 1,
+            '\n' | '\r' => last,
+            _ => return,
+        };
+        self.rope.remove(start..line_start);
     }
 
     pub fn insert_str(&mut self, row: usize, col: usize, s: &str) {
@@ -168,8 +172,14 @@ impl Buffer {
         } else {
             self.rope.line_to_char(row)
         };
-        let mut text = content.to_string();
-        text.push('\n');
+        let len = self.rope.len_chars();
+        let text = if row >= total && len > 0 && !matches!(self.rope.char(len - 1), '\n' | '\r') {
+            // Appending after a last line without a line break: put the break
+            // before the new line (the file keeps having no trailing newline).
+            format!("\n{content}")
+        } else {
+            format!("{content}\n")
+        };
         self.rope.insert(insert_pos, &text);
     }
 
@@ -346,12 +356,22 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: join_lines only removes '\\n', so CRLF lines stay split by the leftover '\\r' (Backspace/Delete at line boundary in CRLF files)"]
     fn join_lines_handles_crlf() {
         let mut buf = Buffer::from_str("a\r\nb");
         buf.join_lines(1);
         assert_eq!(buf.to_string(), "ab");
         assert_eq!(buf.num_lines(), 1);
+    }
+
+    #[test]
+    fn join_lines_handles_crlf_mid_file_and_lone_cr() {
+        let mut buf = Buffer::from_str("a\r\nb\r\nc");
+        buf.join_lines(2);
+        assert_eq!(buf.to_string(), "a\r\nbc");
+        let mut buf = Buffer::from_str("a\rb");
+        assert_eq!(buf.num_lines(), 2);
+        buf.join_lines(1);
+        assert_eq!(buf.to_string(), "ab");
     }
 
     #[test]
@@ -417,7 +437,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: insert_line past the last line merges into it when the buffer lacks a trailing newline"]
     fn insert_line_after_last_line_without_trailing_newline() {
         // Editor::duplicate_line on the last line of "a\nb" calls insert_line(2, "b")
         // and currently produces "a\nbb\n" instead of a duplicated line.

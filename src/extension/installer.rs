@@ -3,6 +3,17 @@ use std::sync::mpsc;
 
 use super::manifest::{ExtensionSource, SourceKind};
 
+/// Destination directory for an extension. Re-validates the id (manifests are
+/// already validated by `ExtensionManifest::parse`, but the fields are public)
+/// so no install path can ever join an unsafe id onto `extensions_dir`.
+fn extension_dest_dir(
+    extensions_dir: &std::path::Path,
+    manifest: &super::manifest::ExtensionManifest,
+) -> anyhow::Result<PathBuf> {
+    super::manifest::validate_extension_id(&manifest.extension.id)?;
+    Ok(extensions_dir.join(&manifest.extension.id))
+}
+
 fn write_source(dest_dir: &std::path::Path, source: &ExtensionSource) {
     if let Ok(toml_str) = toml::to_string(source) {
         let _ = std::fs::write(dest_dir.join("source.toml"), toml_str);
@@ -29,7 +40,7 @@ pub fn discover_modules(workspace_path: &std::path::Path) -> anyhow::Result<Vec<
     for member in members {
         let manifest_path = workspace_path.join(&member).join("manifest.toml");
         if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-            if let Ok(manifest) = toml::from_str::<super::manifest::ExtensionManifest>(&content) {
+            if let Ok(manifest) = super::manifest::ExtensionManifest::parse(&content) {
                 result.push(DiscoveredModule { member, manifest });
             }
         }
@@ -243,7 +254,7 @@ fn workspace_install_inner(
                 continue;
             }
         };
-        let manifest: super::manifest::ExtensionManifest = match toml::from_str(&manifest_str) {
+        let manifest = match super::manifest::ExtensionManifest::parse(&manifest_str) {
             Ok(m) => m,
             Err(e) => {
                 let _ = tx.send(WorkspaceStatus::ModuleFailed {
@@ -268,7 +279,16 @@ fn workspace_install_inner(
         };
 
         // Copy lib + manifest to extensions dir
-        let dest_dir = extensions_dir.join(&manifest.extension.id);
+        let dest_dir = match extension_dest_dir(&extensions_dir, &manifest) {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = tx.send(WorkspaceStatus::ModuleFailed {
+                    name: member.clone(),
+                    reason: format!("Invalid manifest: {e}"),
+                });
+                continue;
+            }
+        };
         if let Err(e) = std::fs::create_dir_all(&dest_dir) {
             let _ = tx.send(WorkspaceStatus::ModuleFailed {
                 name: member.clone(),
@@ -342,7 +362,7 @@ fn single_git_install_inner(
             return;
         }
     };
-    let manifest: super::manifest::ExtensionManifest = match toml::from_str(&manifest_str) {
+    let manifest = match super::manifest::ExtensionManifest::parse(&manifest_str) {
         Ok(m) => m,
         Err(e) => {
             let _ = tx.send(WorkspaceStatus::Failed(format!("Invalid manifest: {e}")));
@@ -377,8 +397,13 @@ fn single_git_install_inner(
         total: 1,
     });
 
-    let ext_id = &manifest.extension.id;
-    let dest = extensions_dir.join(ext_id);
+    let dest = match extension_dest_dir(extensions_dir, &manifest) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = tx.send(WorkspaceStatus::Failed(format!("Invalid manifest: {e}")));
+            return;
+        }
+    };
     if let Err(e) = std::fs::create_dir_all(&dest) {
         let _ = tx.send(WorkspaceStatus::Failed(format!("mkdir: {e}")));
         return;
@@ -506,7 +531,7 @@ impl InstallJob {
                     return;
                 }
             };
-            let manifest: super::manifest::ExtensionManifest = match toml::from_str(&manifest_str) {
+            let manifest = match super::manifest::ExtensionManifest::parse(&manifest_str) {
                 Ok(m) => m,
                 Err(e) => {
                     let _ = tx.send(InstallStatus::Failed(format!("Invalid manifest: {e}")));
@@ -535,8 +560,13 @@ impl InstallJob {
 
             // 4. Copy artifact + manifest
             let _ = tx.send(InstallStatus::Installing);
-            let ext_id = &manifest.extension.id;
-            let dest = extensions_dir.join(ext_id);
+            let dest = match extension_dest_dir(&extensions_dir, &manifest) {
+                Ok(d) => d,
+                Err(e) => {
+                    let _ = tx.send(InstallStatus::Failed(format!("Invalid manifest: {e}")));
+                    return;
+                }
+            };
             if let Err(e) = std::fs::create_dir_all(&dest) {
                 let _ = tx.send(InstallStatus::Failed(format!("mkdir failed: {e}")));
                 return;
@@ -606,7 +636,7 @@ pub fn install_from_folder(
             }
         };
 
-        let manifest: super::manifest::ExtensionManifest = match toml::from_str(&manifest_str) {
+        let manifest = match super::manifest::ExtensionManifest::parse(&manifest_str) {
             Ok(m) => m,
             Err(e) => {
                 let _ = tx.send(InstallStatus::Failed(format!("Invalid manifest.toml: {e}")));
@@ -614,7 +644,13 @@ pub fn install_from_folder(
             }
         };
 
-        let ext_id = manifest.extension.id.clone();
+        let dest_dir = match extension_dest_dir(&extensions_dir, &manifest) {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = tx.send(InstallStatus::Failed(format!("Invalid manifest.toml: {e}")));
+                return;
+            }
+        };
 
         // 2. Look for pre-built library
         let lib_name = folder
@@ -657,7 +693,6 @@ pub fn install_from_folder(
 
         // 4. Copy to extensions dir
         let _ = tx.send(InstallStatus::Installing);
-        let dest_dir = extensions_dir.join(&ext_id);
         if let Err(e) = std::fs::create_dir_all(&dest_dir) {
             let _ = tx.send(InstallStatus::Failed(format!("Cannot create dir: {e}")));
             return;
@@ -1010,8 +1045,7 @@ pub fn discover_zip_modules(zip_path: &std::path::Path) -> anyhow::Result<Vec<Zi
             if parts.len() == 2 {
                 let dir_name = parts[0].to_string();
                 let content = std::io::read_to_string(entry)?;
-                if let Ok(manifest) = toml::from_str::<super::manifest::ExtensionManifest>(&content)
-                {
+                if let Ok(manifest) = super::manifest::ExtensionManifest::parse(&content) {
                     manifests.push(ZipModule { dir_name, manifest });
                 }
             }
@@ -1066,9 +1100,7 @@ fn zip_install_inner(
             if parts.len() == 2 {
                 let dir_name = parts[0].to_string();
                 if let Ok(content) = std::io::read_to_string(entry) {
-                    if let Ok(manifest) =
-                        toml::from_str::<super::manifest::ExtensionManifest>(&content)
-                    {
+                    if let Ok(manifest) = super::manifest::ExtensionManifest::parse(&content) {
                         if selected_dirs
                             .map(|sel| sel.iter().any(|s| s == &dir_name))
                             .unwrap_or(true)
@@ -1098,11 +1130,21 @@ fn zip_install_inner(
             total,
         });
 
-        let ext_id = &manifest.extension.id;
-        let dest_dir = extensions_dir.join(ext_id);
+        let dest_dir = match extension_dest_dir(&extensions_dir, manifest) {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = tx.send(WorkspaceStatus::ModuleFailed {
+                    name: dir_name.clone(),
+                    reason: format!("Invalid manifest: {e}"),
+                });
+                continue;
+            }
+        };
         let _ = std::fs::create_dir_all(&dest_dir);
 
-        // Extract all files from this module's directory
+        // Extract all files from this module's directory. Entry names are
+        // normalised to `/` separators (some Windows tools write `\`), the
+        // same way discovery splits them.
         let prefix = format!("{dir_name}/");
         let mut has_lib = false;
         let mut has_manifest = false;
@@ -1123,12 +1165,12 @@ fn zip_install_inner(
             let Ok(mut entry) = archive2.by_index(j) else {
                 continue;
             };
-            let entry_name = entry.name().to_string();
+            let entry_name = entry.name().replace('\\', "/");
             if !entry_name.starts_with(&prefix) {
                 continue;
             }
             let rel_path = &entry_name[prefix.len()..];
-            if rel_path.is_empty() || entry.is_dir() {
+            if rel_path.is_empty() || entry.is_dir() || entry_name.ends_with('/') {
                 continue;
             }
 
@@ -1470,6 +1512,65 @@ mod tests {
         assert!(copy_lib_safe(&tmp.path().join("missing.dll"), &dest).is_err());
     }
 
+    #[test]
+    fn zip_with_unsafe_manifest_ids_is_rejected() {
+        for id in ["..", "a/b", "C:\\\\x", "a\\\\..\\\\..", "/abs"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let exts = tmp.path().join("exts");
+            let zip = tmp.path().join("evil.zip");
+            let m = manifest(id);
+            make_zip(
+                &zip,
+                &[("m/manifest.toml", m.as_bytes()), ("m/m.dll", b"pwned")],
+            );
+            // Unsafe manifests are not offered for install at all.
+            assert!(discover_zip_modules(&zip).unwrap().is_empty(), "{id}");
+            let st = run_zip(&zip, &exts, None);
+            assert!(
+                matches!(&st[0], WorkspaceStatus::Failed(m) if m.contains("No modules")),
+                "{id}: {st:?}"
+            );
+            assert!(!exts.exists(), "{id}: nothing must be written");
+        }
+    }
+
+    #[test]
+    fn zip_with_nested_backslash_entries_flattens_into_extension_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exts = tmp.path().join("exts");
+        let zip = tmp.path().join("win.zip");
+        let m = manifest("acme.m");
+        make_zip(
+            &zip,
+            &[
+                ("m\\manifest.toml", m.as_bytes()),
+                ("m\\target\\release\\m.dll", b"1"),
+                ("m\\..\\..\\evil.dll", b"pwned"),
+            ],
+        );
+        let st = run_zip(&zip, &exts, None);
+        assert_eq!(
+            st.last(),
+            Some(&WorkspaceStatus::Done {
+                installed: 1,
+                total: 1
+            })
+        );
+        assert!(exts.join("acme.m").join("m.dll").is_file());
+        assert!(exts.join("acme.m").join("evil.dll").is_file());
+        assert!(!tmp.path().join("evil.dll").exists());
+        assert!(!exts.join("evil.dll").exists());
+    }
+
+    #[test]
+    fn extension_dest_dir_revalidates_id() {
+        let mut m: ExtensionManifest = toml::from_str(&manifest("acme.ok")).unwrap();
+        let base = Path::new("exts");
+        assert_eq!(extension_dest_dir(base, &m).unwrap(), base.join("acme.ok"));
+        m.extension.id = "../escape".into();
+        assert!(extension_dest_dir(base, &m).is_err());
+    }
+
     // ── Folder install ───────────────────────────────────────────────────
 
     #[test]
@@ -1499,6 +1600,29 @@ mod tests {
         assert!(
             matches!(&st[0], InstallStatus::Failed(m) if m.starts_with("Invalid manifest.toml"))
         );
+    }
+
+    #[test]
+    fn install_from_folder_rejects_traversal_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("my-ext");
+        let exts = tmp.path().join("exts");
+        write(
+            &folder.join("manifest.toml"),
+            manifest("../escaped").as_bytes(),
+        );
+        write(
+            &folder.join("target").join("release").join("my_ext.dll"),
+            b"binary",
+        );
+        let st = collect(install_from_folder(folder, exts.clone()));
+        assert_eq!(st.len(), 1, "{st:?}");
+        assert!(
+            matches!(&st[0], InstallStatus::Failed(m) if m.contains("extension id")),
+            "{st:?}"
+        );
+        assert!(!tmp.path().join("escaped").exists());
+        assert!(!exts.exists());
     }
 
     #[test]
@@ -1791,7 +1915,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: manifest `id` is joined onto extensions_dir unsanitised — `../x` escapes it"]
     fn manifest_id_cannot_escape_extensions_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let exts = tmp.path().join("exts");
@@ -1809,7 +1932,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: ZIP entries using `\\` separators are discovered but never extracted"]
     fn zip_with_backslash_separators_installs() {
         let tmp = tempfile::tempdir().unwrap();
         let zip = tmp.path().join("win.zip");

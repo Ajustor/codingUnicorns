@@ -7,6 +7,149 @@ use serde_json::{json, Value};
 
 use super::transport::LspTransport;
 
+// ── URI <-> path conversion ──────────────────────────────────────────────────
+
+/// Comparison key for a document URI: the decoded path, case-folded on
+/// Windows (case-insensitive filesystem, servers often lowercase `c:`).
+fn normalized_path_key(uri: &str) -> String {
+    let p = uri_to_path_string(uri, cfg!(windows));
+    if cfg!(windows) {
+        p.to_lowercase()
+    } else {
+        p
+    }
+}
+
+/// Convert a `file://` URI into a filesystem path.
+///
+/// Percent-escapes are decoded (as UTF-8), `file:///C:/x` (and `file:///c%3A/x`)
+/// become `C:\x` on Windows, `file://host/share` becomes a UNC path, and Unix
+/// URIs like `file:///home/me/a.rs` map to `/home/me/a.rs`. Anything that is
+/// not a `file:` URI is returned verbatim.
+pub fn uri_to_path(uri: &str) -> PathBuf {
+    PathBuf::from(uri_to_path_string(uri, cfg!(windows)))
+}
+
+/// Convert a filesystem path into a `file://` URI (RFC 8089), the inverse of
+/// [`uri_to_path`]: separators become `/`, a drive letter gets a leading `/`
+/// (`file:///C:/x`), and every byte outside the unreserved set is
+/// percent-encoded (spaces, `#`, `%`, non-ASCII, ...).
+pub fn path_to_uri(path: &Path) -> String {
+    path_to_uri_string(&path.to_string_lossy(), cfg!(windows))
+}
+
+fn is_drive_prefix(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 2
+        && b[0].is_ascii_alphabetic()
+        && (b[1] == b':' || b[1] == b'|')
+        && (b.len() == 2 || b[2] == b'/' || b[2] == b'\\')
+}
+
+fn percent_decode(s: &str) -> String {
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+fn uri_to_path_string(uri: &str, windows: bool) -> String {
+    let rest = match uri.get(..7) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("file://") => &uri[7..],
+        _ => return uri.to_string(),
+    };
+    // Drop any query / fragment.
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (authority, path) = if is_drive_prefix(rest) {
+        // Lenient: legacy `file://C:/x` / `file://C:\x` forms.
+        ("", rest)
+    } else {
+        match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, ""),
+        }
+    };
+    let mut path = percent_decode(path);
+    if path.starts_with('/') && is_drive_prefix(&path[1..]) {
+        if windows {
+            path.remove(0);
+        }
+    } else if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        // UNC: file://server/share/x -> //server/share/x
+        path = format!("//{}{}", percent_decode(authority), path);
+    }
+    if windows {
+        // `C|` is an old spelling of `C:`.
+        if is_drive_prefix(&path) && path.as_bytes()[1] == b'|' {
+            path.replace_range(1..2, ":");
+        }
+        path = path.replace('/', "\\");
+    }
+    path
+}
+
+fn path_to_uri_string(path: &str, windows: bool) -> String {
+    let mut p = if windows {
+        let p = path.replace('\\', "/");
+        // Strip verbatim prefixes produced by canonicalize().
+        if let Some(unc) = p.strip_prefix("//?/UNC/") {
+            format!("//{unc}")
+        } else if let Some(local) = p.strip_prefix("//?/") {
+            local.to_string()
+        } else {
+            p
+        }
+    } else {
+        path.to_string()
+    };
+    let mut authority = String::new();
+    if windows && p.starts_with("//") {
+        let rest = &p[2..];
+        let (host, tail) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, ""),
+        };
+        authority = host.to_string();
+        p = tail.to_string();
+    }
+    if is_drive_prefix(&p) {
+        p.insert(0, '/');
+    }
+    let mut out = String::from("file://");
+    out.push_str(&authority);
+    for (i, b) in p.bytes().enumerate() {
+        let keep = b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/')
+            // Keep the drive colon readable: `/C:/x`.
+            || (b == b':' && i == 2 && is_drive_prefix(&p[1..]));
+        if keep {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub message: String,
@@ -166,7 +309,7 @@ impl LspClient {
                     "method": "initialize",
                     "params": {
                         "processId": std::process::id(),
-                        "rootUri": format!("file://{}", workspace.display()),
+                        "rootUri": path_to_uri(&workspace),
                         "capabilities": {
                             "textDocument": {
                                 "hover": { "contentFormat": ["plaintext", "markdown"] },
@@ -467,8 +610,7 @@ impl LspClient {
         };
         let uri = loc.get("uri").and_then(|v| v.as_str())?;
         let line = loc["range"]["start"]["line"].as_u64()? as u32;
-        let path = uri.strip_prefix("file://").unwrap_or(uri);
-        Some((PathBuf::from(path), line))
+        Some((uri_to_path(uri), line))
     }
 
     /// Parse a completion response into a list of items (capped at 50).
@@ -509,8 +651,19 @@ impl LspClient {
         completions
     }
 
+    /// Diagnostics for a document URI. Falls back to comparing decoded paths,
+    /// because servers often normalise URIs (percent-encoding, drive-letter
+    /// case) differently from the URI the editor sent.
     pub fn get_diagnostics(&self, path: &str) -> Vec<Diagnostic> {
-        self.diagnostics.get(path).cloned().unwrap_or_default()
+        if let Some(d) = self.diagnostics.get(path) {
+            return d.clone();
+        }
+        let wanted = normalized_path_key(path);
+        self.diagnostics
+            .iter()
+            .find(|(k, _)| normalized_path_key(k) == wanted)
+            .map(|(_, d)| d.clone())
+            .unwrap_or_default()
     }
 
     /// Request document symbols. Returns the request id.
@@ -599,8 +752,7 @@ impl LspClient {
         for item in result {
             let uri = item["uri"].as_str().unwrap_or("");
             let line = item["range"]["start"]["line"].as_u64().unwrap_or(0) as u32;
-            let path = uri.strip_prefix("file://").unwrap_or(uri);
-            refs.push((std::path::PathBuf::from(path), line));
+            refs.push((uri_to_path(uri), line));
         }
         refs
     }
@@ -640,8 +792,7 @@ impl LspClient {
         };
         let mut out = Vec::new();
         for (uri, edits_val) in changes {
-            let path_str = uri.strip_prefix("file://").unwrap_or(uri);
-            let path = std::path::PathBuf::from(path_str);
+            let path = uri_to_path(uri);
             let mut file_edits = Vec::new();
             if let Some(arr) = edits_val.as_array() {
                 for edit in arr {
@@ -1236,7 +1387,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: file:// URIs are not percent-decoded (spaces etc. yield wrong paths)"]
     fn parse_definition_decodes_percent_encoded_uri() {
         let resp = json!({"result": {"uri": "file:///home/me/my%20proj/a.rs",
             "range": {"start": {"line": 1}}}});
@@ -1244,6 +1394,108 @@ mod tests {
             LspClient::parse_definition(&resp),
             Some((PathBuf::from("/home/me/my proj/a.rs"), 1))
         );
+    }
+
+    #[test]
+    fn uri_to_path_unix_forms() {
+        let f = |u| uri_to_path_string(u, false);
+        assert_eq!(f("file:///home/me/a.rs"), "/home/me/a.rs");
+        assert_eq!(f("file:///home/me/my%20proj/a.rs"), "/home/me/my proj/a.rs");
+        assert_eq!(f("file:///h/%C3%A9t%C3%A9.rs"), "/h/\u{e9}t\u{e9}.rs");
+        assert_eq!(f("file:///a/100%25.rs"), "/a/100%.rs");
+        assert_eq!(f("file://localhost/etc/x"), "/etc/x");
+        assert_eq!(f("FILE:///x"), "/x");
+        assert_eq!(f("file:///a.rs#frag"), "/a.rs");
+        // Malformed / truncated escapes are kept literally.
+        assert_eq!(f("file:///a%2"), "/a%2");
+        assert_eq!(f("file:///a%zz"), "/a%zz");
+        // Non-file URIs are returned verbatim.
+        assert_eq!(f("untitled:1"), "untitled:1");
+        assert_eq!(f("b.rs"), "b.rs");
+    }
+
+    #[test]
+    fn uri_to_path_windows_forms() {
+        let f = |u| uri_to_path_string(u, true);
+        assert_eq!(f("file:///C:/x/a.rs"), r"C:\x\a.rs");
+        assert_eq!(f("file:///c%3A/My%20Docs/a.rs"), r"c:\My Docs\a.rs");
+        assert_eq!(f("file:///C|/x"), r"C:\x");
+        assert_eq!(f("file://server/share/a.rs"), r"\\server\share\a.rs");
+        // Legacy, non-conforming `file://C:\x` produced by old call sites.
+        assert_eq!(f(r"file://C:\x\a.rs"), r"C:\x\a.rs");
+    }
+
+    #[test]
+    fn path_to_uri_forms() {
+        assert_eq!(
+            path_to_uri_string("/home/me/a.rs", false),
+            "file:///home/me/a.rs"
+        );
+        assert_eq!(
+            path_to_uri_string("/home/me/my proj/#1%.rs", false),
+            "file:///home/me/my%20proj/%231%25.rs"
+        );
+        assert_eq!(
+            path_to_uri_string("/h/\u{e9}.rs", false),
+            "file:///h/%C3%A9.rs"
+        );
+        assert_eq!(path_to_uri_string(r"/a\b", false), "file:///a%5Cb");
+        assert_eq!(
+            path_to_uri_string(r"C:\Users\me\my proj\a.rs", true),
+            "file:///C:/Users/me/my%20proj/a.rs"
+        );
+        assert_eq!(path_to_uri_string(r"\\?\C:\x", true), "file:///C:/x");
+        assert_eq!(
+            path_to_uri_string(r"\\server\share\a.rs", true),
+            "file://server/share/a.rs"
+        );
+        assert_eq!(
+            path_to_uri_string(r"\\?\UNC\server\share\a", true),
+            "file://server/share/a"
+        );
+    }
+
+    #[test]
+    fn uri_path_roundtrip() {
+        for (p, win) in [
+            ("/home/me/my proj/\u{e9}#%?.rs", false),
+            (r"C:\Users\me\my proj\a b.rs", true),
+            (r"\\server\share\x y", true),
+        ] {
+            assert_eq!(uri_to_path_string(&path_to_uri_string(p, win), win), p);
+        }
+        // Public helpers agree with the platform-specific inner functions.
+        let here = std::env::temp_dir().join("my proj").join("a.rs");
+        assert_eq!(uri_to_path(&path_to_uri(&here)), here);
+    }
+
+    #[test]
+    fn references_and_rename_decode_uris() {
+        let refs = LspClient::parse_references(&json!({"result": [
+            {"uri": "file:///my%20dir/a.rs", "range": {"start": {"line": 3}}}
+        ]}));
+        assert_eq!(refs, vec![(PathBuf::from("/my dir/a.rs"), 3)]);
+        let out = LspClient::apply_rename(&json!({"result": {"changes": {
+            "file:///my%20dir/b.rs": []
+        }}}));
+        assert_eq!(out[0].0, PathBuf::from("/my dir/b.rs"));
+    }
+
+    #[test]
+    fn diagnostics_lookup_tolerates_uri_encoding_differences() {
+        let mut store = HashMap::new();
+        LspClient::process_diagnostics_msg(
+            &mut store,
+            &json!({"params": {"uri": "file:///my%20dir/a.rs", "diagnostics": [
+                {"message": "m", "range": {"start": {"line": 0, "character": 0},
+                                           "end": {"line": 0, "character": 1}}}
+            ]}}),
+        );
+        let mut c = LspClient::new();
+        c.diagnostics = store;
+        assert_eq!(c.get_diagnostics("file:///my%20dir/a.rs").len(), 1);
+        assert_eq!(c.get_diagnostics("file:///my dir/a.rs").len(), 1);
+        assert!(c.get_diagnostics("file:///other.rs").is_empty());
     }
 
     #[test]

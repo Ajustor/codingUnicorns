@@ -28,6 +28,11 @@ use indent::detect_indent;
 use std::path::PathBuf;
 use utils::{find_next_occurrence, get_word_at};
 
+/// Editor state right after the last typed char: primary cursor position, whether
+/// it has a selection, extra cursor count and content version. Typing continues
+/// the current undo burst only while this is unchanged.
+type TypingBurstState = ((usize, usize), bool, usize, i32);
+
 pub struct Editor {
     pub buffer: Buffer,
     pub cursor: Cursor,
@@ -70,9 +75,10 @@ pub struct Editor {
     /// files on every keystroke (which lags the UI).
     pub hl_pending_version: i32,
     pub hl_pending_at: Option<std::time::Instant>,
-    /// True while a run of typed characters is being coalesced into a single undo
-    /// step. Reset by any non-text key so each typing burst is one undo unit.
-    coalescing_typing: bool,
+    /// Set while a run of typed characters is being coalesced into a single undo
+    /// step (see `insert_char`). Cleared by any non-text key, and implicitly broken
+    /// by cursor movement or any other edit, so each typing burst is one undo unit.
+    typing_burst: Option<TypingBurstState>,
     /// Cached longest line length (chars) + the content_version it was computed for.
     /// Avoids an O(file) max-width scan every frame for the horizontal scrollbar.
     max_line_chars: usize,
@@ -210,7 +216,7 @@ impl Editor {
             content_version: 0,
             hl_pending_version: -1,
             hl_pending_at: None,
-            coalescing_typing: false,
+            typing_burst: None,
             max_line_chars: 0,
             max_line_chars_version: -1,
             hover_lsp_request_pending: false,
@@ -294,7 +300,7 @@ impl Editor {
         // cached version and the minimap shows a stale ("ghost") overview.
         self.minimap_lines.clear();
         self.minimap_lines_version = -1;
-        self.coalescing_typing = false;
+        self.typing_burst = None;
         self.max_line_chars_version = -1;
         // Detect indentation style from file content
         let (spaces, size) = detect_indent(&content);
@@ -329,6 +335,15 @@ impl Editor {
             self.invalidate_line_diff();
         }
         Ok(())
+    }
+
+    fn typing_burst_state(&self) -> TypingBurstState {
+        (
+            self.cursor.position(),
+            self.cursor.has_selection(),
+            self.extra_cursors.len(),
+            self.content_version,
+        )
     }
 
     /// Duplicate current line(s) below.
@@ -522,9 +537,17 @@ impl Editor {
                                 .hint_text("Line number…")
                                 .desired_width(120.0),
                         );
-                        resp.request_focus();
+                        // Check for Enter (which makes the single-line edit drop focus)
+                        // BEFORE re-requesting focus, or lost_focus() would never be true.
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             do_goto = true;
+                            // Consume Enter so the editor (which regains focus this
+                            // frame) doesn't also insert a newline at the target line.
+                            ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                            });
+                        } else {
+                            resp.request_focus();
                         }
                         if ui.button("Go").clicked() {
                             do_goto = true;
@@ -853,12 +876,8 @@ impl Editor {
                                 egui::Event::Text(text)
                                     if !i.modifiers.ctrl && !i.modifiers.command =>
                                 {
-                                    // Checkpoint once at the start of a typing run so
-                                    // Ctrl+Z undoes the run (not nothing / not per char).
-                                    if !self.coalescing_typing {
-                                        self.buffer.checkpoint();
-                                        self.coalescing_typing = true;
-                                    }
+                                    // insert_char checkpoints once per typing run, so
+                                    // Ctrl+Z undoes the whole run (not per char).
                                     let auto_close = config.editor.auto_close_brackets;
                                     for ch in text.chars() {
                                         self.insert_char(ch, auto_close);
@@ -884,8 +903,10 @@ impl Editor {
                                     text_typed = true;
                                 }
                                 egui::Event::Paste(text) => {
-                                    self.coalescing_typing = false;
                                     self.buffer.checkpoint();
+                                    // The paste is its own undo step: let its chars
+                                    // join the checkpoint above, not open a new one.
+                                    self.typing_burst = Some(self.typing_burst_state());
                                     let cursor_count = 1 + self.extra_cursors.len();
                                     let lines: Vec<&str> = text.lines().collect();
 
@@ -938,6 +959,8 @@ impl Editor {
                                             }
                                         }
                                     }
+                                    // Typing after a paste starts a new undo step.
+                                    self.typing_burst = None;
                                     text_typed = true;
                                 }
                                 egui::Event::Key {
@@ -948,7 +971,7 @@ impl Editor {
                                 } => {
                                     // Any non-text key ends the current typing run, so
                                     // the next typed run becomes its own undo step.
-                                    self.coalescing_typing = false;
+                                    self.typing_burst = None;
                                     match key {
                                         egui::Key::Enter if modifiers.ctrl && modifiers.shift => {
                                             self.buffer.checkpoint();
@@ -982,13 +1005,12 @@ impl Editor {
                                                 self.insert_newline();
                                             }
                                         }
+                                        // delete_char_before/after push their own checkpoint.
                                         egui::Key::Backspace => {
-                                            self.buffer.checkpoint();
                                             self.delete_char_before();
                                             text_typed = true;
                                         }
                                         egui::Key::Delete => {
-                                            self.buffer.checkpoint();
                                             self.delete_char_after();
                                             text_typed = true;
                                         }
@@ -1435,12 +1457,9 @@ impl Editor {
                                                     search_row,
                                                     search_col,
                                                 ) {
-                                                    // Stop if we've wrapped past the starting point
-                                                    if mr < search_row
-                                                        || (mr == search_row
-                                                            && mc < search_col
-                                                            && search_row != 0)
-                                                    {
+                                                    // Stop once the search wraps around (the match
+                                                    // lies before the search position).
+                                                    if (mr, mc) < (search_row, search_col) {
                                                         break;
                                                     }
                                                     // Skip the primary cursor's occurrence
@@ -2344,85 +2363,43 @@ impl Editor {
                     let line = self.buffer.line(line_idx);
                     let x_start = rect.min.x + gutter_width;
 
-                    // Find bar match highlight — precise character-level boxes
-                    if !self.find_query.is_empty() && self.find_matches.contains(&line_idx) {
-                        let haystack_raw = self.buffer.line(line_idx);
-                        let (haystack, needle) = if self.find_case_sensitive {
-                            (haystack_raw.clone(), self.find_query.clone())
-                        } else {
-                            (haystack_raw.to_lowercase(), self.find_query.to_lowercase())
-                        };
-                        // Collect all match start byte-offsets in this line.
-                        let mut search_pos = 0usize;
-                        while search_pos <= haystack.len() {
-                            let found = if self.find_use_regex {
-                                regex::Regex::new(&if self.find_case_sensitive {
-                                    needle.clone()
-                                } else {
-                                    format!("(?i){}", self.find_query)
-                                })
-                                .ok()
-                                .and_then(|re| re.find(&haystack[search_pos..]))
-                                .map(|m| (m.start(), m.end()))
+                    // Find bar match highlight — precise character-level boxes.
+                    // Uses the same matcher as find/replace, on the original line,
+                    // so offsets are always valid char boundaries.
+                    if self.find_matches.contains(&line_idx) {
+                        if let Some(re) = self.find_regex() {
+                            let haystack = self.buffer.line(line_idx);
+                            let is_active =
+                                self.find_matches.get(self.find_current) == Some(&line_idx);
+                            let color = if is_active {
+                                find_highlight_active
                             } else {
-                                haystack[search_pos..]
-                                    .find(&needle)
-                                    .map(|s| (s, s + needle.len()))
+                                find_highlight
                             };
-                            match found {
-                                None => break,
-                                Some((rel_start, rel_end)) => {
-                                    let abs_start = search_pos + rel_start;
-                                    let abs_end = search_pos + rel_end;
-                                    // Convert byte offset → char count for pixel measurement
-                                    let pre_chars = haystack_raw[..abs_start].chars().count();
-                                    let span_chars =
-                                        haystack_raw[abs_start..abs_end].chars().count();
-                                    let pre_text: String =
-                                        haystack_raw.chars().take(pre_chars).collect();
-                                    let span_text: String = haystack_raw
-                                        .chars()
-                                        .skip(pre_chars)
-                                        .take(span_chars)
-                                        .collect();
-                                    let pre_w = ui.fonts(|f| {
+                            for m in re.find_iter(&haystack).filter(|m| !m.is_empty()) {
+                                let measure = |text: &str| {
+                                    ui.fonts(|f| {
                                         f.layout_no_wrap(
-                                            pre_text,
+                                            text.to_owned(),
                                             font_id.clone(),
                                             egui::Color32::WHITE,
                                         )
                                         .size()
                                         .x
-                                    });
-                                    let span_w = ui.fonts(|f| {
-                                        f.layout_no_wrap(
-                                            span_text,
-                                            font_id.clone(),
-                                            egui::Color32::WHITE,
-                                        )
-                                        .size()
-                                        .x
-                                    });
-                                    let hx = x_start + pre_w - self.scroll_offset.x;
-                                    if hx < rect.max.x && hx + span_w > x_start {
-                                        // Active match: bright yellow; other matches: dim
-                                        let is_active = self.find_matches.get(self.find_current)
-                                            == Some(&line_idx);
-                                        let color = if is_active {
-                                            find_highlight_active
-                                        } else {
-                                            find_highlight
-                                        };
-                                        painter.rect_filled(
-                                            egui::Rect::from_min_size(
-                                                egui::pos2(hx, y + 1.0),
-                                                egui::vec2(span_w.max(4.0), line_height - 2.0),
-                                            ),
-                                            2.0,
-                                            color,
-                                        );
-                                    }
-                                    search_pos = abs_end.max(abs_start + 1);
+                                    })
+                                };
+                                let pre_w = measure(&haystack[..m.start()]);
+                                let span_w = measure(m.as_str());
+                                let hx = x_start + pre_w - self.scroll_offset.x;
+                                if hx < rect.max.x && hx + span_w > x_start {
+                                    painter.rect_filled(
+                                        egui::Rect::from_min_size(
+                                            egui::pos2(hx, y + 1.0),
+                                            egui::vec2(span_w.max(4.0), line_height - 2.0),
+                                        ),
+                                        2.0,
+                                        color,
+                                    );
                                 }
                             }
                         }
@@ -3738,7 +3715,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: insert_char checkpoints every char, so a typing run is not one undo step"]
     fn ctrl_z_undoes_a_whole_typing_run() {
         let (mut h, mut ed) = setup("x");
         ed.cursor.set_position(0, 1);
@@ -3749,7 +3725,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: Backspace/Delete push a duplicate undo checkpoint (needs two Ctrl+Z)"]
     fn each_backspace_is_one_undo_step() {
         let (mut h, mut ed) = setup("ab");
         ed.cursor.set_position(0, 2);
@@ -3760,6 +3735,46 @@ mod tests {
         assert_eq!(text(&ed), "a");
         h.press(&mut ed, Key::Z, CTRL);
         assert_eq!(text(&ed), "ab");
+    }
+
+    #[test]
+    fn each_delete_is_one_undo_step() {
+        let (mut h, mut ed) = setup("ab");
+        ed.cursor.set_position(0, 0);
+        h.press(&mut ed, Key::Delete, NONE);
+        h.press(&mut ed, Key::Delete, NONE);
+        assert_eq!(text(&ed), "");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "b");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "ab");
+    }
+
+    #[test]
+    fn typing_bursts_split_on_cursor_moves_and_other_edits() {
+        let (mut h, mut ed) = setup("");
+        h.type_text(&mut ed, "ab");
+        h.type_text(&mut ed, "cd");
+        // Moving the cursor (even without a key event, e.g. a click) ends the burst.
+        ed.cursor.set_position(0, 1);
+        h.type_text(&mut ed, "X");
+        assert_eq!(text(&ed), "aXbcd");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "abcd");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "");
+
+        // A non-typing edit (Backspace) between runs ends the burst too.
+        h.type_text(&mut ed, "xy");
+        h.press(&mut ed, Key::Backspace, NONE);
+        h.type_text(&mut ed, "z");
+        assert_eq!(text(&ed), "xz");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "x");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "xy");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "");
     }
 
     // ── Editing keys ────────────────────────────────────────────────────────
@@ -3889,7 +3904,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: duplicating the last line (no trailing newline) appends to it instead of adding a line"]
     fn duplicate_last_line_without_trailing_newline() {
         let (mut h, mut ed) = setup("a\nb");
         ed.cursor.set_position(1, 0);
@@ -4149,6 +4163,21 @@ mod tests {
         assert_eq!(copied(&out).as_deref(), Some("foo\nfoo\nfoo"));
     }
 
+    #[test]
+    fn ctrl_shift_l_on_single_line_selects_each_occurrence_once() {
+        // find_next_occurrence wraps within the start row; the loop must still stop.
+        let (mut h, mut ed) = setup("foo foo foo");
+        ed.cursor.set_position(0, 5);
+        h.press(&mut ed, Key::L, mods(&[CTRL, SHIFT]));
+        assert_eq!(ed.cursor.selection_range(), Some(((0, 4), (0, 7))));
+        let sels: Vec<_> = ed
+            .extra_cursors
+            .iter()
+            .map(|c| c.selection_range().unwrap())
+            .collect();
+        assert_eq!(sels, vec![((0, 0), (0, 3)), ((0, 8), (0, 11))]);
+    }
+
     // ── Clipboard ───────────────────────────────────────────────────────────
 
     #[test]
@@ -4335,6 +4364,22 @@ mod tests {
     // ── Find / replace & goto-line dialogs ──────────────────────────────────
 
     #[test]
+    fn find_highlight_survives_case_folding_that_changes_byte_length() {
+        // 'İ' (2 bytes) lowercases to "i̇" (3 bytes); the old highlighter sliced the
+        // original line with offsets from the lowercased copy and panicked.
+        let (mut h, mut ed) = setup("İİİ foo\né foo é foo");
+        ed.show_find = true;
+        ed.find_query = "FOO".into();
+        ed.update_find_matches();
+        assert_eq!(ed.find_matches, vec![0, 1]);
+        h.idle(&mut ed);
+        ed.find_use_regex = true;
+        ed.find_query = "f.o|^".into(); // empty matches must be skipped, not loop
+        ed.update_find_matches();
+        h.idle(&mut ed);
+    }
+
+    #[test]
     fn find_bar_renders_matches_and_escape_closes_it() {
         let (mut h, mut ed) = setup("Foo bar\nfoo foo\nnone");
         ed.show_find = true;
@@ -4383,7 +4428,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: goto-line re-requests focus before checking lost_focus(), so Enter never submits"]
     fn goto_line_enter_moves_cursor() {
         let content = (0..50)
             .map(|i| format!("line {i}"))

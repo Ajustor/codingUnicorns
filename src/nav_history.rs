@@ -47,6 +47,42 @@ impl NavigationHistory {
         self.push(path, row, col);
     }
 
+    /// Go back from the current position `(path, row, col)`, browser-style:
+    /// when leaving the live position (not yet in history) it is recorded so
+    /// `go_forward` can return to it; when already inside the history, the
+    /// current entry is refreshed with the latest cursor position.
+    pub fn go_back_from(
+        &mut self,
+        path: PathBuf,
+        row: usize,
+        col: usize,
+    ) -> Option<NavigationEntry> {
+        if self.index == 0 {
+            return None;
+        }
+        let current = NavigationEntry { path, row, col };
+        if self.index >= self.stack.len() {
+            // At the live position. Record it (no cap here, so going back
+            // never evicts the entry we are about to return to).
+            match self.stack.back_mut() {
+                Some(last) if last.path == current.path && last.row == current.row => {
+                    *last = current;
+                }
+                _ => self.stack.push_back(current),
+            }
+            self.index = self.stack.len() - 1;
+            if self.index == 0 {
+                return None;
+            }
+        } else if let Some(entry) = self.stack.get_mut(self.index) {
+            *entry = current;
+        }
+        self.go_back()
+    }
+
+    /// Go back without knowing the current position. The position being
+    /// left is not recorded, so `go_forward` cannot return to it; prefer
+    /// [`go_back_from`](Self::go_back_from).
     pub fn go_back(&mut self) -> Option<NavigationEntry> {
         if self.index > 0 {
             self.index -= 1;
@@ -153,15 +189,42 @@ mod tests {
 
     /// The app pushes the *origin* of each jump (see `push_nav_and_goto`), so
     /// after Alt+Left the user expects Alt+Right to take them back to where
-    /// they were. The position held before going back is never recorded, so
-    /// forward navigation right after a single back is impossible.
+    /// they were. `go_back_from` records the position held before going back.
     #[test]
-    #[ignore = "BUG: go_forward() right after go_back() returns None; pre-back position is never recorded"]
     fn forward_after_back_returns_to_previous_location() {
         let mut h = NavigationHistory::new();
         h.push(p("a.rs"), 1, 0); // jumped a.rs:1 -> elsewhere
         h.push(p("b.rs"), 2, 0); // jumped b.rs:2 -> elsewhere
-        assert_eq!(h.go_back().unwrap().path, p("b.rs"));
-        assert!(h.go_forward().is_some());
+        assert_eq!(h.go_back_from(p("c.rs"), 3, 0).unwrap().path, p("b.rs"));
+        let fwd = h.go_forward().unwrap();
+        assert_eq!((fwd.path, fwd.row), (p("c.rs"), 3));
+        assert!(h.go_forward().is_none());
+    }
+
+    #[test]
+    fn back_and_forth_like_a_browser() {
+        let mut h = NavigationHistory::new();
+        assert!(h.go_back_from(p("x.rs"), 0, 0).is_none(), "empty history");
+        h.push(p("a.rs"), 1, 0);
+        h.push(p("b.rs"), 2, 0);
+        // Live position c.rs:3 -> b -> a, then forward b -> c.
+        assert_eq!(h.go_back_from(p("c.rs"), 3, 0).unwrap().path, p("b.rs"));
+        // Cursor moved within b.rs before going back again: remembered.
+        assert_eq!(h.go_back_from(p("b.rs"), 9, 4).unwrap().path, p("a.rs"));
+        assert!(h.go_back_from(p("a.rs"), 1, 0).is_none(), "at the start");
+        let e = h.go_forward().unwrap();
+        assert_eq!((e.path, e.row, e.col), (p("b.rs"), 9, 4));
+        assert_eq!(h.go_forward().unwrap().path, p("c.rs"));
+        assert!(h.go_forward().is_none());
+        // Going back again from the end of history does not duplicate it.
+        assert_eq!(h.go_back_from(p("c.rs"), 3, 0).unwrap().path, p("b.rs"));
+        assert_eq!(h.go_forward().unwrap().path, p("c.rs"));
+        assert!(h.go_forward().is_none());
+        // A new jump from the middle discards forward history.
+        h.go_back_from(p("c.rs"), 3, 0);
+        h.push(p("b.rs"), 9, 4);
+        assert!(h.go_forward().is_none());
+        assert_eq!(h.go_back_from(p("d.rs"), 0, 0).unwrap().path, p("b.rs"));
+        assert_eq!(h.go_back_from(p("b.rs"), 9, 4).unwrap().path, p("a.rs"));
     }
 }

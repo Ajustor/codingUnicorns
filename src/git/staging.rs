@@ -1,5 +1,30 @@
 use super::{FileChangeKind, GitStatus};
 
+/// Stage a worktree path. Status collapses a wholly untracked directory into a
+/// single `dir/` entry, which `add_path` rejects; stage its contents instead
+/// (respecting ignore rules, like `git add dir/`).
+fn add_to_index(index: &mut git2::Index, path: &str) -> Result<(), git2::Error> {
+    if let Some(dir) = path.strip_suffix('/') {
+        let mut matched = false;
+        index.add_all(
+            [dir],
+            git2::IndexAddOption::DEFAULT,
+            Some(&mut |_: &std::path::Path, _: &[u8]| {
+                matched = true;
+                0
+            }),
+        )?;
+        if !matched {
+            return Err(git2::Error::from_str(&format!(
+                "no files to stage under '{path}'"
+            )));
+        }
+        Ok(())
+    } else {
+        index.add_path(std::path::Path::new(path))
+    }
+}
+
 impl GitStatus {
     pub fn stage_file(&mut self, file_path: &str) {
         let repo_path = match &self.repo_path {
@@ -32,7 +57,7 @@ impl GitStatus {
         let result = if is_deleted {
             index.remove_path(path)
         } else {
-            index.add_path(path)
+            add_to_index(&mut index, file_path)
         };
 
         if let Err(e) = result {
@@ -111,12 +136,15 @@ impl GitStatus {
             .filter(|f| f.wt_status != FileChangeKind::None)
             .map(|f| (f.path.clone(), f.wt_status == FileChangeKind::Deleted))
             .collect();
+        let mut errors: Vec<String> = Vec::new();
         for (path, is_deleted) in &paths {
-            let p = std::path::Path::new(path);
-            if *is_deleted {
-                let _ = index.remove_path(p);
+            let result = if *is_deleted {
+                index.remove_path(std::path::Path::new(path))
             } else {
-                let _ = index.add_path(p);
+                add_to_index(&mut index, path)
+            };
+            if let Err(e) = result {
+                errors.push(format!("{path}: {e}"));
             }
         }
         if let Err(e) = index.write() {
@@ -124,6 +152,10 @@ impl GitStatus {
             return;
         }
         self.refresh();
+        // `refresh` clears `last_error`, so report partial failures after it.
+        if !errors.is_empty() {
+            self.last_error = Some(format!("Failed to stage {}", errors.join("; ")));
+        }
     }
 
     pub fn unstage_all(&mut self) {
@@ -316,7 +348,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: new files inside an untracked directory cannot be staged; status reports `dir/` and add_path(\"dir/\") fails (stage_all swallows it)"]
     fn stage_all_stages_files_in_new_directories() {
         let r = dirty_repo();
         r.write("newdir/inner.txt", "x");
@@ -330,7 +361,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: staging an untracked directory entry (`dir/`) from the git panel fails"]
     fn stage_file_on_untracked_directory_entry() {
         let r = dirty_repo();
         r.write("newdir/inner.txt", "x");
@@ -339,6 +369,51 @@ mod tests {
         s.stage_file("newdir/");
         assert!(s.last_error.is_none(), "{:?}", s.last_error);
         assert!(s.has_staged_files());
+    }
+
+    #[test]
+    fn staging_untracked_directory_respects_gitignore_and_nesting() {
+        let r = dirty_repo();
+        r.write(".gitignore", "*.tmp\n");
+        r.write("newdir/inner.txt", "x");
+        r.write("newdir/deep/more.txt", "y");
+        r.write("newdir/junk.tmp", "ignored");
+        let mut s = r.status();
+        s.stage_file("newdir/");
+        assert!(s.last_error.is_none(), "{:?}", s.last_error);
+        for p in ["newdir/inner.txt", "newdir/deep/more.txt"] {
+            assert_eq!(
+                kinds(&s, p),
+                Some((FileChangeKind::Added, FileChangeKind::None)),
+                "{p}"
+            );
+        }
+        let fresh = git2::Repository::open(r.path()).unwrap();
+        let idx = fresh.index().unwrap();
+        assert!(idx
+            .get_path(std::path::Path::new("newdir/junk.tmp"), 0)
+            .is_none());
+        // A sibling dir sharing the prefix is not swept in.
+        assert!(idx.get_path(std::path::Path::new("new.txt"), 0).is_none());
+    }
+
+    #[test]
+    fn stage_all_reports_failures_instead_of_swallowing_them() {
+        let r = dirty_repo();
+        let mut s = r.status();
+        s.files.push(FileStatus {
+            path: "vanished.txt".into(),
+            index_status: FileChangeKind::None,
+            wt_status: FileChangeKind::Untracked,
+        });
+        s.stage_all();
+        let err = s.last_error.clone().unwrap();
+        assert!(err.starts_with("Failed to stage vanished.txt"), "{err}");
+        // The other files were still staged.
+        assert_eq!(
+            kinds(&s, "new.txt"),
+            Some((FileChangeKind::Added, FileChangeKind::None))
+        );
     }
 
     #[test]
