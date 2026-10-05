@@ -966,12 +966,17 @@ impl Editor {
                                         self.is_modified = true;
                                         self.content_version = self.content_version.wrapping_add(1);
                                     } else {
-                                        // Default: paste full text at each cursor
+                                        // Default: paste full text at each cursor. The
+                                        // buffer is LF-only (CRLF is re-applied on save),
+                                        // and pasted text keeps its own indentation.
                                         for ch in text.chars() {
+                                            if ch == '\r' {
+                                                continue;
+                                            }
                                             if ch == '\n' {
-                                                self.insert_newline();
+                                                self.insert_newline_plain();
                                             } else {
-                                                self.insert_char(ch, false);
+                                                self.insert_pasted_char(ch);
                                             }
                                         }
                                     }
@@ -3844,6 +3849,36 @@ mod tests {
         // Paste never auto-closes brackets.
         assert_eq!(text(&ed), "[a\nb(]");
         assert_eq!(ed.cursor.position(), (1, 2));
+    }
+
+    #[test]
+    fn enter_auto_indents_and_closer_dedents() {
+        let (mut h, mut ed) = setup("fn a() {\n    x;\n}");
+        ed.cursor.set_position(0, 8);
+        h.press(&mut ed, Key::Enter, NONE);
+        assert_eq!(ed.buffer.line(1), "    ");
+        h.type_text(&mut ed, "if y {");
+        h.press(&mut ed, Key::Enter, NONE);
+        // Auto-close made `{}`, so Enter splits the pair over three lines.
+        assert_eq!(ed.buffer.line(2), "        ");
+        assert_eq!(ed.buffer.line(3), "    }");
+        assert_eq!(ed.cursor.position(), (2, 8));
+        h.press(&mut ed, Key::ArrowDown, NONE);
+        h.press(&mut ed, Key::End, NONE);
+        h.press(&mut ed, Key::Enter, NONE);
+        h.type_text(&mut ed, "}");
+        assert_eq!(ed.buffer.line(4), "}");
+    }
+
+    #[test]
+    fn paste_keeps_its_indentation_and_drops_carriage_returns() {
+        let (mut h, mut ed) = setup("");
+        h.frame(
+            &mut ed,
+            vec![Event::Paste("if x {\r\n    y\r\n}".into())],
+            NONE,
+        );
+        assert_eq!(text(&ed), "if x {\n    y\n}");
     }
 
     #[test]
