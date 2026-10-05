@@ -1,10 +1,12 @@
 mod ansi;
 mod colors;
 mod screen_buffer;
+mod selection;
 mod shell;
 
 use ansi::AnsiPerformer;
 use screen_buffer::{Cell, DEFAULT_FG};
+use selection::{word_at, GridPos, Selection};
 pub use shell::list_available_shells;
 use shell::resolve_shell;
 
@@ -49,6 +51,8 @@ pub struct Terminal {
     needs_scroll: bool,
     /// Whether this terminal has keyboard focus.
     focused: bool,
+    /// Mouse text selection, in scrollback-then-screen line space.
+    selection: Option<Selection>,
 }
 
 impl Terminal {
@@ -73,6 +77,7 @@ impl Terminal {
             grid_size: (INITIAL_ROWS, INITIAL_COLS),
             needs_scroll: true,
             focused,
+            selection: None,
         }
     }
 
@@ -215,6 +220,8 @@ Is it installed and on PATH?
             return;
         }
         self.grid_size = (rows, cols);
+        // Rows are re-laid out; a selection would no longer point at the same text.
+        self.selection = None;
         if let Some(master) = &self.master {
             let _ = master.resize(PtySize {
                 rows,
@@ -263,9 +270,114 @@ Is it installed and on PATH?
         self.needs_scroll = true;
     }
 
+    /// Cells of `line` in scrollback-then-screen line space.
+    fn line(&self, line: usize) -> Option<&[Cell]> {
+        let buf = &self.performer.buf;
+        match line.checked_sub(buf.scrollback.len()) {
+            None => buf.scrollback.get(line).map(Vec::as_slice),
+            Some(screen) => buf.rows.get(screen).map(Vec::as_slice),
+        }
+    }
+
+    fn selection_text(&self) -> Option<String> {
+        self.selection.map(|s| s.text(|l| self.line(l)))
+    }
+
+    /// Copy the selection (if any) to the clipboard and clear it. Returns whether
+    /// anything was copied.
+    fn copy_selection(&mut self, ctx: &egui::Context) -> bool {
+        match self.selection_text() {
+            Some(text) => {
+                ctx.copy_text(text);
+                self.selection = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Mouse selection: drag selects, double-click a word, triple-click a line, a
+    /// plain click clears, right-click copies. `origin` is the top-left of line 0;
+    /// `lines` how many lines are laid out.
+    fn handle_mouse(
+        &mut self,
+        ui: &mut egui::Ui,
+        origin: egui::Pos2,
+        lines: usize,
+        style: &RowStyle,
+    ) {
+        if lines == 0 {
+            return;
+        }
+        let rect = egui::Rect::from_min_size(
+            origin,
+            egui::vec2(style.clip_width, lines as f32 * LINE_HEIGHT),
+        );
+        let resp = ui.interact(
+            rect,
+            ui.id().with("term_select"),
+            egui::Sense::click_and_drag(),
+        );
+        let char_w = style.char_w.max(1.0);
+        let to_cell = |pos: egui::Pos2| {
+            let line = ((pos.y - origin.y) / LINE_HEIGHT).floor().max(0.0) as usize;
+            let col = ((pos.x - origin.x) / char_w).floor().max(0.0) as usize;
+            GridPos::new(line.min(lines - 1), col)
+        };
+
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            self.focused = true;
+            let start = ui
+                .ctx()
+                .input(|i| i.pointer.press_origin())
+                .or(resp.interact_pointer_pos());
+            if let Some(pos) = start {
+                let cell = to_cell(pos);
+                self.selection = Some(Selection::new(cell, cell));
+            }
+        }
+        if resp.dragged_by(egui::PointerButton::Primary) {
+            if let (Some(pos), Some(sel)) = (resp.interact_pointer_pos(), &mut self.selection) {
+                sel.head = to_cell(pos);
+                // Auto-scroll when dragging past the visible edge.
+                let clip = ui.clip_rect();
+                if pos.y < clip.top() {
+                    ui.scroll_with_delta(egui::vec2(0.0, LINE_HEIGHT));
+                } else if pos.y > clip.bottom() {
+                    ui.scroll_with_delta(egui::vec2(0.0, -LINE_HEIGHT));
+                }
+                ui.ctx().request_repaint();
+            }
+        }
+        if resp.clicked() {
+            let cell = resp.interact_pointer_pos().map(to_cell);
+            self.selection = match cell {
+                Some(cell) if resp.triple_clicked() => {
+                    let width = self.line(cell.line).map_or(0, <[Cell]>::len);
+                    Some(Selection::new(
+                        GridPos::new(cell.line, 0),
+                        GridPos::new(cell.line, width.saturating_sub(1)),
+                    ))
+                }
+                Some(cell) if resp.double_clicked() => self.line(cell.line).map(|row| {
+                    let (start, end) = word_at(row, cell.col);
+                    Selection::new(
+                        GridPos::new(cell.line, start),
+                        GridPos::new(cell.line, end.saturating_sub(1).max(start)),
+                    )
+                }),
+                _ => None,
+            };
+        }
+        if resp.secondary_clicked() {
+            self.focused = true;
+            self.copy_selection(ui.ctx());
+        }
+    }
+
     /// Renders the terminal output (no header/tab bar).
     /// Keyboard input is forwarded directly to the PTY when the terminal has focus.
-    /// Click anywhere in the terminal to focus it.
+    /// Click anywhere in the terminal to focus it; drag to select text.
     pub fn show_content(&mut self, ui: &mut egui::Ui, config: &crate::config::Config) {
         self.update();
 
@@ -304,7 +416,13 @@ Is it installed and on PATH?
             }
         }
 
-        let focused = self.focused;
+        let row_style = RowStyle {
+            line_height: LINE_HEIGHT,
+            char_w,
+            default_fg,
+            term_bg,
+            clip_width: content_width,
+        };
 
         egui::Frame::new()
             .fill(term_bg)
@@ -320,6 +438,8 @@ Is it installed and on PATH?
                 let scroll_out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .id_salt("term_scroll")
+                    // Dragging selects text instead of scrolling.
+                    .drag_to_scroll(false)
                     .stick_to_bottom(scroll_to_bottom)
                     .show(ui, |ui| {
                         ui.style_mut().spacing.item_spacing.y = 0.0;
@@ -339,16 +459,16 @@ Is it installed and on PATH?
                             .max(cursor_row + 1)
                             .min(num_rows);
 
-                        for row in &self.performer.buf.scrollback {
-                            render_row(
-                                ui,
-                                row,
-                                LINE_HEIGHT,
-                                default_fg,
-                                term_bg,
-                                content_width,
-                                None,
-                            );
+                        let sb_len = self.performer.buf.scrollback.len();
+                        let origin = ui.cursor().min;
+                        self.handle_mouse(ui, origin, sb_len + last_screen_row, &row_style);
+
+                        let selection = self.selection;
+                        let sel_on = |line: usize, row: &[Cell]| {
+                            selection.and_then(|s| s.cols_on_line(line, row.len()))
+                        };
+                        for (i, row) in self.performer.buf.scrollback.iter().enumerate() {
+                            render_row(ui, row, &row_style, None, sel_on(i, row));
                         }
                         for (i, row) in self.performer.buf.rows[..last_screen_row]
                             .iter()
@@ -359,19 +479,11 @@ Is it installed and on PATH?
                             } else {
                                 None
                             };
-                            render_row(
-                                ui,
-                                row,
-                                LINE_HEIGHT,
-                                default_fg,
-                                term_bg,
-                                content_width,
-                                cur,
-                            );
+                            render_row(ui, row, &row_style, cur, sel_on(sb_len + i, row));
                         }
                     });
 
-                if focused {
+                if self.focused {
                     ui.painter().rect_stroke(
                         scroll_out.inner_rect,
                         0.0,
@@ -384,91 +496,115 @@ Is it installed and on PATH?
                 }
             });
 
-        if focused {
-            let mut to_send = String::new();
-            ui.ctx().input_mut(|i| {
-                i.events.retain(|event| match event {
-                    egui::Event::Text(text) => {
-                        to_send.push_str(text);
-                        false
+        if self.focused {
+            self.handle_keyboard(ui.ctx());
+        }
+    }
+
+    /// Forward keyboard / clipboard events to the PTY.
+    fn handle_keyboard(&mut self, ctx: &egui::Context) {
+        let has_selection = self.selection.is_some();
+        let mut to_send = String::new();
+        let mut copy = false;
+        ctx.input_mut(|i| {
+            // egui-winit reports Ctrl+Shift+C as `Event::Copy` as well; tell them
+            // apart by the modifiers held this frame.
+            let shift = i.modifiers.shift;
+            i.events.retain(|event| match event {
+                egui::Event::Text(text) => {
+                    to_send.push_str(text);
+                    false
+                }
+                // egui-winit turns Ctrl+C / Ctrl+X / Ctrl+V into these and emits no
+                // Key event. Ctrl+C copies a selection; without one (and without
+                // Shift) it is forwarded as the interrupt control code.
+                egui::Event::Copy => {
+                    if has_selection || shift {
+                        copy = true;
+                    } else {
+                        to_send.push('\x03');
                     }
-                    // egui-winit turns Ctrl+C / Ctrl+X / Ctrl+V into these and emits no
-                    // Key event; the terminal has no selection, so forward the control codes.
-                    egui::Event::Copy => {
-                        to_send.push('');
-                        false
-                    }
-                    egui::Event::Cut => {
-                        to_send.push('');
-                        false
-                    }
-                    egui::Event::Paste(text) => {
-                        to_send.push_str(text);
-                        false
-                    }
-                    egui::Event::Key {
-                        key,
-                        pressed: true,
-                        modifiers,
-                        ..
-                    } => {
-                        if modifiers.ctrl && !modifiers.alt {
-                            let seq: Option<&str> = match key {
-                                egui::Key::A => Some("\x01"),
-                                egui::Key::B => Some("\x02"),
-                                egui::Key::C => Some("\x03"),
-                                egui::Key::D => Some("\x04"),
-                                egui::Key::E => Some("\x05"),
-                                egui::Key::F => Some("\x06"),
-                                egui::Key::K => Some("\x0b"),
-                                egui::Key::L => Some("\x0c"),
-                                egui::Key::N => Some("\x1b[B"),
-                                egui::Key::P => Some("\x1b[A"),
-                                egui::Key::R => Some("\x12"),
-                                egui::Key::U => Some("\x15"),
-                                egui::Key::W => Some("\x17"),
-                                egui::Key::Z => Some("\x1a"),
-                                _ => None,
-                            };
-                            if let Some(s) = seq {
-                                to_send.push_str(s);
-                                false
-                            } else {
-                                true
-                            }
-                        } else if !modifiers.ctrl && !modifiers.alt && !modifiers.mac_cmd {
-                            let seq: Option<&str> = match key {
-                                egui::Key::Enter => Some("\r"),
-                                egui::Key::Backspace => Some("\x7f"),
-                                egui::Key::Tab => Some("\t"),
-                                egui::Key::Escape => Some("\x1b"),
-                                egui::Key::ArrowUp => Some("\x1b[A"),
-                                egui::Key::ArrowDown => Some("\x1b[B"),
-                                egui::Key::ArrowRight => Some("\x1b[C"),
-                                egui::Key::ArrowLeft => Some("\x1b[D"),
-                                egui::Key::Delete => Some("\x1b[3~"),
-                                egui::Key::Home => Some("\x1b[H"),
-                                egui::Key::End => Some("\x1b[F"),
-                                egui::Key::PageUp => Some("\x1b[5~"),
-                                egui::Key::PageDown => Some("\x1b[6~"),
-                                _ => None,
-                            };
-                            if let Some(s) = seq {
-                                to_send.push_str(s);
-                                false
-                            } else {
-                                true
-                            }
+                    false
+                }
+                egui::Event::Cut => {
+                    to_send.push('\x18');
+                    false
+                }
+                egui::Event::Paste(text) => {
+                    to_send.push_str(text);
+                    false
+                }
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    if modifiers.ctrl && !modifiers.alt {
+                        if *key == egui::Key::C && (modifiers.shift || has_selection) {
+                            copy = true;
+                            return false;
+                        }
+                        let seq: Option<&str> = match key {
+                            egui::Key::A => Some("\x01"),
+                            egui::Key::B => Some("\x02"),
+                            egui::Key::C => Some("\x03"),
+                            egui::Key::D => Some("\x04"),
+                            egui::Key::E => Some("\x05"),
+                            egui::Key::F => Some("\x06"),
+                            egui::Key::K => Some("\x0b"),
+                            egui::Key::L => Some("\x0c"),
+                            egui::Key::N => Some("\x1b[B"),
+                            egui::Key::P => Some("\x1b[A"),
+                            egui::Key::R => Some("\x12"),
+                            egui::Key::U => Some("\x15"),
+                            egui::Key::W => Some("\x17"),
+                            egui::Key::Z => Some("\x1a"),
+                            _ => None,
+                        };
+                        if let Some(s) = seq {
+                            to_send.push_str(s);
+                            false
                         } else {
                             true
                         }
+                    } else if !modifiers.ctrl && !modifiers.alt && !modifiers.mac_cmd {
+                        let seq: Option<&str> = match key {
+                            egui::Key::Enter => Some("\r"),
+                            egui::Key::Backspace => Some("\x7f"),
+                            egui::Key::Tab => Some("\t"),
+                            egui::Key::Escape => Some("\x1b"),
+                            egui::Key::ArrowUp => Some("\x1b[A"),
+                            egui::Key::ArrowDown => Some("\x1b[B"),
+                            egui::Key::ArrowRight => Some("\x1b[C"),
+                            egui::Key::ArrowLeft => Some("\x1b[D"),
+                            egui::Key::Delete => Some("\x1b[3~"),
+                            egui::Key::Home => Some("\x1b[H"),
+                            egui::Key::End => Some("\x1b[F"),
+                            egui::Key::PageUp => Some("\x1b[5~"),
+                            egui::Key::PageDown => Some("\x1b[6~"),
+                            _ => None,
+                        };
+                        if let Some(s) = seq {
+                            to_send.push_str(s);
+                            false
+                        } else {
+                            true
+                        }
+                    } else {
+                        true
                     }
-                    _ => true,
-                });
+                }
+                _ => true,
             });
-            if !to_send.is_empty() {
-                self.send_input(&to_send);
-            }
+        });
+        if copy {
+            self.copy_selection(ctx);
+        }
+        if !to_send.is_empty() {
+            // Typing clears the selection highlight, like other terminals.
+            self.selection = None;
+            self.send_input(&to_send);
         }
     }
 }
@@ -488,17 +624,33 @@ fn grid_size(avail: egui::Vec2, char_w: f32, line_h: f32) -> (u16, u16) {
 
 // ─── Rendering helper ─────────────────────────────────────────────────────────
 
-fn render_row(
-    ui: &mut egui::Ui,
-    row: &[Cell],
+/// Per-frame layout and colours shared by every rendered row.
+#[derive(Clone, Copy)]
+struct RowStyle {
     line_height: f32,
+    char_w: f32,
     default_fg: Color32,
     term_bg: Color32,
     clip_width: f32,
+}
+
+const SELECTION_COLOR: Color32 = Color32::from_rgba_premultiplied(40, 70, 130, 110);
+
+fn render_row(
+    ui: &mut egui::Ui,
+    row: &[Cell],
+    style: &RowStyle,
     cursor_col: Option<usize>,
+    selected: Option<(usize, usize)>,
 ) {
+    let RowStyle {
+        line_height,
+        char_w,
+        default_fg,
+        term_bg,
+        clip_width,
+    } = *style;
     let font_id = egui::FontId::monospace(FONT_SIZE);
-    let char_w = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
 
     let last = row
         .iter()
@@ -531,46 +683,52 @@ fn render_row(
         );
     }
 
-    if last == 0 {
-        return;
-    }
-
-    let mut job = egui::text::LayoutJob {
-        wrap: egui::text::TextWrapping {
-            max_width: clip_width.max(1.0),
-            max_rows: 1,
-            break_anywhere: true,
-            overflow_character: None,
-        },
-        ..Default::default()
-    };
-
-    let mut i = 0;
-    while i < last {
-        let fg = row[i].fg;
-        let bg = row[i].bg;
-        let bold = row[i].bold;
-        let mut j = i + 1;
-        while j < last && row[j].fg == fg && row[j].bg == bg && row[j].bold == bold {
-            j += 1;
-        }
-        let text: String = row[i..j].iter().map(|c| c.ch).collect();
-        let color = if fg == DEFAULT_FG { default_fg } else { fg };
-        job.append(
-            &text,
-            0.0,
-            egui::TextFormat {
-                font_id: font_id.clone(),
-                color,
-                background: bg.unwrap_or(term_bg),
-                ..Default::default()
+    if last > 0 {
+        let mut job = egui::text::LayoutJob {
+            wrap: egui::text::TextWrapping {
+                max_width: clip_width.max(1.0),
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: None,
             },
-        );
-        i = j;
+            ..Default::default()
+        };
+
+        let mut i = 0;
+        while i < last {
+            let fg = row[i].fg;
+            let bg = row[i].bg;
+            let bold = row[i].bold;
+            let mut j = i + 1;
+            while j < last && row[j].fg == fg && row[j].bg == bg && row[j].bold == bold {
+                j += 1;
+            }
+            let text: String = row[i..j].iter().map(|c| c.ch).collect();
+            let color = if fg == DEFAULT_FG { default_fg } else { fg };
+            job.append(
+                &text,
+                0.0,
+                egui::TextFormat {
+                    font_id: font_id.clone(),
+                    color,
+                    background: bg.unwrap_or(term_bg),
+                    ..Default::default()
+                },
+            );
+            i = j;
+        }
+
+        let galley = ui.fonts(|f| f.layout_job(job));
+        ui.painter().galley(rect.left_top(), galley, default_fg);
     }
 
-    let galley = ui.fonts(|f| f.layout_job(job));
-    ui.painter().galley(rect.left_top(), galley, default_fg);
+    // Drawn over the text: glyph backgrounds would otherwise hide it.
+    if let Some((start, end)) = selected {
+        let left = (rect.left() + start as f32 * char_w).min(rect.right());
+        let right = (rect.left() + end as f32 * char_w).min(rect.right());
+        let sel_rect = egui::Rect::from_x_y_ranges(left..=right, rect.y_range());
+        ui.painter().rect_filled(sel_rect, 0.0, SELECTION_COLOR);
+    }
 }
 
 #[cfg(test)]
@@ -610,6 +768,7 @@ mod tests {
             grid_size: (INITIAL_ROWS, INITIAL_COLS),
             needs_scroll: false,
             focused: false,
+            selection: None,
         };
         (term, tx, out)
     }
@@ -699,7 +858,17 @@ mod tests {
     }
 
     fn run_frame(t: &mut Terminal, events: Vec<egui::Event>) {
-        let ctx = egui::Context::default();
+        run_frame_in(&egui::Context::default(), t, events, egui::Modifiers::NONE);
+    }
+
+    /// Run one frame on a persistent `ctx` (needed for multi-frame pointer
+    /// gestures); returns the text copied to the clipboard during the frame.
+    fn run_frame_in(
+        ctx: &egui::Context,
+        t: &mut Terminal,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> Option<String> {
         let cfg = crate::config::Config::default();
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -707,11 +876,207 @@ mod tests {
                 egui::vec2(800.0, 600.0),
             )),
             events,
+            modifiers,
             ..Default::default()
         };
-        let _ = ctx.run(raw, |ctx| {
+        let out = ctx.run(raw, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| t.show_content(ui, &cfg));
         });
+        out.platform_output
+            .commands
+            .into_iter()
+            .find_map(|c| match c {
+                egui::OutputCommand::CopyText(text) => Some(text),
+                _ => None,
+            })
+    }
+
+    fn pointer(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn click_at(pos: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            pointer(pos, button, true),
+            pointer(pos, button, false),
+        ]
+    }
+
+    /// Fake terminal showing `text`, laid out once on `ctx`. Returns the screen
+    /// position of the centre of cell (line, col).
+    fn shown_terminal(
+        ctx: &egui::Context,
+        text: &str,
+    ) -> (Terminal, Shared, impl Fn(usize, usize) -> egui::Pos2) {
+        let (mut t, tx, out) = fake_terminal();
+        tx.send(text.as_bytes().to_vec()).unwrap();
+        run_frame_in(ctx, &mut t, vec![], egui::Modifiers::NONE);
+        let char_w = ctx.fonts(|f| f.glyph_width(&egui::FontId::monospace(FONT_SIZE), 'M'));
+        // CentralPanel margin (8) + terminal frame margin (8 left, 4 top).
+        let origin = egui::pos2(16.0, 12.0);
+        let cell = move |line: usize, col: usize| {
+            origin
+                + egui::vec2(
+                    (col as f32 + 0.5) * char_w,
+                    (line as f32 + 0.5) * LINE_HEIGHT,
+                )
+        };
+        (t, out, cell)
+    }
+
+    fn drag(ctx: &egui::Context, t: &mut Terminal, from: egui::Pos2, to: egui::Pos2) {
+        let primary = egui::PointerButton::Primary;
+        let none = egui::Modifiers::NONE;
+        run_frame_in(
+            ctx,
+            t,
+            vec![
+                egui::Event::PointerMoved(from),
+                pointer(from, primary, true),
+            ],
+            none,
+        );
+        run_frame_in(ctx, t, vec![egui::Event::PointerMoved(to)], none);
+        run_frame_in(ctx, t, vec![pointer(to, primary, false)], none);
+    }
+
+    #[test]
+    fn drag_selects_and_ctrl_c_copies_only_with_a_selection() {
+        let ctx = egui::Context::default();
+        let (mut t, out, cell) = shown_terminal(&ctx, "hello world   \r\nsecond line");
+        drag(&ctx, &mut t, cell(0, 0), cell(1, 5));
+        assert!(t.focused, "dragging focuses the terminal");
+        assert_eq!(t.selection_text().as_deref(), Some("hello world\nsecond"));
+
+        let ctrl = egui::Modifiers::CTRL;
+        let copied = run_frame_in(&ctx, &mut t, vec![egui::Event::Copy], ctrl);
+        assert_eq!(copied.as_deref(), Some("hello world\nsecond"));
+        assert!(t.selection.is_none(), "copy clears the selection");
+        assert!(out.take().is_empty(), "^C is not sent when copying");
+
+        // No selection: Ctrl+C is an interrupt again.
+        let copied = run_frame_in(&ctx, &mut t, vec![egui::Event::Copy], ctrl);
+        assert_eq!(copied, None);
+        assert_eq!(out.take(), b"\x03");
+    }
+
+    #[test]
+    fn ctrl_shift_c_copies_and_never_interrupts() {
+        let ctx = egui::Context::default();
+        let (mut t, out, cell) = shown_terminal(&ctx, "abc def");
+        t.focused = true;
+        let ctrl_shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
+        // egui-winit delivers Ctrl+Shift+C as Event::Copy.
+        let copied = run_frame_in(&ctx, &mut t, vec![egui::Event::Copy], ctrl_shift);
+        assert_eq!(copied, None);
+        assert!(out.take().is_empty(), "no ^C without a selection either");
+
+        drag(&ctx, &mut t, cell(0, 4), cell(0, 6));
+        // Other backends may send a Key event instead.
+        let copied = run_frame_in(
+            &ctx,
+            &mut t,
+            vec![key(egui::Key::C, ctrl_shift)],
+            ctrl_shift,
+        );
+        assert_eq!(copied.as_deref(), Some("def"));
+        assert!(out.take().is_empty());
+    }
+
+    #[test]
+    fn double_click_selects_word_and_triple_click_the_line() {
+        let ctx = egui::Context::default();
+        let (mut t, _out, cell) = shown_terminal(&ctx, "git log --oneline");
+        let primary = egui::PointerButton::Primary;
+        let none = egui::Modifiers::NONE;
+        let at = cell(0, 5);
+        run_frame_in(&ctx, &mut t, click_at(at, primary), none);
+        assert!(t.selection.is_none(), "single click selects nothing");
+        run_frame_in(&ctx, &mut t, click_at(at, primary), none);
+        assert_eq!(t.selection_text().as_deref(), Some("log"));
+        run_frame_in(&ctx, &mut t, click_at(at, primary), none);
+        assert_eq!(t.selection_text().as_deref(), Some("git log --oneline"));
+    }
+
+    #[test]
+    fn right_click_copies_the_selection() {
+        let ctx = egui::Context::default();
+        let (mut t, _out, cell) = shown_terminal(&ctx, "one two");
+        drag(&ctx, &mut t, cell(0, 0), cell(0, 2));
+        let copied = run_frame_in(
+            &ctx,
+            &mut t,
+            click_at(cell(0, 0), egui::PointerButton::Secondary),
+            egui::Modifiers::NONE,
+        );
+        assert_eq!(copied.as_deref(), Some("one"));
+        assert!(t.selection.is_none());
+    }
+
+    #[test]
+    fn typing_clears_the_selection_and_click_clears_it_too() {
+        let ctx = egui::Context::default();
+        let (mut t, out, cell) = shown_terminal(&ctx, "abc");
+        drag(&ctx, &mut t, cell(0, 0), cell(0, 2));
+        assert!(t.selection.is_some());
+        run_frame_in(
+            &ctx,
+            &mut t,
+            vec![egui::Event::Text("x".into())],
+            egui::Modifiers::NONE,
+        );
+        assert!(t.selection.is_none());
+        assert_eq!(out.take(), b"x");
+
+        drag(&ctx, &mut t, cell(0, 0), cell(0, 2));
+        run_frame_in(
+            &ctx,
+            &mut t,
+            click_at(cell(0, 1), egui::PointerButton::Primary),
+            egui::Modifiers::NONE,
+        );
+        assert!(t.selection.is_none());
+    }
+
+    #[test]
+    fn selection_spans_scrollback_and_is_highlighted() {
+        let ctx = egui::Context::default();
+        let (mut t, tx, _out) = fake_terminal();
+        run_frame_in(&ctx, &mut t, vec![], egui::Modifiers::NONE);
+        let rows = t.grid_size.0 as usize;
+        let mut data = String::new();
+        for i in 0..rows + 3 {
+            data.push_str(&format!("line {i}\r\n"));
+        }
+        tx.send(data.into_bytes()).unwrap();
+        run_frame_in(&ctx, &mut t, vec![], egui::Modifiers::NONE);
+        assert!(t.performer.buf.scrollback.len() >= 3);
+        t.selection = Some(Selection::new(
+            GridPos::new(1, 0),
+            GridPos::new(rows + 1, 3),
+        ));
+        let text = t.selection_text().unwrap();
+        assert!(text.starts_with("line 1\nline 2\n"), "{text}");
+        assert!(text.ends_with("\nline"), "{text}");
+        assert_eq!(text.lines().count(), rows + 1);
+        // Rendering with a selection does not panic.
+        run_frame_in(&ctx, &mut t, vec![], egui::Modifiers::NONE);
+    }
+
+    #[test]
+    fn resizing_clears_the_selection() {
+        let (mut t, _tx, _out) = fake_terminal();
+        t.selection = Some(Selection::new(GridPos::new(0, 0), GridPos::new(0, 1)));
+        t.apply_grid_size(INITIAL_ROWS, INITIAL_COLS);
+        assert!(t.selection.is_some(), "same size is a no-op");
+        t.apply_grid_size(10, 40);
+        assert!(t.selection.is_none());
     }
 
     #[test]
@@ -727,7 +1092,7 @@ mod tests {
                 egui::Event::Paste("echo hi".into()),
             ],
         );
-        assert_eq!(out.take(), b"echo hi");
+        assert_eq!(out.take(), b"\x03\x18echo hi");
     }
 
     #[test]
