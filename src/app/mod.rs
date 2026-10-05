@@ -1117,11 +1117,8 @@ impl eframe::App for CodingUnicorns {
                         self.tab_manager.open_settings();
                         self.settings_panel.open = true;
                     }
-                    PaletteCommand::Find => self.editor.show_find = true,
-                    PaletteCommand::FindReplace => {
-                        self.editor.show_find = true;
-                        self.editor.show_replace = true;
-                    }
+                    PaletteCommand::Find => self.editor.open_find(false),
+                    PaletteCommand::FindReplace => self.editor.open_find(true),
                     PaletteCommand::RestartLsp => {
                         self.lsp.restart_all();
                         // Re-start LSP for the current file if an extension provides one
