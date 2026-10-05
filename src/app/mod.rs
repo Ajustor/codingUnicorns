@@ -365,10 +365,15 @@ impl CodingUnicorns {
                 let file_path = PathBuf::from(&file_str);
                 if file_path.is_file() {
                     // Read directly to avoid a redundant config save on startup.
-                    if let Ok(content) = std::fs::read_to_string(&file_path) {
+                    if let Ok((content, lossy)) =
+                        crate::editor::text_format::read_text_file(&file_path)
+                    {
                         app.tab_manager.open(file_path.clone(), content.clone());
                         app.editor
                             .set_content(content.clone(), Some(file_path.clone()));
+                        app.editor.decoded_lossy = lossy;
+                        // LSP sees the normalized (LF, no BOM) buffer, like open_file.
+                        let content = app.editor.buffer.to_string();
                         // Start the LSP for the restored file (mirrors open_file).
                         // Without this, resuming a session leaves the LSP cold.
                         app.ensure_lsp_for_file(&file_path);
