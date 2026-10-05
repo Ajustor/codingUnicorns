@@ -10,9 +10,29 @@ use shell::resolve_shell;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::Color32;
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use vte::Parser;
+
+/// Initial PTY / screen size, used until the first frame measures the panel.
+const INITIAL_ROWS: u16 = 50;
+const INITIAL_COLS: u16 = 200;
+/// Smallest grid the PTY is ever resized to.
+const MIN_ROWS: u16 = 2;
+const MIN_COLS: u16 = 10;
+/// Upper bound guarding against absurd allocations on huge/odd viewports.
+const MAX_GRID: u16 = 1000;
+
+const FONT_SIZE: f32 = 13.5;
+const LINE_HEIGHT: f32 = 13.5;
+
+/// Handles to a spawned PTY session.
+struct Pty {
+    rx: Receiver<Vec<u8>>,
+    writer: Box<dyn Write + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    master: Box<dyn MasterPty + Send>,
+}
 
 pub struct Terminal {
     pub shell_name: String,
@@ -21,6 +41,10 @@ pub struct Terminal {
     writer: Option<Box<dyn Write + Send>>,
     parser: Parser,
     _child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    /// PTY master, kept to propagate size changes to the child process.
+    master: Option<Box<dyn MasterPty + Send>>,
+    /// Last (rows, cols) applied to the PTY and screen buffer.
+    grid_size: (u16, u16),
     /// Set to true when new output arrives — triggers a one-shot scroll to bottom.
     needs_scroll: bool,
     /// Whether this terminal has keyboard focus.
@@ -28,18 +52,16 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn new(user_shell: &str) -> Self {
-        let (rx, writer, child, shell_name, error) = Self::spawn_shell(user_shell);
+    fn from_pty(shell_name: String, pty: Option<Pty>, banner: &str, focused: bool) -> Self {
         let mut parser = Parser::new();
         let mut performer = AnsiPerformer::new();
-        let msg = if let Some(err) = error {
-            format!("Failed to start shell: {err}\r\nTried: {shell_name}\r\n\r\nYou can configure a different shell in Settings > Terminal > Shell.\r\nExamples: cmd.exe, powershell.exe, bash\r\n")
-        } else {
-            format!("{shell_name} ready.\r\n")
-        };
-        for byte in msg.bytes() {
+        for byte in banner.bytes() {
             parser.advance(&mut performer, byte);
         }
+        let (rx, writer, child, master) = match pty {
+            Some(p) => (Some(p.rx), Some(p.writer), Some(p.child), Some(p.master)),
+            None => (None, None, None, None),
+        };
         Self {
             shell_name,
             performer,
@@ -47,51 +69,56 @@ impl Terminal {
             writer,
             parser,
             _child: child,
+            master,
+            grid_size: (INITIAL_ROWS, INITIAL_COLS),
             needs_scroll: true,
-            focused: false,
+            focused,
         }
+    }
+
+    pub fn new(user_shell: &str) -> Self {
+        let (pty, shell_name, error) = Self::spawn_shell(user_shell);
+        let msg = if let Some(err) = error {
+            format!(
+                "Failed to start shell: {err}
+Tried: {shell_name}
+
+You can configure a different shell in Settings > Terminal > Shell.
+Examples: cmd.exe, powershell.exe, bash
+"
+            )
+        } else {
+            format!(
+                "{shell_name} ready.
+"
+            )
+        };
+        Self::from_pty(shell_name, pty, &msg, false)
     }
 
     /// Spawn an explicit command (not a resolved shell) in its own PTY, optionally
     /// in `cwd`. Used to run the interactive `claude` CLI from the Claude panel so
     /// its built-in commands (/usage, /cost, …) work in a real terminal.
     pub fn new_command(command: &str, cwd: Option<&std::path::Path>) -> Self {
-        let mut parser = Parser::new();
-        let mut performer = AnsiPerformer::new();
-        let (rx, writer, child, error) = match Self::try_spawn(command, &[], cwd) {
-            Some((rx, w, c)) => (Some(rx), Some(w), Some(c), None),
-            None => (None, None, None, Some(command.to_string())),
-        };
-        let msg = if let Some(err) = error {
-            format!("Failed to start `{err}`.\r\nIs it installed and on PATH?\r\n")
+        let pty = Self::try_spawn(command, &[], cwd);
+        let msg = if pty.is_none() {
+            format!(
+                "Failed to start `{command}`.
+Is it installed and on PATH?
+"
+            )
         } else {
-            format!("{command} ready.\r\n")
+            format!(
+                "{command} ready.
+"
+            )
         };
-        for byte in msg.bytes() {
-            parser.advance(&mut performer, byte);
-        }
-        Self {
-            shell_name: command.to_string(),
-            performer,
-            rx,
-            writer,
-            parser,
-            _child: child,
-            needs_scroll: true,
-            focused: true,
-        }
+        Self::from_pty(command.to_string(), pty, &msg, true)
     }
 
-    #[allow(clippy::type_complexity)]
-    fn spawn_shell(
-        user_shell: &str,
-    ) -> (
-        Option<Receiver<Vec<u8>>>,
-        Option<Box<dyn Write + Send>>,
-        Option<Box<dyn portable_pty::Child + Send + Sync>>,
-        String,
-        Option<String>, // error message if all attempts failed
-    ) {
+    /// Returns the PTY (if any spawn succeeded), the shell name, and an error
+    /// message listing what was tried if every attempt failed.
+    fn spawn_shell(user_shell: &str) -> (Option<Pty>, String, Option<String>) {
         let (shell_path, shell_args) = resolve_shell(user_shell);
         let shell_name = std::path::Path::new(&shell_path)
             .file_name()
@@ -100,14 +127,8 @@ impl Terminal {
             .to_string();
 
         // Try spawning the resolved shell
-        if let Some(result) = Self::try_spawn(&shell_path, &shell_args, None) {
-            return (
-                Some(result.0),
-                Some(result.1),
-                Some(result.2),
-                shell_name,
-                None,
-            );
+        if let Some(pty) = Self::try_spawn(&shell_path, &shell_args, None) {
+            return (Some(pty), shell_name, None);
         }
 
         let mut tried = shell_path.clone();
@@ -115,14 +136,8 @@ impl Terminal {
         // Fallback: try cmd.exe on Windows
         #[cfg(windows)]
         {
-            if let Some(result) = Self::try_spawn("cmd.exe", &[], None) {
-                return (
-                    Some(result.0),
-                    Some(result.1),
-                    Some(result.2),
-                    "cmd".to_string(),
-                    None,
-                );
+            if let Some(pty) = Self::try_spawn("cmd.exe", &[], None) {
+                return (Some(pty), "cmd".to_string(), None);
             }
             tried.push_str(", cmd.exe");
         }
@@ -130,35 +145,24 @@ impl Terminal {
         // Fallback: try /bin/sh on Unix
         #[cfg(not(windows))]
         {
-            if let Some(result) = Self::try_spawn("/bin/sh", &[], None) {
-                return (
-                    Some(result.0),
-                    Some(result.1),
-                    Some(result.2),
-                    "sh".to_string(),
-                    None,
-                );
+            if let Some(pty) = Self::try_spawn("/bin/sh", &[], None) {
+                return (Some(pty), "sh".to_string(), None);
             }
             tried.push_str(", /bin/sh");
         }
 
-        (None, None, None, shell_name, Some(tried))
+        (None, shell_name, Some(tried))
     }
 
-    #[allow(clippy::type_complexity)]
     fn try_spawn(
         shell_path: &str,
         shell_args: &[String],
         cwd: Option<&std::path::Path>,
-    ) -> Option<(
-        Receiver<Vec<u8>>,
-        Box<dyn Write + Send>,
-        Box<dyn portable_pty::Child + Send + Sync>,
-    )> {
+    ) -> Option<Pty> {
         let pty_system = native_pty_system();
         let size = PtySize {
-            rows: 50,
-            cols: 200,
+            rows: INITIAL_ROWS,
+            cols: INITIAL_COLS,
             pixel_width: 0,
             pixel_height: 0,
         };
@@ -194,7 +198,32 @@ impl Terminal {
             }
         });
 
-        Some((rx, writer, child))
+        Some(Pty {
+            rx,
+            writer,
+            child,
+            master: pair.master,
+        })
+    }
+
+    /// Resize the PTY and the screen buffer to `rows` x `cols` (clamped), but only
+    /// when that differs from the size last applied.
+    fn apply_grid_size(&mut self, rows: u16, cols: u16) {
+        let rows = rows.clamp(MIN_ROWS, MAX_GRID);
+        let cols = cols.clamp(MIN_COLS, MAX_GRID);
+        if (rows, cols) == self.grid_size {
+            return;
+        }
+        self.grid_size = (rows, cols);
+        if let Some(master) = &self.master {
+            let _ = master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+        self.performer.buf.resize(cols as usize, rows as usize);
     }
 
     pub fn update(&mut self) {
@@ -255,9 +284,17 @@ impl Terminal {
         self.needs_scroll = false;
 
         let content_width = (ui.available_width() - 16.0).max(1.0);
-        const LINE_HEIGHT: f32 = 13.5;
 
         let term_rect = ui.available_rect_before_wrap();
+
+        // Fit the PTY grid to the panel: frame margins are 8px left/right, 4px top/bottom.
+        let char_w = ui.fonts(|f| f.glyph_width(&egui::FontId::monospace(FONT_SIZE), 'M'));
+        let grid_avail = egui::vec2(
+            content_width - ui.spacing().scroll.allocated_width(),
+            term_rect.height() - 8.0,
+        );
+        let (rows, cols) = grid_size(grid_avail, char_w, LINE_HEIGHT);
+        self.apply_grid_size(rows, cols);
 
         let pointer_pos = ui.ctx().input(|i| i.pointer.interact_pos());
         let any_click = ui.ctx().input(|i| i.pointer.any_click());
@@ -436,6 +473,19 @@ impl Terminal {
     }
 }
 
+/// Number of whole (rows, cols) cells of `char_w` x `line_h` that fit in `avail`.
+/// Clamping to sane bounds is done by [`Terminal::apply_grid_size`].
+fn grid_size(avail: egui::Vec2, char_w: f32, line_h: f32) -> (u16, u16) {
+    let fit = |len: f32, cell: f32| {
+        if cell > 0.0 && len.is_finite() && len > 0.0 {
+            (len / cell).floor().min(f32::from(u16::MAX)) as u16
+        } else {
+            0
+        }
+    };
+    (fit(avail.y, line_h), fit(avail.x, char_w))
+}
+
 // ─── Rendering helper ─────────────────────────────────────────────────────────
 
 fn render_row(
@@ -447,7 +497,7 @@ fn render_row(
     clip_width: f32,
     cursor_col: Option<usize>,
 ) {
-    let font_id = egui::FontId::monospace(13.5);
+    let font_id = egui::FontId::monospace(FONT_SIZE);
     let char_w = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
 
     let last = row
@@ -556,6 +606,8 @@ mod tests {
             writer: Some(Box::new(out.clone())),
             parser: Parser::new(),
             _child: None,
+            master: None,
+            grid_size: (INITIAL_ROWS, INITIAL_COLS),
             needs_scroll: false,
             focused: false,
         };
@@ -763,6 +815,50 @@ mod tests {
         assert!(t.focused);
         run_frame(&mut t, click(5000.0, 5000.0));
         assert!(!t.focused);
+    }
+
+    #[test]
+    fn grid_size_fits_whole_cells() {
+        assert_eq!(grid_size(egui::vec2(100.0, 50.0), 10.0, 12.0), (4, 10));
+        assert_eq!(grid_size(egui::vec2(-5.0, 50.0), 10.0, 12.0), (4, 0));
+        assert_eq!(grid_size(egui::vec2(100.0, f32::NAN), 10.0, 12.0), (0, 10));
+        assert_eq!(grid_size(egui::vec2(100.0, 50.0), 0.0, 12.0), (4, 0));
+        assert_eq!(
+            grid_size(egui::vec2(1e9, 1e9), 1.0, 1.0),
+            (u16::MAX, u16::MAX)
+        );
+    }
+
+    #[test]
+    fn apply_grid_size_clamps_and_resizes_buffer() {
+        let (mut t, _tx, _out) = fake_terminal();
+        t.apply_grid_size(0, 0);
+        assert_eq!(t.grid_size, (MIN_ROWS, MIN_COLS));
+        assert_eq!(t.performer.buf.rows.len(), MIN_ROWS as usize);
+        assert_eq!(t.performer.buf.cols, MIN_COLS as usize);
+        t.apply_grid_size(u16::MAX, u16::MAX);
+        assert_eq!(t.grid_size, (MAX_GRID, MAX_GRID));
+        t.apply_grid_size(24, 80);
+        assert_eq!(t.grid_size, (24, 80));
+        assert_eq!(t.performer.buf.rows.len(), 24);
+        assert!(t.performer.buf.rows.iter().all(|r| r.len() == 80));
+    }
+
+    #[test]
+    fn frame_fits_grid_to_panel_and_output_wraps_there() {
+        let (mut t, tx, _out) = fake_terminal();
+        run_frame(&mut t, vec![]);
+        let (rows, cols) = t.grid_size;
+        assert!((MIN_COLS..INITIAL_COLS).contains(&cols), "cols = {cols}");
+        assert!((MIN_ROWS..INITIAL_ROWS).contains(&rows), "rows = {rows}");
+        assert_eq!(t.performer.buf.cols, cols as usize);
+        assert_eq!(t.performer.buf.rows.len(), rows as usize);
+        // Same panel size → no change.
+        run_frame(&mut t, vec![]);
+        assert_eq!(t.grid_size, (rows, cols));
+        tx.send("x".repeat(cols as usize + 3).into_bytes()).unwrap();
+        t.update();
+        assert_eq!(row_text(&t, 1), "xxx");
     }
 
     #[test]
