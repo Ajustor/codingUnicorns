@@ -5,7 +5,9 @@ use std::sync::atomic::Ordering;
 use serde_json::{json, Value};
 
 use super::transport::DapTransport;
-use super::types::{Breakpoint, DapConfig, DebugSessionState, Scope, StackFrame, Variable};
+use super::types::{
+    Breakpoint, DapConfig, DebugSessionState, Scope, StackFrame, Variable, WatchResult,
+};
 
 pub struct DapClient {
     transport: DapTransport,
@@ -19,6 +21,12 @@ pub struct DapClient {
     /// Fetched children per `variablesReference` (scopes and structured
     /// variables share this namespace in DAP). Invalidated on every stop.
     pub children: HashMap<i64, Vec<Variable>>,
+    /// Watch expressions, evaluated on every stop and frame change.
+    watch_exprs: Vec<String>,
+    /// Latest result per watch expression.
+    pub watch_results: HashMap<String, WatchResult>,
+    /// Pending `evaluate` requests: request seq → expression.
+    pending_evals: HashMap<u64, String>,
     pub output_log: Vec<String>,
     workspace: PathBuf,
     launch_config: Value,
@@ -83,6 +91,9 @@ impl DapClient {
             selected_frame: 0,
             scopes: vec![],
             children: HashMap::new(),
+            watch_exprs: vec![],
+            watch_results: HashMap::new(),
+            pending_evals: HashMap::new(),
             output_log: vec![],
             workspace: workspace.to_path_buf(),
             launch_config,
@@ -262,6 +273,58 @@ impl DapClient {
         }
         self.selected_frame = idx;
         self.request_scopes();
+        self.evaluate_watches();
+    }
+
+    /// Replace the watch list. New expressions are evaluated right away when
+    /// paused; results of removed ones are dropped.
+    pub fn set_watches(&mut self, exprs: &[String]) {
+        self.watch_results.retain(|e, _| exprs.contains(e));
+        self.pending_evals.retain(|_, e| exprs.contains(e));
+        let added: Vec<String> = exprs
+            .iter()
+            .filter(|e| !self.watch_exprs.contains(e))
+            .cloned()
+            .collect();
+        self.watch_exprs = exprs.to_vec();
+        for expr in added {
+            self.evaluate_watch(expr);
+        }
+    }
+
+    /// Re-evaluate every watch expression in the selected frame.
+    fn evaluate_watches(&mut self) {
+        self.pending_evals.clear();
+        for expr in self.watch_exprs.clone() {
+            self.evaluate_watch(expr);
+        }
+    }
+
+    /// Send `evaluate` (context "watch") for one expression. Outside of a
+    /// pause — or while the stack trace is still loading — it stays `Pending`
+    /// and is evaluated once the frame is known.
+    fn evaluate_watch(&mut self, expr: String) {
+        let paused = matches!(self.state, DebugSessionState::Paused { .. });
+        if !paused || self.pending_stack_seq.is_some() {
+            self.watch_results
+                .entry(expr)
+                .or_insert(WatchResult::Pending);
+            return;
+        }
+        let mut args = json!({ "expression": expr, "context": "watch" });
+        if let Some(frame) = self.call_stack.get(self.selected_frame) {
+            args["frameId"] = json!(frame.id);
+        }
+        let seq = self.next_seq();
+        self.watch_results
+            .insert(expr.clone(), WatchResult::Pending);
+        self.pending_evals.insert(seq, expr);
+        let _ = self.transport.send(&json!({
+            "seq": seq,
+            "type": "request",
+            "command": "evaluate",
+            "arguments": args
+        }));
     }
 
     /// Forget scopes/variables of the previous frame or stop; late responses
@@ -318,6 +381,7 @@ impl DapClient {
                             // Variable references are only valid for one stop.
                             self.selected_frame = 0;
                             self.clear_frame_data();
+                            self.pending_evals.clear();
                             // Request the call stack.
                             let seq = self.next_seq();
                             self.pending_stack_seq = Some(seq);
@@ -378,6 +442,11 @@ impl DapClient {
                             // Show the scopes of the top frame.
                             self.selected_frame = 0;
                             self.request_scopes();
+                            self.evaluate_watches();
+                        }
+                        "evaluate" if self.pending_evals.contains_key(&seq) => {
+                            let expr = self.pending_evals.remove(&seq).unwrap_or_default();
+                            self.watch_results.insert(expr, parse_evaluate(&msg));
                         }
                         "scopes" if Some(seq) == self.pending_scopes_seq => {
                             self.pending_scopes_seq = None;
@@ -452,6 +521,24 @@ fn parse_variable(v: &Value) -> Variable {
         value: v["value"].as_str().unwrap_or("").to_string(),
         var_type: v["type"].as_str().map(|s| s.to_string()),
         variables_reference: v["variablesReference"].as_i64().unwrap_or(0),
+    }
+}
+
+/// Turn an `evaluate` response into a watch result (errors shown inline).
+fn parse_evaluate(msg: &Value) -> WatchResult {
+    if msg["success"].as_bool().unwrap_or(true) {
+        let body = &msg["body"];
+        WatchResult::Value {
+            value: body["result"].as_str().unwrap_or("").to_string(),
+            var_type: body["type"].as_str().map(|s| s.to_string()),
+            variables_reference: body["variablesReference"].as_i64().unwrap_or(0),
+        }
+    } else {
+        let err = msg["body"]["error"]["format"]
+            .as_str()
+            .or_else(|| msg["message"].as_str())
+            .unwrap_or("evaluation failed");
+        WatchResult::Error(err.to_string())
     }
 }
 
@@ -950,6 +1037,123 @@ mod tests {
         );
         h.client.poll();
         assert!(h.client.children.is_empty());
+    }
+
+    fn evals(sent: &[Value]) -> Vec<&Value> {
+        sent.iter().filter(|m| m["command"] == "evaluate").collect()
+    }
+
+    #[test]
+    fn watches_are_pending_until_stopped_then_evaluated_in_top_frame() {
+        let mut h = harness();
+        h.sent();
+        h.client
+            .set_watches(&["a + 1".to_string(), "bad(".to_string()]);
+        assert!(h.sent().is_empty(), "not paused → nothing evaluated");
+        assert_eq!(h.client.watch_results["a + 1"], WatchResult::Pending);
+
+        h.push(json!({"type": "event", "event": "stopped", "body": {"threadId": 1}}));
+        h.client.poll();
+        assert_eq!(commands(&h.sent()), vec!["stackTrace"]);
+        // Added while the stack is loading → still deferred.
+        h.client
+            .set_watches(&["a + 1".to_string(), "bad(".to_string(), "c".to_string()]);
+        assert!(h.sent().is_empty());
+        let stack_seq = h.client.next_seq - 1;
+        h.push(
+            json!({"type": "response", "command": "stackTrace", "request_seq": stack_seq,
+            "body": {"stackFrames": [{"id": 31, "name": "f"}, {"id": 32, "name": "g"}]}}),
+        );
+        h.client.poll();
+        let sent = h.sent();
+        let ev = evals(&sent);
+        assert_eq!(ev.len(), 3);
+        assert_eq!(ev[0]["arguments"]["expression"], "a + 1");
+        assert_eq!(ev[0]["arguments"]["context"], "watch");
+        assert_eq!(ev[0]["arguments"]["frameId"], 31);
+
+        h.push(json!({"type": "response", "command": "evaluate",
+            "request_seq": ev[0]["seq"], "success": true,
+            "body": {"result": "42", "type": "int", "variablesReference": 0}}));
+        h.push(json!({"type": "response", "command": "evaluate",
+            "request_seq": ev[1]["seq"], "success": false, "message": "SyntaxError",
+            "body": {"error": {"id": 1, "format": "invalid syntax"}}}));
+        h.push(json!({"type": "response", "command": "evaluate",
+            "request_seq": ev[2]["seq"], "success": false, "message": "not defined"}));
+        h.client.poll();
+        assert_eq!(
+            h.client.watch_results["a + 1"],
+            WatchResult::Value {
+                value: "42".into(),
+                var_type: Some("int".into()),
+                variables_reference: 0
+            }
+        );
+        assert_eq!(
+            h.client.watch_results["bad("],
+            WatchResult::Error("invalid syntax".into())
+        );
+        assert_eq!(
+            h.client.watch_results["c"],
+            WatchResult::Error("not defined".into())
+        );
+
+        // Selecting another frame re-evaluates there.
+        h.client.select_frame(1);
+        let sent = h.sent();
+        let ev = evals(&sent);
+        assert_eq!(ev.len(), 3);
+        assert!(ev.iter().all(|m| m["arguments"]["frameId"] == 32));
+    }
+
+    #[test]
+    fn watch_added_while_paused_is_evaluated_immediately_and_removal_drops_it() {
+        let mut h = harness();
+        let scopes_seq = stop_with_frames(&mut h, json!([{"id": 5, "name": "f"}]));
+        let _ = scopes_seq;
+        h.client.set_watches(&["x".to_string()]);
+        let sent = h.sent();
+        let ev = evals(&sent);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["arguments"]["frameId"], 5);
+        let seq = ev[0]["seq"].clone();
+
+        // Re-setting the same list does not re-evaluate.
+        h.client.set_watches(&["x".to_string()]);
+        assert!(h.sent().is_empty());
+
+        // Removed before the answer → late response ignored.
+        h.client.set_watches(&[]);
+        h.push(
+            json!({"type": "response", "command": "evaluate", "request_seq": seq,
+            "body": {"result": "1"}}),
+        );
+        h.client.poll();
+        assert!(h.client.watch_results.is_empty());
+    }
+
+    #[test]
+    fn structured_watch_result_is_expandable() {
+        let mut h = harness();
+        stop_with_frames(&mut h, json!([{"id": 5, "name": "f"}]));
+        h.client.set_watches(&["obj".to_string()]);
+        let sent = h.sent();
+        let seq = evals(&sent)[0]["seq"].clone();
+        h.push(
+            json!({"type": "response", "command": "evaluate", "request_seq": seq,
+            "body": {"result": "{...}", "variablesReference": 70}}),
+        );
+        h.client.poll();
+        assert!(matches!(
+            h.client.watch_results["obj"],
+            WatchResult::Value {
+                variables_reference: 70,
+                var_type: None,
+                ..
+            }
+        ));
+        h.client.request_variables(70);
+        assert_eq!(var_requests(&h.sent())[0].1, 70);
     }
 
     #[test]

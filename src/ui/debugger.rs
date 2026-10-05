@@ -1,17 +1,22 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{Color32, RichText, ScrollArea};
 
 use crate::dap::manager::DapManager;
-use crate::dap::types::DebugSessionState;
+use crate::dap::types::{DebugSessionState, WatchResult};
 
 pub struct DebuggerPanel {
     pub open: bool,
+    /// Text of the "add watch expression" field.
+    new_watch: String,
 }
 
 impl DebuggerPanel {
     pub fn new() -> Self {
-        Self { open: false }
+        Self {
+            open: false,
+            new_watch: String::new(),
+        }
     }
 }
 
@@ -35,7 +40,16 @@ pub struct DebugPanelAction {
 }
 
 impl DebuggerPanel {
-    pub fn show(&mut self, ui: &mut egui::Ui, dap: &mut DapManager) -> DebugPanelAction {
+    /// `workspace` scopes the persisted watch expressions.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        dap: &mut DapManager,
+        workspace: Option<&Path>,
+    ) -> DebugPanelAction {
+        if let Some(ws) = workspace {
+            dap.set_workspace(ws);
+        }
         let mut action = DebugPanelAction::default();
         let state = dap.session_state();
         let is_active = dap.is_active();
@@ -185,8 +199,94 @@ impl DebuggerPanel {
                 });
             ui.separator();
         }
+
+        // ── Watch ────────────────────────────────────────────────────────────
+        let mut remove_watch = None;
+        let mut add_watch = None;
+        section_label(ui, "WATCH");
+        ScrollArea::vertical()
+            .id_salt("dap_watch")
+            .max_height(150.0)
+            .show(ui, |ui| {
+                for (i, expr) in dap.watches().iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("✕").on_hover_text("Remove watch").clicked() {
+                            remove_watch = Some(i);
+                        }
+                        let id = ui.id().with(("dap_watch", expr));
+                        match dap.watch_result(expr) {
+                            Some(WatchResult::Value {
+                                value,
+                                var_type,
+                                variables_reference,
+                            }) => {
+                                let label =
+                                    RichText::new(variable_label(expr, value, var_type.as_deref()))
+                                        .size(11.0)
+                                        .monospace();
+                                if *variables_reference > 0 {
+                                    ui.vertical(|ui| {
+                                        egui::CollapsingHeader::new(label)
+                                            .id_salt(id)
+                                            .default_open(false)
+                                            .show(ui, |ui| {
+                                                show_children(
+                                                    ui,
+                                                    dap,
+                                                    *variables_reference,
+                                                    id,
+                                                    0,
+                                                    &mut to_fetch,
+                                                );
+                                            });
+                                    });
+                                } else {
+                                    ui.label(label);
+                                }
+                            }
+                            Some(WatchResult::Error(err)) => {
+                                ui.label(RichText::new(expr).size(11.0).monospace());
+                                ui.label(
+                                    RichText::new(err)
+                                        .size(11.0)
+                                        .color(Color32::from_rgb(230, 100, 100)),
+                                );
+                            }
+                            Some(WatchResult::Pending) | None => {
+                                let hint = if is_paused { "…" } else { "not available" };
+                                ui.label(RichText::new(expr).size(11.0).monospace());
+                                ui.label(RichText::new(hint).size(11.0).color(Color32::GRAY));
+                            }
+                        }
+                    });
+                }
+            });
+        ui.horizontal(|ui| {
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut self.new_watch)
+                    .hint_text("Add expression to watch")
+                    .desired_width(ui.available_width() - 30.0),
+            );
+            let submitted = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("+").on_hover_text("Add watch").clicked() || submitted)
+                && !self.new_watch.trim().is_empty()
+            {
+                add_watch = Some(std::mem::take(&mut self.new_watch));
+                if submitted {
+                    edit.request_focus();
+                }
+            }
+        });
+        ui.separator();
+
         for r in to_fetch {
             dap.request_variables(r);
+        }
+        if let Some(i) = remove_watch {
+            dap.remove_watch(i);
+        }
+        if let Some(expr) = add_watch {
+            dap.add_watch(&expr);
         }
 
         // ── Output log ────────────────────────────────────────────────────────

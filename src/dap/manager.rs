@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use super::client::DapClient;
-use super::types::{DapConfig, DebugSessionState, Scope, StackFrame, Variable};
+use super::types::{DapConfig, DebugSessionState, Scope, StackFrame, Variable, WatchResult};
 
 /// Manages the active debug session and breakpoint storage.
 #[derive(Default)]
@@ -12,11 +14,94 @@ pub struct DapManager {
     pub breakpoints: HashMap<PathBuf, HashSet<usize>>,
     /// Set when a pause just happened — caller may want to navigate to the top frame.
     pub just_paused: bool,
+    /// Watch expressions, persisted per workspace in `.coding-unicorns/watches.toml`.
+    watches: Vec<String>,
+    /// Workspace the watches were loaded from (and are saved to).
+    workspace: Option<PathBuf>,
+}
+
+/// On-disk format of `.coding-unicorns/watches.toml`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct WatchFile {
+    #[serde(default)]
+    expressions: Vec<String>,
+}
+
+fn watch_file_path(workspace: &Path) -> PathBuf {
+    workspace.join(".coding-unicorns").join("watches.toml")
 }
 
 impl DapManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Bind watch persistence to a workspace, loading its saved expressions.
+    /// Cheap no-op when the workspace is unchanged, so it can run every frame.
+    pub fn set_workspace(&mut self, workspace: &Path) {
+        if self.workspace.as_deref() == Some(workspace) {
+            return;
+        }
+        self.workspace = Some(workspace.to_path_buf());
+        self.watches = std::fs::read_to_string(watch_file_path(workspace))
+            .ok()
+            .and_then(|s| toml::from_str::<WatchFile>(&s).ok())
+            .map(|f| f.expressions)
+            .unwrap_or_default();
+        self.sync_watches();
+    }
+
+    pub fn watches(&self) -> &[String] {
+        &self.watches
+    }
+
+    /// Latest evaluation of a watch, `None` when no session is active.
+    pub fn watch_result(&self, expr: &str) -> Option<&WatchResult> {
+        self.session.as_ref()?.watch_results.get(expr)
+    }
+
+    /// Add a watch expression (trimmed; empty or duplicate ones are ignored).
+    pub fn add_watch(&mut self, expr: &str) {
+        let expr = expr.trim();
+        if expr.is_empty() || self.watches.iter().any(|w| w == expr) {
+            return;
+        }
+        self.watches.push(expr.to_string());
+        self.save_watches();
+        self.sync_watches();
+    }
+
+    pub fn remove_watch(&mut self, idx: usize) {
+        if idx < self.watches.len() {
+            self.watches.remove(idx);
+            self.save_watches();
+            self.sync_watches();
+        }
+    }
+
+    fn sync_watches(&mut self) {
+        if let Some(sess) = &mut self.session {
+            sess.set_watches(&self.watches);
+        }
+    }
+
+    fn save_watches(&self) {
+        let Some(ws) = &self.workspace else {
+            return;
+        };
+        let path = watch_file_path(ws);
+        if self.watches.is_empty() && !path.exists() {
+            return; // don't create the folder just to store nothing
+        }
+        let file = WatchFile {
+            expressions: self.watches.clone(),
+        };
+        if let Ok(content) = toml::to_string_pretty(&file) {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, content);
+        }
     }
 
     /// Toggle a breakpoint at the given file/line. Returns the new set for this file.
@@ -66,6 +151,7 @@ impl DapManager {
         for (file, lines) in &bps {
             client.set_breakpoints(file, lines);
         }
+        client.set_watches(&self.watches);
         self.session = Some(client);
         Ok(())
     }
@@ -255,6 +341,89 @@ mod tests {
         assert_eq!(m.selected_frame(), 0);
         assert!(m.output_log().is_empty());
         assert_eq!(m.session_state(), DebugSessionState::Idle);
+    }
+
+    #[test]
+    fn watches_are_deduplicated_and_persisted_per_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = DapManager::new();
+        m.set_workspace(dir.path());
+        assert!(m.watches().is_empty());
+        assert!(
+            !dir.path().join(".coding-unicorns").exists(),
+            "loading creates nothing"
+        );
+        m.add_watch("  x + 1 ");
+        m.add_watch("x + 1");
+        m.add_watch("   ");
+        m.add_watch("y");
+        assert_eq!(m.watches(), ["x + 1", "y"]);
+        assert!(m.watch_result("y").is_none(), "no session → no result");
+
+        let mut m2 = DapManager::new();
+        m2.set_workspace(dir.path());
+        assert_eq!(m2.watches(), ["x + 1", "y"]);
+
+        m2.remove_watch(0);
+        m2.remove_watch(9); // out of range: no-op
+        let mut m3 = DapManager::new();
+        m3.set_workspace(dir.path());
+        assert_eq!(m3.watches(), ["y"]);
+
+        // Switching to a workspace without a file clears the list.
+        let other = tempfile::tempdir().unwrap();
+        m3.set_workspace(other.path());
+        assert!(m3.watches().is_empty());
+    }
+
+    #[test]
+    fn corrupt_watch_file_yields_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let cu = dir.path().join(".coding-unicorns");
+        std::fs::create_dir_all(&cu).unwrap();
+        std::fs::write(cu.join("watches.toml"), "expressions = 3").unwrap();
+        let mut m = DapManager::new();
+        m.set_workspace(dir.path());
+        assert!(m.watches().is_empty());
+    }
+
+    #[test]
+    fn watches_without_workspace_stay_in_memory() {
+        let mut m = DapManager::new();
+        m.add_watch("a");
+        assert_eq!(m.watches(), ["a"]);
+        assert!(!Path::new(".coding-unicorns/watches.toml").exists());
+    }
+
+    #[test]
+    fn watches_are_pushed_to_the_session() {
+        let mut m = DapManager::new();
+        let (out, tx, _alive) = with_session(&mut m);
+        m.add_watch("v");
+        assert_eq!(m.watch_result("v"), Some(&WatchResult::Pending));
+        tx.send(json!({"type": "event", "event": "stopped", "body": {"threadId": 1}}))
+            .unwrap();
+        m.poll();
+        let seq = sent(&out)[0]["seq"].as_u64().unwrap();
+        tx.send(
+            json!({"type": "response", "command": "stackTrace", "request_seq": seq,
+            "body": {"stackFrames": [{"id": 3}]}}),
+        )
+        .unwrap();
+        m.poll();
+        let msgs = sent(&out);
+        let ev = msgs.iter().find(|m| m["command"] == "evaluate").unwrap();
+        assert_eq!(ev["arguments"]["expression"], "v");
+        tx.send(json!({"type": "response", "command": "evaluate",
+            "request_seq": ev["seq"], "body": {"result": "7"}}))
+            .unwrap();
+        m.poll();
+        assert!(matches!(
+            m.watch_result("v"),
+            Some(WatchResult::Value { value, .. }) if value == "7"
+        ));
+        m.remove_watch(0);
+        assert!(m.watch_result("v").is_none());
     }
 
     #[test]
