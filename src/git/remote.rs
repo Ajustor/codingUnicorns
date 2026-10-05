@@ -309,13 +309,20 @@ mod tests {
         assert!(is_http_url("HTTP://host/x"));
     }
 
+    /// libgit2's credential type is `c_int` on Windows and `c_uint` elsewhere, so
+    /// the cast is needed on one platform and a no-op on the other.
+    #[allow(clippy::unnecessary_cast)]
+    fn credtype(c: &git2::Cred) -> u32 {
+        c.credtype() as u32
+    }
+
     #[test]
     fn username_request_uses_url_user_or_git() {
         let mut st = AuthState::default();
         let c = st
             .credentials(SSH_URL, Some("me"), T::USERNAME, None)
             .unwrap();
-        assert_eq!(c.credtype() as u32, T::USERNAME.bits());
+        assert_eq!(credtype(&c), T::USERNAME.bits());
         assert!(st.credentials(SSH_URL, None, T::USERNAME, None).is_ok());
     }
 
@@ -325,12 +332,12 @@ mod tests {
         let mut st = AuthState::default();
         let mut call = || st.credentials(SSH_URL, Some("git"), T::SSH_KEY, Some(dir.path()));
         assert_eq!(
-            call().unwrap().credtype() as u32,
+            credtype(&call().unwrap()),
             T::SSH_KEY.bits(),
             "agent"
         );
         assert_eq!(
-            call().unwrap().credtype() as u32,
+            credtype(&call().unwrap()),
             T::SSH_KEY.bits(),
             "key file"
         );
