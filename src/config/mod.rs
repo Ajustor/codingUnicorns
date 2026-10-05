@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod session;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyBinding {
     pub key: String,
@@ -243,6 +245,27 @@ pub struct Config {
     /// Release the user chose to skip; startup checks stay quiet about it.
     #[serde(default)]
     pub skipped_update_version: Option<String>,
+    /// Recently opened workspace folders, most recent first (deduplicated,
+    /// at most [`MAX_RECENT_WORKSPACES`]).
+    #[serde(default)]
+    pub recent_workspaces: Vec<String>,
+}
+
+/// Maximum number of entries kept in [`Config::recent_workspaces`].
+pub const MAX_RECENT_WORKSPACES: usize = 10;
+
+/// Whether two workspace path strings designate the same folder. Ignores
+/// trailing separators and, on Windows, case and `/` vs `\`.
+pub fn same_workspace(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        let s = s.trim_end_matches(['/', '\\']);
+        if cfg!(windows) {
+            s.replace('/', "\\").to_lowercase()
+        } else {
+            s.to_string()
+        }
+    }
+    norm(a) == norm(b)
 }
 
 fn default_terminal_height() -> f32 {
@@ -321,6 +344,7 @@ impl Default for Config {
             claude_auto_allow_read: true,
             check_updates: true,
             skipped_update_version: None,
+            recent_workspaces: Vec::new(),
         }
     }
 }
@@ -356,6 +380,28 @@ impl Config {
         if let Ok(content) = toml::to_string_pretty(self) {
             let _ = std::fs::write(path, content);
         }
+    }
+
+    /// Move `path` to the front of the recent-workspaces list (deduplicated,
+    /// capped at [`MAX_RECENT_WORKSPACES`]).
+    pub fn push_recent_workspace(&mut self, path: &str) {
+        self.recent_workspaces.retain(|p| !same_workspace(p, path));
+        self.recent_workspaces.insert(0, path.to_string());
+        self.recent_workspaces.truncate(MAX_RECENT_WORKSPACES);
+    }
+
+    /// Drop recent workspaces whose folder no longer exists. Returns true if
+    /// anything was removed (so the caller knows to persist the change).
+    pub fn prune_recent_workspaces(&mut self) -> bool {
+        let before = self.recent_workspaces.len();
+        self.recent_workspaces
+            .retain(|p| std::path::Path::new(p).is_dir());
+        self.recent_workspaces.len() != before
+    }
+
+    /// Remove one entry from the recent-workspaces list.
+    pub fn remove_recent_workspace(&mut self, path: &str) {
+        self.recent_workspaces.retain(|p| !same_workspace(p, path));
     }
 }
 
@@ -693,6 +739,55 @@ mod tests {
         let c = Config::load_from(&corrupt);
         assert_eq!(c.font.size, 14.0);
         assert_eq!(c.claude_binary, "claude");
+    }
+
+    #[test]
+    fn push_recent_workspace_is_mru_deduplicated_and_capped() {
+        let mut c = Config::default();
+        c.push_recent_workspace("/a");
+        c.push_recent_workspace("/b");
+        c.push_recent_workspace("/a/"); // same folder, trailing separator
+        assert_eq!(c.recent_workspaces, vec!["/a/", "/b"]);
+        for i in 0..20 {
+            c.push_recent_workspace(&format!("/w{i}"));
+        }
+        assert_eq!(c.recent_workspaces.len(), MAX_RECENT_WORKSPACES);
+        assert_eq!(c.recent_workspaces[0], "/w19");
+        assert_eq!(c.recent_workspaces[9], "/w10");
+    }
+
+    #[test]
+    fn same_workspace_ignores_trailing_separators() {
+        assert!(same_workspace("/a/b", "/a/b/"));
+        assert!(!same_workspace("/a/b", "/a/c"));
+        if cfg!(windows) {
+            assert!(same_workspace("C:\\Work\\Proj", "c:/work/proj"));
+        }
+    }
+
+    #[test]
+    fn prune_and_remove_recent_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().to_string_lossy().to_string();
+        let missing = dir.path().join("gone").to_string_lossy().to_string();
+        let mut c = Config::default();
+        c.push_recent_workspace(&missing);
+        c.push_recent_workspace(&existing);
+        assert!(c.prune_recent_workspaces());
+        assert_eq!(c.recent_workspaces, vec![existing.clone()]);
+        assert!(!c.prune_recent_workspaces());
+        c.remove_recent_workspace(&existing);
+        assert!(c.recent_workspaces.is_empty());
+    }
+
+    #[test]
+    fn recent_workspaces_round_trip_and_default_empty() {
+        let mut c = Config::default();
+        c.push_recent_workspace("C:\\x\\y");
+        let s = toml::to_string_pretty(&c).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(back.recent_workspaces, vec!["C:\\x\\y"]);
+        assert!(Config::default().recent_workspaces.is_empty());
     }
 
     #[test]

@@ -7,6 +7,8 @@ pub struct Tab {
     pub title: String,
     pub is_modified: bool,
     pub is_settings: bool,
+    /// The file was deleted on disk; the buffer is kept and the title shows it.
+    pub is_deleted: bool,
 }
 
 pub struct TabManager {
@@ -42,6 +44,7 @@ impl TabManager {
             title,
             is_modified: false,
             is_settings: false,
+            is_deleted: false,
         });
         self.active_tab = Some(id);
         id
@@ -58,6 +61,7 @@ impl TabManager {
             title,
             is_modified: true,
             is_settings: false,
+            is_deleted: false,
         });
         self.active_tab = Some(id);
         id
@@ -77,9 +81,21 @@ impl TabManager {
             title: "Settings".to_string(),
             is_modified: false,
             is_settings: true,
+            is_deleted: false,
         });
         self.active_tab = Some(id);
         id
+    }
+
+    /// Mark (or unmark) the tab of `path` as deleted on disk. Returns true if
+    /// a tab's state changed.
+    pub fn set_deleted(&mut self, path: &std::path::Path, deleted: bool) -> bool {
+        let mut changed = false;
+        for t in self.tabs.iter_mut().filter(|t| t.path == path) {
+            changed |= t.is_deleted != deleted;
+            t.is_deleted = deleted;
+        }
+        changed
     }
 
     pub fn close(&mut self, id: usize) {
@@ -102,7 +118,11 @@ impl TabManager {
                 (
                     t.id,
                     t.path.clone(),
-                    t.title.clone(),
+                    if t.is_deleted {
+                        format!("{} (deleted)", t.title)
+                    } else {
+                        t.title.clone()
+                    },
                     t.is_modified,
                     t.is_settings,
                 )
@@ -127,7 +147,11 @@ impl TabManager {
                                     .size(14.0),
                             );
                         } else {
-                            let (icon, icon_color) = crate::filetree::file_icon(tab_title);
+                            let name = tab_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy())
+                                .unwrap_or_else(|| tab_title.as_str().into());
+                            let (icon, icon_color) = crate::filetree::file_icon(&name);
                             ui.label(egui::RichText::new(icon).color(icon_color).size(14.0));
                         }
                         ui.add_space(2.0);
@@ -384,6 +408,27 @@ mod tests {
         tm.close(first);
         let next = tm.open(PathBuf::from("b.rs"), String::new());
         assert_ne!(first, next);
+    }
+
+    #[test]
+    fn set_deleted_marks_tab_and_reports_changes() {
+        let mut tm = manager_with(&["a.rs", "b.rs"]);
+        let a = PathBuf::from("a.rs");
+        assert!(tm.set_deleted(&a, true));
+        assert!(!tm.set_deleted(&a, true), "no change the second time");
+        assert!(tm.tabs[0].is_deleted && !tm.tabs[1].is_deleted);
+        assert!(!tm.set_deleted(&PathBuf::from("zzz.rs"), true));
+        assert!(tm.set_deleted(&a, false));
+        assert!(!tm.tabs[0].is_deleted);
+    }
+
+    #[test]
+    fn deleted_tab_renders_with_suffix() {
+        let mut tm = manager_with(&["a.rs"]);
+        tm.set_deleted(&PathBuf::from("a.rs"), true);
+        let mut h = Harness::new();
+        h.frame(&mut tm, vec![]);
+        h.rect_of("a.rs (deleted)");
     }
 
     // ── Rendering / interaction ────────────────────────────────────────────

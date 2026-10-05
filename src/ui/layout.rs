@@ -32,7 +32,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     if let Some(t) = app.last_edit_instant {
         if t.elapsed().as_secs() >= 2 {
             if app.editor.is_modified {
-                let _ = app.editor.save();
+                app.save_editor_guarded(false);
             }
             app.last_edit_instant = None;
         } else {
@@ -112,14 +112,44 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     app.folder_pending = Some(app.trigger_open_folder());
                     ui.close_menu();
                 }
+                ui.menu_button("Open Recent", |ui| {
+                    // Entries whose folder vanished are dropped when the list is shown.
+                    if app.config.prune_recent_workspaces() {
+                        app.config.save();
+                    }
+                    if app.config.recent_workspaces.is_empty() {
+                        ui.add_enabled(false, egui::Button::new("No recent folders"));
+                    }
+                    let mut picked = None;
+                    for ws in &app.config.recent_workspaces {
+                        if ui.button(ws.as_str()).clicked() {
+                            picked = Some(std::path::PathBuf::from(ws));
+                        }
+                    }
+                    ui.separator();
+                    let clear = ui
+                        .add_enabled(
+                            !app.config.recent_workspaces.is_empty(),
+                            egui::Button::new("Clear Recent"),
+                        )
+                        .clicked();
+                    if let Some(path) = picked {
+                        app.open_recent_workspace(path);
+                        ui.close_menu();
+                    } else if clear {
+                        app.clear_recent_workspaces();
+                        ui.close_menu();
+                    }
+                });
                 if ui.button("Open File…  Ctrl+Shift+O").clicked() {
                     app.file_pending = Some(app.trigger_open_file());
                     ui.close_menu();
                 }
                 ui.separator();
                 if ui.button("Save              Ctrl+S").clicked() {
-                    let _ = app.editor.save();
-                    app.toast("Saved");
+                    if app.save_editor_guarded(true) {
+                        app.toast("Saved");
+                    }
                     ui.close_menu();
                 }
                 ui.separator();
@@ -1082,8 +1112,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         app.palette,
                         app.spacing,
                     );
-                } else {
-                    welcome_screen(&mut left_ui);
+                } else if let Some(ws) = welcome_screen(&mut left_ui, &app.config.recent_workspaces)
+                {
+                    app.open_recent_workspace(ws);
                 }
 
                 // ── Right pane ─────────────────────────────────────────────
@@ -1309,8 +1340,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         app.palette,
                         app.spacing,
                     );
-                } else {
-                    welcome_screen(ui);
+                } else if let Some(ws) = welcome_screen(ui, &app.config.recent_workspaces) {
+                    app.open_recent_workspace(ws);
                 }
             }
         });
@@ -1364,7 +1395,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     }
 }
 
-fn welcome_screen(ui: &mut egui::Ui) {
+/// Welcome screen; lists existing recent workspaces as links and returns the
+/// one the user clicked, if any.
+fn welcome_screen(ui: &mut egui::Ui, recent: &[String]) -> Option<std::path::PathBuf> {
+    let mut picked = None;
     ui.vertical_centered(|ui| {
         ui.add_space(80.0);
         ui.label(
@@ -1388,7 +1422,21 @@ fn welcome_screen(ui: &mut egui::Ui) {
             egui::RichText::new("File → Open Folder to get started")
                 .color(egui::Color32::from_rgb(150, 200, 150)),
         );
+        let existing: Vec<&String> = recent
+            .iter()
+            .filter(|p| std::path::Path::new(p).is_dir())
+            .collect();
+        if !existing.is_empty() {
+            ui.add_space(24.0);
+            ui.label(egui::RichText::new("Recent").color(egui::Color32::GRAY));
+            for ws in existing {
+                if ui.link(ws.as_str()).clicked() {
+                    picked = Some(std::path::PathBuf::from(ws));
+                }
+            }
+        }
     });
+    picked
 }
 
 /// Find a free path like `parent/base`, `parent/base1`, `parent/base2`, …
