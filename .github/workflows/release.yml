@@ -33,6 +33,10 @@ jobs:
     name: Build ${{ matrix.artifact }}
     needs: verify-version
     runs-on: ${{ matrix.os }}
+    env:
+      # Authenticode signing is opt-in: it only runs when both secrets are set.
+      # Secrets can't be referenced in `if:` directly, hence this flag.
+      HAS_CERT: ${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' && secrets.WINDOWS_CERT_PASSWORD != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +86,40 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
+      # ── Windows code signing (optional) ────────────────────────────────────
+      # The exe is signed in place right after the build, so every copy made
+      # below (the uploaded .exe and the one packed into the MSI) is signed, and
+      # the sha256 hashes in latest.json (computed from the uploaded artifacts
+      # in the `pages` job) match the signed files.
+
+      - name: Prepare code signing (Windows)
+        if: matrix.os == 'windows-latest' && env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+                      Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe not found' }
+          "CODESIGN_PFX=$pfx" >> $env:GITHUB_ENV
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+
+      - name: Sign binary (Windows)
+        if: matrix.os == 'windows-latest' && env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $exe = "target\${{ matrix.target }}\release\coding-unicorns.exe"
+          & $env:SIGNTOOL sign /f $env:CODESIGN_PFX /p $env:WINDOWS_CERT_PASSWORD `
+            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /d "Coding Unicorns" $exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $exe" }
+          & $env:SIGNTOOL verify /pa $exe
+          if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $exe" }
+
       - name: Rename binary (Unix)
         if: matrix.os != 'windows-latest'
         run: |
@@ -130,6 +168,28 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart('v').Split('-')[0]
           & $candle -arch x64 "-dProductVersion=$version" -out wix\main.wixobj wix\main.wxs
           & $light  -ext WixUIExtension -out coding-unicorns-setup.msi wix\main.wixobj
+
+      - name: Sign installer (Windows)
+        if: matrix.os == 'windows-latest' && env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $msi = 'coding-unicorns-setup.msi'
+          & $env:SIGNTOOL sign /f $env:CODESIGN_PFX /p $env:WINDOWS_CERT_PASSWORD `
+            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /d "Coding Unicorns Installer" $msi
+          if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $msi" }
+          & $env:SIGNTOOL verify /pa $msi
+          if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $msi" }
+
+      - name: Remove signing certificate (Windows)
+        if: always() && matrix.os == 'windows-latest' && env.HAS_CERT == 'true'
+        shell: pwsh
+        run: |
+          if ($env:CODESIGN_PFX -and (Test-Path $env:CODESIGN_PFX)) {
+            Remove-Item $env:CODESIGN_PFX -Force
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
