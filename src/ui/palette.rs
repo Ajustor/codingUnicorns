@@ -20,6 +20,7 @@ pub enum PaletteCommand {
     FindReplace,
     RestartLsp,
     CheckForUpdates,
+    ShowProblems,
 }
 
 impl PaletteCommand {
@@ -37,6 +38,7 @@ impl PaletteCommand {
             PaletteCommand::FindReplace,
             PaletteCommand::RestartLsp,
             PaletteCommand::CheckForUpdates,
+            PaletteCommand::ShowProblems,
         ]
     }
 
@@ -54,6 +56,7 @@ impl PaletteCommand {
             Self::FindReplace => "Find & Replace",
             Self::RestartLsp => "Restart LSP Server",
             Self::CheckForUpdates => "Check for Updates",
+            Self::ShowProblems => "Problems: Show",
         }
     }
 
@@ -71,6 +74,7 @@ impl PaletteCommand {
             Self::FindReplace => "Ctrl+H",
             Self::RestartLsp => "",
             Self::CheckForUpdates => "",
+            Self::ShowProblems => "Ctrl+Shift+M",
         }
     }
 
@@ -88,6 +92,7 @@ impl PaletteCommand {
             Self::FindReplace => "search and substitute replace text",
             Self::RestartLsp => "restart language server diagnostics",
             Self::CheckForUpdates => "upgrade new version release install",
+            Self::ShowProblems => "errors warnings lint workspace problems panel",
         }
     }
 }
@@ -423,7 +428,7 @@ mod tests {
     #[test]
     fn every_command_has_metadata() {
         let all = PaletteCommand::all();
-        assert_eq!(all.len(), 12);
+        assert_eq!(all.len(), 13);
         let mut labels = std::collections::HashSet::new();
         for cmd in all {
             assert!(!cmd.label().trim().is_empty(), "{cmd:?} label");
@@ -458,9 +463,10 @@ mod tests {
                 PaletteCommand::FindReplace => 9,
                 PaletteCommand::RestartLsp => 10,
                 PaletteCommand::CheckForUpdates => 11,
+                PaletteCommand::ShowProblems => 12,
             }
         }
-        let mut seen = [false; 12];
+        let mut seen = [false; 13];
         for c in PaletteCommand::all() {
             assert!(!seen[index(c)], "{c:?} listed twice");
             seen[index(c)] = true;
@@ -718,7 +724,7 @@ mod tests {
     #[test]
     fn arrow_and_tab_navigation_wraps() {
         let mut h = Harness::new(&[]);
-        h.query(">"); // 12 commands
+        h.query(">"); // every command
         let n = PaletteCommand::all().len();
         h.key(Key::ArrowUp);
         assert_eq!(h.p.selected_idx, n - 1, "up from top wraps to bottom");
@@ -739,7 +745,7 @@ mod tests {
         let mut h = Harness::new(&[]);
         h.query(">");
         h.key(Key::ArrowUp);
-        assert_eq!(h.p.selected_idx, 11);
+        assert_eq!(h.p.selected_idx, PaletteCommand::all().len() - 1);
         h.query(">restart");
         assert_eq!(h.p.selected_idx, 0);
         h.query(">qqqzzz");

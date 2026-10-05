@@ -158,6 +158,8 @@ pub struct CodingUnicorns {
     pub toasts: Vec<crate::ui::widgets::Toast>,
     /// GitHub release self-updater.
     pub updater: crate::updater::Updater,
+    /// Workspace-wide LSP diagnostics (bottom panel, Ctrl+Shift+M).
+    pub problems_panel: crate::ui::problems::ProblemsPanel,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -215,6 +217,11 @@ impl CodingUnicorns {
                     "toggle_md_preview",
                     Chord::ctrl_shift(egui::Key::V),
                     "Toggle Markdown preview",
+                ),
+                (
+                    "toggle_problems",
+                    Chord::ctrl_shift(egui::Key::M),
+                    "Toggle Problems panel",
                 ),
             ] {
                 if let Some(other) = keybinds.register(id, chord, desc) {
@@ -308,6 +315,7 @@ impl CodingUnicorns {
             pending_delete: None,
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),
+            problems_panel: crate::ui::problems::ProblemsPanel::new(),
         };
 
         if let Some(path) = initial_path {
@@ -528,6 +536,7 @@ impl eframe::App for CodingUnicorns {
                 "toggle_claude" => self.show_claude = !self.show_claude,
                 "command_palette_commands" => self.command_palette.toggle_commands(),
                 "toggle_md_preview" => self.show_md_preview = !self.show_md_preview,
+                "toggle_problems" => self.problems_panel.open = !self.problems_panel.open,
                 _ => {}
             }
         }
@@ -641,6 +650,7 @@ impl eframe::App for CodingUnicorns {
 
         // Poll all LSP clients for incoming messages (also drives auto-restart).
         let (lsp_responses, reconnected_exts) = self.lsp.poll_all();
+        self.sync_problems();
         // Keep updating the "LSP loading…" status while a server is busy.
         if self.lsp.any_busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -1127,6 +1137,7 @@ impl eframe::App for CodingUnicorns {
                         }
                         self.toast("LSP restarted");
                     }
+                    PaletteCommand::ShowProblems => self.problems_panel.open = true,
                     PaletteCommand::CheckForUpdates => {
                         if matches!(self.updater.state, crate::updater::UpdateState::Ready(_)) {
                             self.updater.dismissed = false;
