@@ -117,8 +117,8 @@ impl FileEntry {
 fn should_ignore(path: &Path, repo: Option<&git2::Repository>) -> bool {
     if let Some(repo) = repo {
         if let Some(workdir) = repo.workdir() {
-            if let Ok(relative) = path.strip_prefix(workdir) {
-                if let Ok(ignored) = repo.status_should_ignore(relative) {
+            if let Some(relative) = crate::git::relative_to_workdir(path, workdir) {
+                if let Ok(ignored) = repo.status_should_ignore(&relative) {
                     return ignored;
                 }
             }
@@ -131,4 +131,217 @@ fn should_ignore(path: &Path, repo: Option<&git2::Repository>) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn names(entry: &FileEntry) -> Vec<&str> {
+        entry.children.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    fn child<'a>(entry: &'a mut FileEntry, name: &str) -> &'a mut FileEntry {
+        entry
+            .children
+            .iter_mut()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("no child {name}"))
+    }
+
+    /// Build a plain (non-git) directory layout.
+    fn layout(root: &Path) {
+        fs::create_dir_all(root.join("src/nested/deep")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::create_dir_all(root.join(".hidden_dir")).unwrap();
+        fs::write(root.join("b.txt"), "b").unwrap();
+        fs::write(root.join("A.md"), "a").unwrap();
+        fs::write(root.join(".env"), "secret").unwrap();
+        fs::write(root.join("build"), "a file named like an ignored dir").unwrap();
+        fs::write(root.join("src/main.rs"), "").unwrap();
+        fs::write(root.join("src/nested/mod.rs"), "").unwrap();
+        fs::write(root.join("src/nested/deep/x.rs"), "").unwrap();
+    }
+
+    #[test]
+    fn new_reads_name_and_kind_and_expands_only_root() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("f.rs"), "").unwrap();
+        let root = FileEntry::new(dir.path().to_path_buf(), 0);
+        assert!(root.is_dir);
+        assert!(root.is_expanded);
+        assert!(root.children.is_empty());
+        assert_eq!(root.depth, 0);
+
+        let f = FileEntry::new(dir.path().join("f.rs"), 3);
+        assert_eq!(f.name, "f.rs");
+        assert!(!f.is_dir);
+        assert!(!f.is_expanded);
+        assert_eq!(f.depth, 3);
+
+        let sub = FileEntry::new(dir.path().to_path_buf(), 1);
+        assert!(!sub.is_expanded, "non-root directories start collapsed");
+    }
+
+    #[test]
+    fn new_on_path_without_file_name_has_empty_name() {
+        let e = FileEntry::new(PathBuf::from(".."), 0);
+        assert_eq!(e.name, "");
+    }
+
+    #[test]
+    fn load_children_sorts_dirs_first_and_skips_hidden_and_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        layout(dir.path());
+        let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
+        root.load_children(None, false);
+        // target/ and node_modules/ are ignored as dirs, but a *file* named
+        // "build" is kept. Dot-entries are always hidden.
+        assert_eq!(names(&root), ["docs", "src", "A.md", "b.txt", "build"]);
+        assert!(root.children[0].is_dir && root.children[1].is_dir);
+        assert!(root.children[2..].iter().all(|c| !c.is_dir));
+        assert!(root.children.iter().all(|c| c.depth == 1));
+        assert!(root.children.iter().all(|c| !c.is_expanded));
+    }
+
+    #[test]
+    fn load_children_with_show_gitignored_keeps_fallback_ignored_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        layout(dir.path());
+        let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
+        root.load_children(None, true);
+        assert_eq!(
+            names(&root),
+            [
+                "docs",
+                "node_modules",
+                "src",
+                "target",
+                "A.md",
+                "b.txt",
+                "build"
+            ]
+        );
+    }
+
+    #[test]
+    fn load_children_replaces_previous_children() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("one"), "").unwrap();
+        let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
+        root.load_children(None, false);
+        assert_eq!(names(&root), ["one"]);
+        fs::remove_file(dir.path().join("one")).unwrap();
+        fs::write(dir.path().join("two"), "").unwrap();
+        root.load_children(None, false);
+        assert_eq!(names(&root), ["two"]);
+    }
+
+    #[test]
+    fn load_children_on_file_or_vanished_dir_is_harmless() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("f"), "").unwrap();
+        let mut f = FileEntry::new(dir.path().join("f"), 1);
+        f.load_children(None, false);
+        assert!(f.children.is_empty());
+        f.reload_recursive(None, false);
+        assert!(f.children.is_empty());
+
+        fs::create_dir(dir.path().join("gone")).unwrap();
+        let mut gone = FileEntry::new(dir.path().join("gone"), 1);
+        fs::remove_dir(dir.path().join("gone")).unwrap();
+        gone.load_children(None, false);
+        assert!(gone.children.is_empty());
+    }
+
+    #[test]
+    fn git_repo_uses_gitignore_instead_of_fallback_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        layout(dir.path());
+        fs::write(dir.path().join(".gitignore"), "docs/\n*.txt\n").unwrap();
+        let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
+        root.load_children(Some(&repo), false);
+        // docs/ and b.txt are gitignored; target/ and node_modules/ are NOT
+        // (the fallback list only applies outside a repository).
+        assert_eq!(
+            names(&root),
+            ["node_modules", "src", "target", "A.md", "build"]
+        );
+
+        root.load_children(Some(&repo), true);
+        assert_eq!(
+            names(&root),
+            [
+                "docs",
+                "node_modules",
+                "src",
+                "target",
+                "A.md",
+                "b.txt",
+                "build"
+            ]
+        );
+    }
+
+    #[test]
+    fn path_outside_repo_workdir_uses_fallback_list() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(repo_dir.path()).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        layout(other.path());
+        let mut root = FileEntry::new(other.path().to_path_buf(), 0);
+        root.load_children(Some(&repo), false);
+        assert_eq!(names(&root), ["docs", "src", "A.md", "b.txt", "build"]);
+    }
+
+    #[test]
+    fn bare_repo_without_workdir_uses_fallback_list() {
+        let bare_dir = tempfile::tempdir().unwrap();
+        let bare = git2::Repository::init_bare(bare_dir.path()).unwrap();
+        assert!(bare.workdir().is_none());
+        let other = tempfile::tempdir().unwrap();
+        layout(other.path());
+        let mut root = FileEntry::new(other.path().to_path_buf(), 0);
+        root.load_children(Some(&bare), false);
+        assert_eq!(names(&root), ["docs", "src", "A.md", "b.txt", "build"]);
+    }
+
+    #[test]
+    fn reload_recursive_preserves_nested_expansion_and_picks_up_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        layout(dir.path());
+        let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
+        root.load_children(None, false);
+        {
+            let src = child(&mut root, "src");
+            src.is_expanded = true;
+            src.load_children(None, false);
+            let nested = child(src, "nested");
+            nested.is_expanded = true;
+            nested.load_children(None, false);
+            // "deep" is loaded but left collapsed.
+        }
+
+        // Filesystem changes in an expanded nested folder and at the root.
+        fs::write(dir.path().join("src/nested/new.rs"), "").unwrap();
+        fs::write(dir.path().join("c.txt"), "").unwrap();
+        fs::remove_dir_all(dir.path().join("docs")).unwrap();
+
+        root.reload_recursive(None, false);
+        assert_eq!(names(&root), ["src", "A.md", "b.txt", "build", "c.txt"]);
+        let src = child(&mut root, "src");
+        assert!(src.is_expanded, "expanded dir must stay expanded");
+        assert_eq!(names(src), ["nested", "main.rs"]);
+        let nested = child(src, "nested");
+        assert!(nested.is_expanded, "nested expansion must survive reload");
+        assert_eq!(nested.depth, 2);
+        assert_eq!(names(nested), ["deep", "mod.rs", "new.rs"]);
+        let deep = child(nested, "deep");
+        assert!(!deep.is_expanded);
+        assert!(deep.children.is_empty(), "collapsed dirs are not loaded");
+    }
 }

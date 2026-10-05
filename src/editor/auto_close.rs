@@ -35,3 +35,55 @@ pub fn should_skip_quote_auto_close(ch: char, prev_char: Option<char>) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_pair_maps_brackets_and_quotes() {
+        assert_eq!(closing_pair('('), Some(')'));
+        assert_eq!(closing_pair('['), Some(']'));
+        assert_eq!(closing_pair('{'), Some('}'));
+        assert_eq!(closing_pair('"'), Some('"'));
+        assert_eq!(closing_pair('\''), Some('\''));
+        assert_eq!(closing_pair('`'), Some('`'));
+        assert_eq!(closing_pair('a'), None);
+        assert_eq!(closing_pair(')'), None);
+        assert_eq!(closing_pair('<'), None);
+    }
+
+    #[test]
+    fn is_closing_recognises_closers_only() {
+        for ch in [')', ']', '}', '"', '\'', '`'] {
+            assert!(is_closing(ch), "{ch} should be a closer");
+        }
+        for ch in ['(', '[', '{', 'a', ' ', '>'] {
+            assert!(!is_closing(ch), "{ch} should not be a closer");
+        }
+    }
+
+    #[test]
+    fn should_auto_close_depends_on_next_char() {
+        assert!(should_auto_close('(', None));
+        assert!(should_auto_close('(', Some(' ')));
+        assert!(should_auto_close('(', Some('\t')));
+        assert!(should_auto_close('(', Some(')')));
+        assert!(should_auto_close('"', Some('}')));
+        assert!(!should_auto_close('(', Some('a')));
+        assert!(!should_auto_close('(', Some('(')));
+        assert!(!should_auto_close('[', Some('1')));
+    }
+
+    #[test]
+    fn quotes_after_word_chars_are_not_auto_closed() {
+        assert!(should_skip_quote_auto_close('\'', Some('t'))); // don't
+        assert!(should_skip_quote_auto_close('"', Some('9')));
+        assert!(should_skip_quote_auto_close('`', Some('x')));
+        assert!(!should_skip_quote_auto_close('\'', Some(' ')));
+        assert!(!should_skip_quote_auto_close('"', Some('(')));
+        assert!(!should_skip_quote_auto_close('"', None));
+        // Non-quote characters are never skipped.
+        assert!(!should_skip_quote_auto_close('(', Some('a')));
+    }
+}

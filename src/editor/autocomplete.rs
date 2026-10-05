@@ -231,3 +231,280 @@ fn kind_badge(kind: &str) -> (&'static str, egui::Color32) {
         _ => ("•", Color32::from_gray(140)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(ws: &[&str]) -> Vec<String> {
+        ws.iter().map(|w| w.to_string()).collect()
+    }
+
+    fn labels(ac: &Autocomplete) -> Vec<&str> {
+        ac.suggestions.iter().map(|s| s.label.as_str()).collect()
+    }
+
+    fn sugg(label: &str, kind: Option<&str>) -> Suggestion {
+        Suggestion {
+            label: label.to_string(),
+            kind: kind.map(str::to_string),
+            match_indices: vec![],
+        }
+    }
+
+    #[test]
+    fn new_is_hidden_and_empty() {
+        let ac = Autocomplete::new();
+        assert!(!ac.visible);
+        assert!(ac.suggestions.is_empty());
+        assert_eq!(ac.selected, 0);
+        assert!(ac.confirm().is_none());
+    }
+
+    #[test]
+    fn short_words_hide_the_popup() {
+        let mut ac = Autocomplete::new();
+        ac.visible = true;
+        ac.update("a", &words(&["abc"]), &[]);
+        assert!(!ac.visible);
+        ac.update("", &words(&["abc"]), &[]);
+        assert!(!ac.visible);
+    }
+
+    #[test]
+    fn fuzzy_matches_are_ranked_and_non_matches_dropped() {
+        let mut ac = Autocomplete::new();
+        ac.update(
+            "prn",
+            &words(&["pr", "println", "spring_run", "other", "nrp"]),
+            &[],
+        );
+        assert!(ac.visible);
+        assert_eq!(ac.query, "prn");
+        let l = labels(&ac);
+        assert!(l.contains(&"println"));
+        assert!(
+            l.contains(&"spring_run"),
+            "subsequence match, not just prefix"
+        );
+        assert!(!l.contains(&"other"));
+        assert!(!l.contains(&"pr"), "missing the 'n'");
+        assert!(!l.contains(&"nrp"), "order matters");
+        // Every suggestion records which chars matched the query.
+        for s in &ac.suggestions {
+            assert_eq!(s.match_indices.len(), 3, "{}", s.label);
+            assert!(s.kind.is_none());
+        }
+    }
+
+    #[test]
+    fn prefix_matches_rank_above_scattered_matches() {
+        let mut ac = Autocomplete::new();
+        ac.update("foo", &words(&["xfxoxo", "foobar"]), &[]);
+        assert_eq!(labels(&ac)[0], "foobar");
+    }
+
+    #[test]
+    fn keywords_are_tagged_and_deduplicated_against_buffer_words() {
+        let mut ac = Autocomplete::new();
+        ac.update("re", &words(&["return", "result"]), &["return", "ref"]);
+        let ret: Vec<_> = ac
+            .suggestions
+            .iter()
+            .filter(|s| s.label == "return")
+            .collect();
+        assert_eq!(ret.len(), 1, "duplicates collapse to one entry");
+        assert_eq!(ret[0].kind.as_deref(), Some("Keyword"));
+        let result = ac.suggestions.iter().find(|s| s.label == "result").unwrap();
+        assert!(result.kind.is_none());
+        assert!(labels(&ac).contains(&"ref"));
+    }
+
+    #[test]
+    fn exact_word_is_not_suggested() {
+        let mut ac = Autocomplete::new();
+        ac.update("let", &words(&["let", "letter"]), &["let"]);
+        assert_eq!(labels(&ac), vec!["letter"]);
+    }
+
+    #[test]
+    fn no_matches_hides_popup() {
+        let mut ac = Autocomplete::new();
+        ac.update("zz", &words(&["abc", "def"]), &["fn"]);
+        assert!(!ac.visible);
+        assert!(ac.suggestions.is_empty());
+    }
+
+    #[test]
+    fn suggestions_are_capped_at_50() {
+        let many: Vec<String> = (0..80).map(|i| format!("item{i:02}")).collect();
+        let mut ac = Autocomplete::new();
+        ac.update("it", &many, &[]);
+        assert_eq!(ac.suggestions.len(), 50);
+    }
+
+    #[test]
+    fn update_resets_selection() {
+        let mut ac = Autocomplete::new();
+        ac.update("ab", &words(&["abc", "abd", "abe"]), &[]);
+        ac.move_down();
+        ac.move_down();
+        assert_eq!(ac.selected, 2);
+        ac.update("ab", &words(&["abc", "abd"]), &[]);
+        assert_eq!(ac.selected, 0);
+    }
+
+    #[test]
+    fn move_up_and_down_clamp_to_bounds() {
+        let mut ac = Autocomplete::new();
+        ac.move_down();
+        assert_eq!(ac.selected, 0, "no suggestions: stays at 0");
+        ac.set_lsp_suggestions(vec![sugg("a", None), sugg("b", None), sugg("c", None)]);
+        ac.move_up();
+        assert_eq!(ac.selected, 0);
+        ac.move_down();
+        ac.move_down();
+        ac.move_down();
+        assert_eq!(ac.selected, 2);
+        assert_eq!(ac.confirm(), Some("c"));
+        ac.move_up();
+        assert_eq!(ac.confirm(), Some("b"));
+    }
+
+    #[test]
+    fn confirm_requires_visible_popup() {
+        let mut ac = Autocomplete::new();
+        ac.set_lsp_suggestions(vec![sugg("value", Some("Variable"))]);
+        assert_eq!(ac.confirm(), Some("value"));
+        ac.visible = false;
+        assert_eq!(ac.confirm(), None);
+    }
+
+    #[test]
+    fn set_lsp_suggestions_replaces_list_and_ignores_empty() {
+        let mut ac = Autocomplete::new();
+        ac.set_lsp_suggestions(vec![]);
+        assert!(!ac.visible);
+
+        ac.set_lsp_suggestions(vec![sugg("x", None), sugg("y", Some("Function"))]);
+        ac.move_down();
+        assert!(ac.visible);
+        assert_eq!(ac.selected, 1);
+
+        ac.set_lsp_suggestions(vec![sugg("z", None)]);
+        assert_eq!(labels(&ac), vec!["z"]);
+        assert_eq!(ac.selected, 0);
+
+        // An empty LSP response keeps the previous list.
+        ac.set_lsp_suggestions(vec![]);
+        assert_eq!(labels(&ac), vec!["z"]);
+    }
+
+    #[test]
+    fn kind_badges() {
+        use egui::Color32;
+        assert_eq!(kind_badge("Function").0, "ƒ");
+        assert_eq!(kind_badge("Method").0, "ƒ");
+        assert_eq!(kind_badge("Class").0, "C");
+        assert_eq!(kind_badge("Constructor").0, "C");
+        assert_eq!(kind_badge("Interface").0, "C");
+        assert_eq!(kind_badge("Field").0, "○");
+        assert_eq!(kind_badge("Property").0, "○");
+        assert_eq!(kind_badge("Variable").0, "v");
+        assert_eq!(kind_badge("Module").0, "M");
+        assert_eq!(
+            kind_badge("Keyword"),
+            ("kw", Color32::from_rgb(197, 134, 192))
+        );
+        assert_eq!(kind_badge("Snippet").0, "◇");
+        assert_eq!(kind_badge("Text").0, "");
+        assert_eq!(kind_badge("Unknown"), ("•", Color32::from_gray(140)));
+    }
+
+    // ── Rendering (headless egui) ───────────────────────────────────────────
+
+    fn palette() -> crate::ui::theme::Palette {
+        crate::ui::theme::Palette::from_theme(&crate::config::Theme {
+            name: "test".into(),
+            background: [30, 30, 30],
+            foreground: [212, 212, 212],
+            accent: [0, 122, 204],
+        })
+    }
+
+    /// Render the popup for a couple of frames and return its area rect, if shown.
+    fn render(ac: &Autocomplete) -> Option<egui::Rect> {
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            let _ = ctx.run(input(), |ctx| {
+                ac.show(ctx, palette(), crate::ui::theme::Spacing::default());
+            });
+        }
+        ctx.memory(|m| m.area_rect(egui::Id::new("autocomplete_popup")))
+    }
+
+    fn popup_with(n: usize) -> Autocomplete {
+        let kinds = [Some("Function"), Some("Text"), None, Some("Keyword")];
+        let mut ac = Autocomplete::new();
+        ac.set_lsp_suggestions(
+            (0..n)
+                .map(|i| Suggestion {
+                    label: format!("item{i}"),
+                    kind: kinds[i % kinds.len()].map(str::to_string),
+                    match_indices: vec![0, 1],
+                })
+                .collect(),
+        );
+        ac
+    }
+
+    #[test]
+    fn show_does_nothing_when_hidden() {
+        let mut ac = popup_with(3);
+        ac.visible = false;
+        assert!(render(&ac).is_none());
+        assert!(render(&Autocomplete::new()).is_none());
+    }
+
+    #[test]
+    fn show_places_popup_below_cursor_when_it_fits() {
+        let mut ac = popup_with(3);
+        ac.cursor_screen_pos = egui::pos2(10.0, 100.0);
+        let rect = render(&ac).expect("popup rendered");
+        assert_eq!(rect.min, egui::pos2(10.0, 100.0));
+        assert!(rect.height() >= 60.0 && rect.height() < 80.0, "{rect:?}");
+    }
+
+    #[test]
+    fn show_flips_popup_above_cursor_near_bottom_edge() {
+        let mut ac = popup_with(3);
+        ac.cursor_screen_pos = egui::pos2(10.0, 590.0);
+        let rect = render(&ac).expect("popup rendered");
+        // 590 - (3 * 20 + 8) - 20
+        assert_eq!(rect.min, egui::pos2(10.0, 502.0));
+    }
+
+    #[test]
+    fn show_limits_visible_rows_and_scrolls_to_selection() {
+        let mut ac = popup_with(12);
+        for _ in 0..10 {
+            ac.move_down();
+        }
+        assert_eq!(ac.selected, 10);
+        ac.cursor_screen_pos = egui::pos2(0.0, 0.0);
+        let rect = render(&ac).expect("popup rendered");
+        // At most 8 rows are drawn: same height as a popup with exactly 8 items,
+        // taller than one with 7.
+        let eight = render(&popup_with(8)).unwrap();
+        let seven = render(&popup_with(7)).unwrap();
+        assert_eq!(rect.height(), eight.height(), "{rect:?}");
+        assert!(rect.height() > seven.height() + 19.0);
+    }
+}

@@ -55,3 +55,66 @@ pub enum DebugSessionState {
     },
     Terminated,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_state_defaults_to_idle() {
+        assert_eq!(DebugSessionState::default(), DebugSessionState::Idle);
+    }
+
+    #[test]
+    fn paused_states_compare_by_thread() {
+        assert_eq!(
+            DebugSessionState::Paused { thread_id: 1 },
+            DebugSessionState::Paused { thread_id: 1 }
+        );
+        assert_ne!(
+            DebugSessionState::Paused { thread_id: 1 },
+            DebugSessionState::Paused { thread_id: 2 }
+        );
+        assert_ne!(DebugSessionState::Running, DebugSessionState::Launching);
+    }
+
+    #[test]
+    fn types_are_cloneable_and_debuggable() {
+        let cfg = DapConfig {
+            adapter_cmd: "python3".into(),
+            adapter_args: vec!["-m".into(), "debugpy.adapter".into()],
+            launch_config: serde_json::json!({"program": "${file}"}),
+        };
+        let c = cfg.clone();
+        assert_eq!(c.adapter_args, cfg.adapter_args);
+        assert!(format!("{c:?}").contains("debugpy.adapter"));
+
+        let bp = Breakpoint {
+            file: PathBuf::from("a.rs"),
+            line: 3,
+            verified: true,
+            id: Some(7),
+        };
+        assert_eq!(bp.clone().id, Some(7));
+        assert!(format!("{bp:?}").contains("a.rs"));
+
+        let f = StackFrame {
+            id: 1,
+            name: "main".into(),
+            file: None,
+            line: 1,
+        };
+        assert_eq!(f.clone().name, "main");
+        assert!(format!("{f:?}").contains("main"));
+
+        let v = Variable {
+            name: "x".into(),
+            value: "1".into(),
+            var_type: Some("i32".into()),
+            variables_reference: 0,
+        };
+        assert_eq!(v.clone().var_type.as_deref(), Some("i32"));
+        assert!(format!("{v:?}").contains("i32"));
+        assert!(format!("{:?}", DebugSessionState::Terminated).contains("Terminated"));
+    }
+}

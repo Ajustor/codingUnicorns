@@ -80,3 +80,69 @@ pub(super) fn find_matching_bracket(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn find(src: &str, row: usize, col: usize) -> Option<(usize, usize, usize, usize)> {
+        find_matching_bracket(&Buffer::from_str(src), row, col)
+    }
+
+    #[test]
+    fn matches_from_opening_bracket_on_same_line() {
+        assert_eq!(find("fn a() {", 0, 4), Some((0, 4, 0, 5)));
+        assert_eq!(find("x[1]", 0, 1), Some((0, 1, 0, 3)));
+    }
+
+    #[test]
+    fn matches_from_closing_bracket_on_same_line() {
+        assert_eq!(find("fn a() {", 0, 5), Some((0, 4, 0, 5)));
+        assert_eq!(find("x[1]", 0, 3), Some((0, 1, 0, 3)));
+    }
+
+    #[test]
+    fn matches_bracket_just_before_cursor() {
+        // Cursor sits after ')' on a space.
+        assert_eq!(find("a() b", 0, 3), Some((0, 1, 0, 2)));
+        // Cursor at end of line, after '}'.
+        assert_eq!(find("{}", 0, 2), Some((0, 0, 0, 1)));
+    }
+
+    #[test]
+    fn bracket_under_cursor_takes_precedence() {
+        // col 2 is '(' (under cursor) and col 1 is ')' (before cursor).
+        assert_eq!(find("()(x)", 0, 2), Some((0, 2, 0, 4)));
+    }
+
+    #[test]
+    fn nested_brackets_of_same_kind() {
+        assert_eq!(find("((a)(b))", 0, 0), Some((0, 0, 0, 7)));
+        assert_eq!(find("((a)(b))", 0, 7), Some((0, 0, 0, 7)));
+        assert_eq!(find("((a)(b))", 0, 4), Some((0, 4, 0, 6)));
+    }
+
+    #[test]
+    fn matches_across_lines_in_both_directions() {
+        let src = "{\n  {}\n  (x)\n}";
+        assert_eq!(find(src, 0, 0), Some((0, 0, 3, 0)));
+        assert_eq!(find(src, 3, 0), Some((0, 0, 3, 0)));
+        assert_eq!(find(src, 3, 1), Some((0, 0, 3, 0)));
+    }
+
+    #[test]
+    fn unmatched_brackets_return_none() {
+        assert_eq!(find("(abc", 0, 0), None);
+        assert_eq!(find("(\nabc\n", 0, 0), None);
+        assert_eq!(find("abc)", 0, 3), None);
+        assert_eq!(find("a\nb]", 1, 1), None);
+    }
+
+    #[test]
+    fn non_bracket_positions_return_none() {
+        assert_eq!(find("abc", 0, 0), None);
+        assert_eq!(find("abc", 0, 1), None);
+        assert_eq!(find("", 0, 0), None);
+        assert_eq!(find("(x)", 5, 0), None);
+    }
+}

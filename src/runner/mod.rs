@@ -314,3 +314,359 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
 
     configs
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(name: &str, command: &str, cwd: &str) -> RunConfig {
+        RunConfig {
+            name: name.to_string(),
+            command: command.to_string(),
+            cwd: cwd.to_string(),
+            env: vec![],
+            args: vec![],
+        }
+    }
+
+    fn names(configs: &[RunConfig]) -> Vec<&str> {
+        configs.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    fn touch(dir: &Path, name: &str, content: &str) {
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    // ── RunConfig::resolve ─────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_substitutes_all_variables_in_command_args_and_cwd() {
+        let ws = PathBuf::from("ws");
+        let file = PathBuf::from("ws").join("src").join("app.test.py");
+        let mut c = cfg(
+            "x",
+            "run ${file} in ${fileDir} named ${fileName}",
+            "${workspaceRoot}",
+        );
+        c.args = vec!["--root=${workspaceRoot}".into(), "${fileName}".into()];
+        c.env = vec![("K".into(), "V".into())];
+        let r = c.resolve(Some(&ws), Some(&file));
+        let file_s = file.to_string_lossy();
+        let dir_s = file.parent().unwrap().to_string_lossy();
+        assert_eq!(
+            r.command,
+            format!("run {file_s} in {dir_s} named app.test --root=ws app.test")
+        );
+        assert_eq!(r.cwd, "ws");
+        assert_eq!(r.env, vec![("K".to_string(), "V".to_string())]);
+    }
+
+    #[test]
+    fn resolve_without_file_falls_back_to_workspace_for_file_dir() {
+        let ws = PathBuf::from("root");
+        let c = cfg("x", "[${file}][${fileName}]", "${fileDir}");
+        let r = c.resolve(Some(&ws), None);
+        assert_eq!(r.command, "[][]");
+        assert_eq!(r.cwd, "root");
+    }
+
+    #[test]
+    fn resolve_without_anything_yields_empty_substitutions() {
+        let c = cfg("x", "echo ${workspaceRoot}!", "${fileDir}");
+        let r = c.resolve(None, None);
+        assert_eq!(r.command, "echo !");
+        assert_eq!(r.cwd, "");
+    }
+
+    #[test]
+    fn resolve_leaves_unknown_variables_and_plain_text_untouched() {
+        let c = cfg("x", "echo ${HOME} $PATH", "/abs");
+        let r = c.resolve(Some(Path::new("w")), Some(Path::new("f.rs")));
+        assert_eq!(r.command, "echo ${HOME} $PATH");
+        assert_eq!(r.cwd, "/abs");
+    }
+
+    // ── build_command ──────────────────────────────────────────────────────
+
+    #[test]
+    fn build_command_none_without_configs() {
+        let rm = RunManager::new();
+        assert!(rm.active_config().is_none());
+        assert!(rm.build_command(None, None).is_none());
+    }
+
+    #[test]
+    fn build_command_with_empty_cwd_sends_only_command() {
+        let mut rm = RunManager::default();
+        rm.add_config(cfg("x", "cargo run", ""));
+        assert_eq!(rm.build_command(None, None).unwrap(), "cargo run\r");
+    }
+
+    #[test]
+    fn build_command_changes_directory_on_separate_line() {
+        let mut rm = RunManager::new();
+        rm.add_config(cfg("x", "make", "${workspaceRoot}"));
+        assert_eq!(
+            rm.build_command(Some(Path::new("proj")), None).unwrap(),
+            "cd proj\rmake\r"
+        );
+    }
+
+    #[test]
+    fn build_command_quotes_cwd_with_spaces_or_parens() {
+        let mut rm = RunManager::new();
+        rm.add_config(cfg("x", "make", "${workspaceRoot}"));
+        assert_eq!(
+            rm.build_command(Some(Path::new("my proj")), None).unwrap(),
+            "cd \"my proj\"\rmake\r"
+        );
+        assert_eq!(
+            rm.build_command(Some(Path::new("x(86)")), None).unwrap(),
+            "cd \"x(86)\"\rmake\r"
+        );
+    }
+
+    #[test]
+    fn shell_escape_escapes_embedded_quotes_only_when_quoting() {
+        assert_eq!(shell_escape("plain"), "plain");
+        assert_eq!(shell_escape("a\"b"), "a\"b");
+        assert_eq!(shell_escape("a \"b\""), "\"a \\\"b\\\"\"");
+    }
+
+    #[test]
+    fn build_command_uses_active_config() {
+        let mut rm = RunManager::new();
+        rm.add_config(cfg("a", "first", ""));
+        rm.add_config(cfg("b", "second", ""));
+        rm.active_config = 1;
+        assert_eq!(rm.active_config().unwrap().name, "b");
+        assert_eq!(rm.build_command(None, None).unwrap(), "second\r");
+        rm.active_config = 5;
+        assert!(rm.build_command(None, None).is_none());
+    }
+
+    // ── add / remove ───────────────────────────────────────────────────────
+
+    #[test]
+    fn remove_config_clamps_active_index() {
+        let mut rm = RunManager::new();
+        for n in ["a", "b", "c"] {
+            rm.add_config(cfg(n, n, ""));
+        }
+        rm.active_config = 2;
+        rm.remove_config(2);
+        assert_eq!(names(&rm.configs), ["a", "b"]);
+        assert_eq!(rm.active_config, 1);
+
+        // Removing before the active one keeps the index if still valid.
+        rm.active_config = 0;
+        rm.remove_config(1);
+        assert_eq!(names(&rm.configs), ["a"]);
+        assert_eq!(rm.active_config, 0);
+
+        // Out-of-range is a no-op.
+        rm.remove_config(7);
+        assert_eq!(rm.configs.len(), 1);
+
+        // Removing the last one leaves the index alone (nothing to clamp to).
+        rm.remove_config(0);
+        assert!(rm.configs.is_empty());
+        assert_eq!(rm.active_config, 0);
+        assert!(rm.active_config().is_none());
+    }
+
+    // ── auto detection ─────────────────────────────────────────────────────
+
+    #[test]
+    fn auto_detect_empty_workspace_has_only_run_current_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = auto_detect_configs(dir.path());
+        assert_eq!(names(&c), ["Run current file"]);
+        assert_eq!(c[0].command, "${file}");
+        assert_eq!(c[0].cwd, "${fileDir}");
+    }
+
+    #[test]
+    fn auto_detect_cargo_project() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Cargo.toml", "[package]");
+        let c = auto_detect_configs(dir.path());
+        assert_eq!(
+            names(&c),
+            ["Cargo Run", "Cargo Test", "Cargo Build", "Run current file"]
+        );
+        assert_eq!(c[1].command, "cargo test");
+        assert!(c[..3].iter().all(|c| c.cwd == "${workspaceRoot}"));
+    }
+
+    #[test]
+    fn auto_detect_npm_scripts_only_present_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(
+            dir.path(),
+            "package.json",
+            r#"{"scripts": {"dev": "vite", "build": "vite build"}}"#,
+        );
+        let c = auto_detect_configs(dir.path());
+        assert_eq!(
+            names(&c),
+            ["npm run dev", "npm run build", "Run current file"]
+        );
+
+        touch(
+            dir.path(),
+            "package.json",
+            r#"{"scripts": {"start": "a", "dev": "b", "test": "c", "build": "d"}}"#,
+        );
+        let c = auto_detect_configs(dir.path());
+        assert_eq!(
+            names(&c),
+            [
+                "npm start",
+                "npm run dev",
+                "npm test",
+                "npm run build",
+                "Run current file"
+            ]
+        );
+        assert_eq!(c[2].command, "npm test");
+    }
+
+    #[test]
+    fn auto_detect_python_go_make_docker() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "manage.py", "");
+        touch(dir.path(), "main.py", "");
+        touch(dir.path(), "go.mod", "module x");
+        touch(dir.path(), "makefile", "all:");
+        touch(dir.path(), "docker-compose.yaml", "");
+        let c = auto_detect_configs(dir.path());
+        assert_eq!(
+            names(&c),
+            [
+                "Django run",
+                "Run main.py",
+                "Go run",
+                "Go test",
+                "make",
+                "Docker Compose Up",
+                "Run current file"
+            ]
+        );
+        assert_eq!(c[0].command, "python3 manage.py runserver");
+        assert_eq!(c[3].command, "go test ./...");
+        assert_eq!(c[5].command, "docker-compose up");
+    }
+
+    #[test]
+    fn auto_detect_alternate_file_names() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Makefile", "all:");
+        touch(dir.path(), "docker-compose.yml", "");
+        let c = auto_detect_configs(dir.path());
+        assert_eq!(names(&c), ["make", "Docker Compose Up", "Run current file"]);
+    }
+
+    // ── workspace loading / saving ─────────────────────────────────────────
+
+    #[test]
+    fn load_for_workspace_without_launch_file_auto_detects() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Cargo.toml", "");
+        let mut rm = RunManager::new();
+        rm.active_config = 3;
+        rm.load_for_workspace(dir.path());
+        assert_eq!(rm.configs[0].name, "Cargo Run");
+        assert_eq!(rm.active_config, 0);
+    }
+
+    #[test]
+    fn load_for_workspace_prefers_launch_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Cargo.toml", "");
+        let cu = dir.path().join(".coding-unicorns");
+        std::fs::create_dir_all(&cu).unwrap();
+        std::fs::write(
+            cu.join("launch.toml"),
+            r#"
+            [[configurations]]
+            name = "Serve"
+            command = "python -m http.server"
+            cwd = "${workspaceRoot}/public"
+            env = [["PORT", "8000"]]
+            args = ["8000"]
+
+            [[configurations]]
+            name = "Minimal"
+            command = "true"
+            cwd = ""
+            "#,
+        )
+        .unwrap();
+        let mut rm = RunManager::new();
+        rm.active_config = 1;
+        rm.load_for_workspace(dir.path());
+        assert_eq!(names(&rm.configs), ["Serve", "Minimal"]);
+        assert_eq!(rm.active_config, 0);
+        let serve = &rm.configs[0];
+        assert_eq!(serve.env, vec![("PORT".to_string(), "8000".to_string())]);
+        assert_eq!(serve.args, vec!["8000".to_string()]);
+        // env/args default to empty when omitted.
+        assert!(rm.configs[1].env.is_empty() && rm.configs[1].args.is_empty());
+    }
+
+    #[test]
+    fn load_for_workspace_with_invalid_launch_toml_falls_back_to_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "go.mod", "");
+        let cu = dir.path().join(".coding-unicorns");
+        std::fs::create_dir_all(&cu).unwrap();
+        std::fs::write(cu.join("launch.toml"), "[[configurations]]\nname = 1").unwrap();
+        let mut rm = RunManager::new();
+        rm.load_for_workspace(dir.path());
+        assert_eq!(
+            names(&rm.configs),
+            ["Go run", "Go test", "Run current file"]
+        );
+    }
+
+    #[test]
+    fn empty_launch_toml_yields_no_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Cargo.toml", "");
+        let cu = dir.path().join(".coding-unicorns");
+        std::fs::create_dir_all(&cu).unwrap();
+        std::fs::write(cu.join("launch.toml"), "").unwrap();
+        let mut rm = RunManager::new();
+        rm.load_for_workspace(dir.path());
+        assert!(rm.configs.is_empty());
+    }
+
+    #[test]
+    fn save_then_reload_round_trips_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rm = RunManager::new();
+        rm.load_for_workspace(dir.path());
+        let mut c = cfg("Custom", "node index.js", "${workspaceRoot}");
+        c.env = vec![("NODE_ENV".into(), "dev".into())];
+        c.args = vec!["--inspect".into()];
+        rm.configs = vec![c];
+        rm.save();
+        assert!(dir.path().join(".coding-unicorns/launch.toml").exists());
+
+        let mut rm2 = RunManager::new();
+        rm2.load_for_workspace(dir.path());
+        assert_eq!(names(&rm2.configs), ["Custom"]);
+        assert_eq!(rm2.configs[0].env[0].1, "dev");
+        assert_eq!(rm2.configs[0].args, vec!["--inspect".to_string()]);
+    }
+
+    #[test]
+    fn save_without_workspace_writes_nothing() {
+        let rm = RunManager::new();
+        let cwd_launch = Path::new(".coding-unicorns").join("launch.toml");
+        let existed = cwd_launch.exists();
+        rm.save(); // must be a silent no-op, never writing relative to the CWD
+        assert_eq!(cwd_launch.exists(), existed);
+    }
+}

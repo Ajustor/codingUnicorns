@@ -416,4 +416,323 @@ mod token_parse_tests {
             3
         );
     }
+
+    #[test]
+    fn all_kinds_are_mapped() {
+        let json = r#"[{"text":"a","kind":"keyword"},{"text":"b","kind":"type"},{"text":"c","kind":"string"},{"text":"d","kind":"comment"},{"text":"e","kind":"number"},{"text":"f","kind":"function"},{"text":"g","kind":"macro"},{"text":"h","kind":"weird"}]"#;
+        let kinds: Vec<TokenKind> = parse_token_json(json)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Keyword,
+                TokenKind::KeywordType,
+                TokenKind::String,
+                TokenKind::Comment,
+                TokenKind::Number,
+                TokenKind::Function,
+                TokenKind::Macro,
+                TokenKind::Normal,
+            ]
+        );
+    }
+
+    #[test]
+    fn whitespace_and_empty_arrays() {
+        assert_eq!(parse_token_json("  []  ").unwrap().len(), 0);
+        let toks = parse_token_json(
+            r#"[ {"text": "x", "kind": "number"} , {"text":"y","kind":"normal"} ]"#,
+        )
+        .unwrap();
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].text, "x");
+        assert_eq!(toks[0].kind, TokenKind::Number);
+    }
+
+    #[test]
+    fn non_array_input_is_rejected() {
+        assert!(parse_token_json("").is_none());
+        assert!(parse_token_json("{}").is_none());
+        assert!(parse_token_json("[{").is_none());
+        assert!(parse_token_json("null").is_none());
+    }
+
+    #[test]
+    fn malformed_elements_stop_or_fail_parsing() {
+        // A non-object element stops parsing; earlier tokens are kept.
+        let toks = parse_token_json(r#"[{"text":"a","kind":"keyword"},42]"#).unwrap();
+        assert_eq!(toks.len(), 1);
+        // Unterminated object → stop.
+        let toks = parse_token_json(r#"[{"text":"a","kind":"keyword"},{"text":"b"]"#).unwrap();
+        assert_eq!(toks.len(), 1);
+        // Missing required key → whole line rejected.
+        assert!(parse_token_json(r#"[{"text":"a"}]"#).is_none());
+        assert!(parse_token_json(r#"[{"kind":"keyword"}]"#).is_none());
+        // Non-string value → rejected.
+        assert!(parse_token_json(r#"[{"text":1,"kind":"keyword"}]"#).is_none());
+    }
+
+    #[test]
+    fn extract_json_str_unescapes() {
+        let obj = r#""text":"a\"b\\c\nd\re\tf\/g","kind":"x""#;
+        assert_eq!(extract_json_str(obj, "text").unwrap(), "a\"b\\c\nd\re\tf/g");
+        assert_eq!(extract_json_str(obj, "kind").unwrap(), "x");
+        assert!(extract_json_str(obj, "missing").is_none());
+        assert!(extract_json_str(r#""text":"unterminated"#, "text").is_none());
+        assert!(extract_json_str(r#""text":"bad escape\"#, "text").is_none());
+        assert_eq!(
+            extract_json_str(r#""text":   "spaced""#, "text").unwrap(),
+            "spaced"
+        );
+    }
+
+    #[test]
+    fn parse_document_json_lines() {
+        let json = "[[{\"text\":\"fn\",\"kind\":\"keyword\"}],\n[],[{\"text\":\"]\",\"kind\":\"normal\"},{\"text\":\"\\\"\",\"kind\":\"string\"}]]";
+        let lines = parse_document_json(json).unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0][0].text, "fn");
+        assert!(lines[1].is_empty());
+        assert_eq!(
+            lines[2][0].text, "]",
+            "bracket inside string does not end the line"
+        );
+        assert_eq!(lines[2][1].text, "\"");
+    }
+
+    #[test]
+    fn parse_document_json_edge_cases() {
+        assert!(parse_document_json("[]").is_none());
+        assert!(parse_document_json("  [ ]  ").is_none());
+        assert!(parse_document_json("nope").is_none());
+        assert!(parse_document_json("[[").is_none());
+        // Non-array element stops parsing.
+        let lines = parse_document_json(r#"[[{"text":"a","kind":"normal"}], 5]"#).unwrap();
+        assert_eq!(lines.len(), 1);
+        // A malformed line becomes an empty token list rather than failing the document.
+        let lines =
+            parse_document_json(r#"[[{"text":"a"}],[{"text":"b","kind":"normal"}]]"#).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].is_empty());
+        assert_eq!(lines[1][0].text, "b");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::c_char;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static RESETS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn tokenize(line: *const c_char) -> *mut c_char {
+        let s = CStr::from_ptr(line).to_str().unwrap();
+        if s == "null" {
+            return std::ptr::null_mut();
+        }
+        CString::new(format!(r#"[{{"text":"{s}","kind":"keyword"}}]"#))
+            .unwrap()
+            .into_raw()
+    }
+
+    unsafe extern "C" fn document(text: *const c_char) -> *mut c_char {
+        let s = CStr::from_ptr(text).to_str().unwrap();
+        let lines: Vec<String> = s
+            .lines()
+            .map(|l| format!(r#"[{{"text":"{l}","kind":"normal"}}]"#))
+            .collect();
+        CString::new(format!("[{}]", lines.join(",")))
+            .unwrap()
+            .into_raw()
+    }
+
+    unsafe extern "C" fn document_tsx(_text: *const c_char) -> *mut c_char {
+        CString::new(r#"[[{"text":"tsx","kind":"keyword"}]]"#)
+            .unwrap()
+            .into_raw()
+    }
+
+    unsafe extern "C" fn null_doc(_text: *const c_char) -> *mut c_char {
+        std::ptr::null_mut()
+    }
+
+    unsafe extern "C" fn hover(word: *const c_char, content: *const c_char) -> *mut c_char {
+        let w = CStr::from_ptr(word).to_str().unwrap();
+        let c = CStr::from_ptr(content).to_str().unwrap();
+        if w == "missing" {
+            return std::ptr::null_mut();
+        }
+        CString::new(format!("{w} in {} bytes", c.len()))
+            .unwrap()
+            .into_raw()
+    }
+
+    unsafe extern "C" fn free_string(p: *mut c_char) {
+        drop(CString::from_raw(p));
+    }
+
+    unsafe extern "C" fn reset() {
+        RESETS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A handle to the running test binary — keeps `_lib` valid without a real extension.
+    fn this_lib() -> libloading::Library {
+        #[cfg(windows)]
+        let l = libloading::os::windows::Library::this().unwrap();
+        #[cfg(unix)]
+        let l = libloading::os::unix::Library::this();
+        l.into()
+    }
+
+    fn full_plugin() -> FfiLangPlugin {
+        FfiLangPlugin {
+            _lib: this_lib(),
+            language_id: "testlang".into(),
+            extensions: vec!["tl".into(), "tsx".into(), "jsx".into()],
+            lsp_server: Some("tl-lsp".into()),
+            lsp_args: vec!["--stdio".into()],
+            tokenize_fn: Some(tokenize),
+            free_fn: Some(free_string),
+            hover_fn: Some(hover),
+            reset_tokenizer_fn: Some(reset),
+            tokenize_document_fn: Some(document),
+            tokenize_document_tsx_fn: Some(document_tsx),
+        }
+    }
+
+    fn bare_plugin() -> FfiLangPlugin {
+        FfiLangPlugin {
+            _lib: this_lib(),
+            language_id: "bare".into(),
+            extensions: vec!["tl".into()],
+            lsp_server: None,
+            lsp_args: vec![],
+            tokenize_fn: None,
+            free_fn: None,
+            hover_fn: None,
+            reset_tokenizer_fn: None,
+            tokenize_document_fn: None,
+            tokenize_document_tsx_fn: None,
+        }
+    }
+
+    #[test]
+    fn metadata_comes_from_fields() {
+        let p = full_plugin();
+        assert_eq!(p.name(), "testlang");
+        assert_eq!(p.file_extensions(), &["tl", "tsx", "jsx"]);
+        assert_eq!(
+            p.lsp_server_command(),
+            Some(("tl-lsp".to_string(), vec!["--stdio".to_string()]))
+        );
+        assert!(bare_plugin().lsp_server_command().is_none());
+    }
+
+    #[test]
+    fn tokenize_line_calls_ffi_for_handled_languages() {
+        let p = full_plugin();
+        let toks = p.tokenize_line("tl", "let").unwrap();
+        assert_eq!(toks.len(), 1);
+        assert_eq!(toks[0].text, "let");
+        assert_eq!(toks[0].kind, TokenKind::Keyword);
+        assert!(p.tokenize_line("rs", "let").is_none(), "unhandled language");
+        assert!(
+            p.tokenize_line("tl", "null").is_none(),
+            "null pointer result"
+        );
+        assert!(p.tokenize_line("tl", "nul\0byte").is_none(), "interior NUL");
+    }
+
+    #[test]
+    fn tokenize_document_selects_tsx_variant() {
+        let p = full_plugin();
+        let lines = p.tokenize_document("tl", "a\nb").unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1][0].text, "b");
+        for lang in ["tsx", "jsx"] {
+            let lines = p.tokenize_document(lang, "x").unwrap();
+            assert_eq!(lines[0][0].text, "tsx");
+        }
+        assert!(p.tokenize_document("rs", "x").is_none());
+        assert!(p.tokenize_document("tl", "bad\0").is_none());
+    }
+
+    #[test]
+    fn tsx_falls_back_to_plain_document_tokenizer() {
+        let mut p = full_plugin();
+        p.tokenize_document_tsx_fn = None;
+        let lines = p.tokenize_document("tsx", "plain").unwrap();
+        assert_eq!(lines[0][0].text, "plain");
+        p.tokenize_document_fn = Some(null_doc);
+        assert!(p.tokenize_document("tl", "x").is_none());
+    }
+
+    #[test]
+    fn hover_info_calls_ffi() {
+        let p = full_plugin();
+        assert_eq!(
+            p.hover_info("tl", "foo", "abcd").as_deref(),
+            Some("foo in 4 bytes")
+        );
+        assert!(p.hover_info("tl", "missing", "").is_none());
+        assert!(p.hover_info("rs", "foo", "").is_none());
+        assert!(p.hover_info("tl", "f\0o", "").is_none());
+        assert!(p.hover_info("tl", "foo", "c\0").is_none());
+    }
+
+    #[test]
+    fn missing_symbols_disable_features() {
+        let p = bare_plugin();
+        assert!(p.tokenize_line("tl", "x").is_none());
+        assert!(p.tokenize_document("tl", "x").is_none());
+        assert!(p.tokenize_document("tsx", "x").is_none());
+        assert!(p.hover_info("tl", "x", "").is_none());
+        p.reset_tokenizer(); // no-op without the symbol
+
+        // A producer without a matching free function is never called (would leak).
+        let mut p = full_plugin();
+        p.free_fn = None;
+        assert!(p.tokenize_line("tl", "x").is_none());
+        assert!(p.tokenize_document("tl", "x").is_none());
+        assert!(p.hover_info("tl", "x", "").is_none());
+    }
+
+    #[test]
+    fn reset_tokenizer_calls_ffi() {
+        let p = full_plugin();
+        let before = RESETS.load(Ordering::SeqCst);
+        p.reset_tokenizer();
+        assert_eq!(RESETS.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn update_returns_empty_response() {
+        let mut p = full_plugin();
+        let ctx = PluginContext {
+            buffer_text: "",
+            filename: None,
+            cursor_row: 0,
+            cursor_col: 0,
+            is_modified: false,
+            hovered_word: None,
+        };
+        let r = p.update(&ctx);
+        assert!(r.status_text.is_none() && r.notifications.is_empty());
+    }
+
+    #[test]
+    fn load_missing_library_fails() {
+        let p = std::env::temp_dir().join(format!("cu-missing-{}.dll", uuid::Uuid::new_v4()));
+        assert!(FfiLangPlugin::load(&p, None, vec![]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn load_library_without_language_id_fails() {
+        assert!(FfiLangPlugin::load(Path::new("kernel32.dll"), None, vec![]).is_err());
+    }
 }

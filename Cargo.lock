@@ -763,6 +763,7 @@ dependencies = [
  "egui",
  "log",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -814,6 +815,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "toml",
  "ureq",
  "uuid",
