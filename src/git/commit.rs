@@ -1,3 +1,4 @@
+use super::remote::{fetch_remote, push_remote};
 use super::GitStatus;
 
 impl GitStatus {
@@ -78,9 +79,7 @@ impl GitStatus {
             .find_remote("origin")
             .map_err(|e| format!("Remote error: {e}"))?;
         let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
-        remote
-            .push(&[&refspec], None)
-            .map_err(|e| format!("Push error: {e}"))?;
+        push_remote(&mut remote, &[&refspec])?;
         self.refresh();
         Ok(())
     }
@@ -100,9 +99,7 @@ impl GitStatus {
         let mut remote = repo
             .find_remote("origin")
             .map_err(|e| format!("Remote error: {e}"))?;
-        remote
-            .fetch(&[&branch_name], None, None)
-            .map_err(|e| format!("Fetch error: {e}"))?;
+        fetch_remote(&mut remote, &[&branch_name])?;
         let remote_ref = format!("refs/remotes/origin/{}", branch_name);
         let remote_oid = repo
             .find_reference(&remote_ref)
@@ -317,6 +314,19 @@ mod tests {
         let missing = r.path().join("no-such-remote-dir");
         r.repo.remote("origin", &missing.to_string_lossy()).unwrap();
         assert!(s.push().unwrap_err().starts_with("Push error"));
+    }
+
+    #[test]
+    fn push_non_fast_forward_is_reported_as_rejected() {
+        let (r, _bare, url) = with_origin();
+        let (_other_dir, other) = clone(&url);
+        commit_in(&other, "b.txt", "remote", "remote work");
+        push_from(&other);
+        r.write("a.txt", "local");
+        r.commit_all("local work");
+        let mut s = r.status();
+        let err = s.push().unwrap_err();
+        assert!(err.contains("non-fast-forward"), "{err}");
     }
 
     #[test]
