@@ -612,22 +612,25 @@ mod tests {
 
     #[test]
     fn kind_for_location_detects_program_files() {
-        let pf = std::ffi::OsString::from(r"C:\Program Files");
+        // Built from components so the test holds on every platform's separator.
+        let root = std::env::temp_dir();
+        let pf_dir = root.join("Program Files");
+        let pf = pf_dir.clone().into_os_string();
         assert_eq!(
             kind_for_location(
-                Some(PathBuf::from(r"C:\Program Files\Coding Unicorns\cu.exe")),
+                Some(pf_dir.join("Coding Unicorns").join("cu.exe")),
                 Some(pf.clone())
             ),
             InstallKind::Msi
         );
         assert_eq!(
-            kind_for_location(Some(PathBuf::from(r"D:\tools\cu.exe")), Some(pf.clone())),
+            kind_for_location(Some(root.join("tools").join("cu.exe")), Some(pf.clone())),
             InstallKind::ReplaceBinary
         );
         // Path-component match, not string prefix.
         assert_eq!(
             kind_for_location(
-                Some(PathBuf::from(r"C:\Program Files (x86)\cu.exe")),
+                Some(root.join("Program Files (x86)").join("cu.exe")),
                 Some(pf.clone())
             ),
             InstallKind::ReplaceBinary
@@ -637,7 +640,7 @@ mod tests {
             InstallKind::ReplaceBinary
         );
         assert_eq!(
-            kind_for_location(Some(PathBuf::from(r"C:\x\cu.exe")), None),
+            kind_for_location(Some(root.join("x").join("cu.exe")), None),
             InstallKind::ReplaceBinary
         );
     }

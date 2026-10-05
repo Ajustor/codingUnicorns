@@ -14,9 +14,9 @@ pub(super) fn compute_line_diff(path: &std::path::Path, num_lines: usize) -> Vec
         Some(w) => w.to_path_buf(),
         None => return result,
     };
-    let rel = match path.strip_prefix(&workdir) {
-        Ok(r) => r,
-        Err(_) => return result,
+    let rel = match crate::git::relative_to_workdir(path, &workdir) {
+        Some(r) => r,
+        None => return result,
     };
     let head = match repo.head() {
         Ok(h) => h,
@@ -31,7 +31,7 @@ pub(super) fn compute_line_diff(path: &std::path::Path, num_lines: usize) -> Vec
         Ok(t) => t,
         Err(_) => return result,
     };
-    let entry = match tree.get_path(rel) {
+    let entry = match tree.get_path(&rel) {
         Ok(e) => e,
         Err(_) => {
             for s in result.iter_mut() {
