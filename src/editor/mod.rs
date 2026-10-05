@@ -8,6 +8,7 @@ pub mod folding;
 pub mod highlight;
 pub mod hover;
 pub mod indent;
+pub mod text_format;
 pub mod utils;
 
 mod input;
@@ -128,6 +129,13 @@ pub struct Editor {
     pub detected_indent_spaces: bool,
     /// Detected indent unit size (e.g. 2 or 4).
     pub detected_indent_size: usize,
+    // ── On-disk format ──────────────────────────────────────────────────────
+    /// Line ending and BOM of the open file, re-applied on save (the buffer itself
+    /// is always LF-only without a BOM).
+    pub text_format: text_format::TextFormat,
+    /// The file was not valid UTF-8 and was decoded lossily: saving it would
+    /// replace the invalid bytes with U+FFFD.
+    pub decoded_lossy: bool,
     // ── Find & Replace ───────────────────────────────────────────────────────
     pub show_replace: bool,
     pub replace_query: String,
@@ -243,6 +251,8 @@ impl Editor {
             hover_leave_instant: None,
             detected_indent_spaces: true,
             detected_indent_size: 4,
+            text_format: text_format::TextFormat::default(),
+            decoded_lossy: false,
             show_replace: false,
             replace_query: String::new(),
             find_case_sensitive: false,
@@ -271,6 +281,12 @@ impl Editor {
                 .and_then(|n| n.to_str())
                 .map(|n| n.to_string())
         });
+        // Keep the buffer LF-only without a BOM; remember the on-disk format so
+        // `save` can restore it. Callers that decode lossily set `decoded_lossy`
+        // after this call.
+        let (content, format) = text_format::normalize(content);
+        self.text_format = format;
+        self.decoded_lossy = false;
         self.buffer = Buffer::from_str(&content);
         self.cursor = Cursor::new();
         self.extra_cursors.clear();
@@ -333,7 +349,8 @@ impl Editor {
 
     pub fn save(&mut self) -> anyhow::Result<()> {
         if let Some(path) = &self.current_path {
-            std::fs::write(path, self.buffer.to_string())?;
+            let bytes = text_format::encode(&self.buffer.to_string(), self.text_format);
+            std::fs::write(path, bytes)?;
             self.is_modified = false;
             self.invalidate_line_diff();
         }
@@ -3457,6 +3474,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xfn main() {}\n");
         assert!(!ed.is_modified);
         assert!(ed.line_diff_path.is_none(), "line diff invalidated");
+    }
+
+    #[test]
+    fn crlf_and_bom_are_stripped_on_load_and_restored_on_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("win.txt");
+        let mut ed = editor_with("");
+        ed.set_content("\u{FEFF}a\r\nb\r\n".to_string(), Some(path.clone()));
+        assert_eq!(ed.buffer.to_string(), "a\nb\n");
+        assert_eq!(ed.buffer.line(0), "a");
+        assert_eq!(ed.text_format.line_ending, text_format::LineEnding::Crlf);
+        assert!(ed.text_format.bom);
+        ed.cursor.set_position(1, 1);
+        ed.insert_newline();
+        ed.insert_char('c', false);
+        ed.save().unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"\xEF\xBB\xBFa\r\nb\r\nc\r\n"
+        );
+
+        // Loading another file resets the format; new/LF files save as LF.
+        ed.set_content("x\ny".to_string(), Some(path.clone()));
+        assert_eq!(ed.text_format, text_format::TextFormat::default());
+        ed.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"x\ny");
+    }
+
+    #[test]
+    fn set_content_clears_lossy_flag() {
+        let mut ed = editor_with("");
+        ed.decoded_lossy = true;
+        ed.set_content("ok".to_string(), None);
+        assert!(!ed.decoded_lossy);
     }
 
     #[test]
