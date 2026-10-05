@@ -93,7 +93,10 @@ pub enum UpdateState {
 #[derive(Debug, Clone)]
 pub enum ExitAction {
     Relaunch,
+    /// Install the MSI; the app stays closed (plain quit).
     RunMsi(PathBuf),
+    /// Install the MSI, then start the upgraded app ("Restart now").
+    RunMsiThenRelaunch(PathBuf),
 }
 
 enum Msg {
@@ -217,7 +220,7 @@ impl Updater {
             return;
         }
         self.exit_action = Some(match &self.staged_msi {
-            Some(msi) => ExitAction::RunMsi(msi.clone()),
+            Some(msi) => ExitAction::RunMsiThenRelaunch(msi.clone()),
             None => ExitAction::Relaunch,
         });
     }
@@ -290,10 +293,73 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
             .arg("/passive")
             .spawn()
             .map(|_| ()),
+        // The app is exiting, so a detached PowerShell waits for msiexec and then starts
+        // the upgraded executable (MajorUpgrade keeps the install location).
+        ExitAction::RunMsiThenRelaunch(msi) => std::env::current_exe().and_then(|exe| {
+            let script = msi_relaunch_script(msi, &exe, workspace);
+            let mut cmd = std::process::Command::new("powershell.exe");
+            cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
+                .arg("-EncodedCommand")
+                .arg(encode_powershell_command(&script));
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            cmd.spawn().map(|_| ())
+        }),
     };
     if let Err(e) = result {
         log::error!("failed to apply update on exit: {e}");
     }
+}
+
+/// PowerShell that installs `msi` and, on success, relaunches `exe` (with `workspace`).
+fn msi_relaunch_script(
+    msi: &std::path::Path,
+    exe: &std::path::Path,
+    workspace: Option<&std::path::Path>,
+) -> String {
+    // Single-quoted PowerShell literal (a `'` is doubled inside it).
+    let literal =
+        |p: &std::path::Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
+    // `-ArgumentList` entries are joined with spaces, so paths need inner double quotes
+    // (Windows paths can't contain `"`).
+    let arg =
+        |p: &std::path::Path| format!("'\"{}\"'", p.display().to_string().replace('\'', "''"));
+    let relaunch_args = match workspace {
+        Some(ws) => format!(" -ArgumentList {}", arg(ws)),
+        None => String::new(),
+    };
+    format!(
+        "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i',{msi},'/passive' -Wait -PassThru\n\
+         # 3010: success, reboot required\n\
+         if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {{ Start-Process -FilePath {exe}{relaunch_args} }}\n",
+        msi = arg(msi),
+        exe = literal(exe),
+    )
+}
+
+/// Encode `script` for `powershell -EncodedCommand` (base64 of UTF-16LE).
+fn encode_powershell_command(script: &str) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &b)| acc | (b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[(n >> (18 - 6 * i) & 0x3f) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 fn http_get(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
@@ -872,8 +938,46 @@ mod tests {
         u.staged_msi = Some(PathBuf::from("a.msi"));
         u.schedule_restart();
         assert!(
-            matches!(&u.exit_action, Some(ExitAction::RunMsi(p)) if p == &PathBuf::from("a.msi"))
+            matches!(&u.exit_action, Some(ExitAction::RunMsiThenRelaunch(p)) if p == &PathBuf::from("a.msi")),
+            "Restart now must relaunch after the MSI"
         );
+    }
+
+    #[test]
+    fn encode_powershell_command_is_base64_utf16le() {
+        // "ab" -> UTF-16LE 61 00 62 00
+        assert_eq!(encode_powershell_command("ab"), "YQBiAA==");
+        assert_eq!(encode_powershell_command("a"), "YQA=");
+        assert_eq!(encode_powershell_command(""), "");
+        // 3 UTF-16 units = 6 bytes: no padding
+        assert_eq!(encode_powershell_command("abc"), "YQBiAGMA");
+    }
+
+    #[test]
+    fn msi_relaunch_script_waits_then_relaunches_with_workspace() {
+        let s = msi_relaunch_script(
+            std::path::Path::new(r"C:\Temp\cu.msi"),
+            std::path::Path::new(r"C:\Program Files\Coding Unicorns\cu.exe"),
+            Some(std::path::Path::new(r"C:\dev\it's mine")),
+        );
+        assert!(
+            s.contains(r#"-ArgumentList '/i','"C:\Temp\cu.msi"','/passive' -Wait -PassThru"#),
+            "{s}"
+        );
+        assert!(
+            s.contains(r"-FilePath 'C:\Program Files\Coding Unicorns\cu.exe' -ArgumentList"),
+            "{s}"
+        );
+        // Single quotes are doubled inside the PowerShell literal.
+        assert!(s.contains(r#"-ArgumentList '"C:\dev\it''s mine"'"#), "{s}");
+        assert!(s.contains("-eq 3010"));
+
+        let s = msi_relaunch_script(
+            std::path::Path::new("a.msi"),
+            std::path::Path::new("cu.exe"),
+            None,
+        );
+        assert!(s.contains("Start-Process -FilePath 'cu.exe' }"), "{s}");
     }
 
     #[test]
