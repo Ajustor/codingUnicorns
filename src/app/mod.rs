@@ -27,6 +27,7 @@ mod debug_ops;
 pub mod file_ops;
 mod lsp_ops;
 mod navigation;
+pub mod session;
 mod update_ops;
 mod workspace_search;
 
@@ -158,6 +159,8 @@ pub struct CodingUnicorns {
     pub toasts: Vec<crate::ui::widgets::Toast>,
     /// GitHub release self-updater.
     pub updater: crate::updater::Updater,
+    /// Per-workspace session (open tabs, cursor/scroll) persistence.
+    pub session: session::SessionState,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -308,6 +311,7 @@ impl CodingUnicorns {
             pending_delete: None,
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),
+            session: session::SessionState::load(),
         };
 
         if let Some(path) = initial_path {
@@ -318,7 +322,9 @@ impl CodingUnicorns {
                 app.open_file(path);
             }
         } else {
-            // No CLI arg: restore last workspace and last file from config.
+            // No CLI arg: restore last workspace and its session (or the last
+            // file when the workspace has no saved tabs) from config.
+            let mut restored = false;
             if let Some(ws_str) = app.config.last_workspace.clone() {
                 let ws_path = PathBuf::from(&ws_str);
                 if ws_path.is_dir() {
@@ -328,9 +334,10 @@ impl CodingUnicorns {
                     app.git_status.load(ws_path.clone());
                     app.runner.load_for_workspace(&ws_path);
                     app.config.push_recent_workspace(&ws_str);
+                    restored = app.restore_session(&ws_path);
                 }
             }
-            if let Some(file_str) = app.config.last_file.clone() {
+            if let Some(file_str) = app.config.last_file.clone().filter(|_| !restored) {
                 let file_path = PathBuf::from(&file_str);
                 if file_path.is_file() {
                     // Read directly to avoid a redundant config save on startup.
@@ -373,6 +380,7 @@ impl CodingUnicorns {
 
 impl eframe::App for CodingUnicorns {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_session();
         if let Some(action) = self.updater.exit_action.take() {
             crate::updater::run_exit_action(&action, self.workspace_path.as_deref());
         }
@@ -1003,6 +1011,7 @@ impl eframe::App for CodingUnicorns {
         }
 
         crate::ui::layout::render(self, ctx);
+        self.tick_session();
 
         // Handle pending extension uninstall: unload plugin DLL first, then delete files.
         if let Some(id) = self.extensions_panel.pending_uninstall.take() {
