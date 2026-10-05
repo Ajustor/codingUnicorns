@@ -327,6 +327,7 @@ impl CodingUnicorns {
                     app.file_tree.load(ws_path.clone());
                     app.git_status.load(ws_path.clone());
                     app.runner.load_for_workspace(&ws_path);
+                    app.config.push_recent_workspace(&ws_str);
                 }
             }
             if let Some(file_str) = app.config.last_file.clone() {

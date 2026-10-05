@@ -87,7 +87,27 @@ impl CodingUnicorns {
         self.file_tree.load(path.clone());
         self.git_status.load(path.clone());
         self.runner.load_for_workspace(&path);
-        self.config.last_workspace = Some(path.to_string_lossy().to_string());
+        let path_str = path.to_string_lossy().to_string();
+        self.config.push_recent_workspace(&path_str);
+        self.config.last_workspace = Some(path_str);
+        self.config.save();
+    }
+
+    /// Open a folder picked from the "Open Recent" list. A folder that no
+    /// longer exists is dropped from the list instead.
+    pub fn open_recent_workspace(&mut self, path: PathBuf) {
+        if path.is_dir() {
+            self.open_folder(path);
+        } else {
+            self.config.remove_recent_workspace(&path.to_string_lossy());
+            self.config.save();
+            self.toast(format!("Folder not found: {}", path.display()));
+        }
+    }
+
+    /// Clear the "Open Recent" list.
+    pub fn clear_recent_workspaces(&mut self) {
+        self.config.recent_workspaces.clear();
         self.config.save();
     }
 
