@@ -8,6 +8,8 @@ pub struct GitPanel {
     pub rename_branch_name: String,
     pub rename_branch_old: String,
     pub show_rename_dialog: bool,
+    /// Optional message for the next "Stash changes".
+    pub stash_message: String,
     /// Cached conflict file paths to avoid reading files every frame.
     cached_conflict_files: Vec<String>,
     /// Number of files when cache was last computed.
@@ -24,6 +26,7 @@ impl GitPanel {
             rename_branch_name: String::new(),
             rename_branch_old: String::new(),
             show_rename_dialog: false,
+            stash_message: String::new(),
             cached_conflict_files: vec![],
             conflict_cache_file_count: 0,
         }
@@ -105,6 +108,8 @@ impl GitPanel {
 
         ui.separator();
         self.show_branches(ui, git);
+        ui.separator();
+        self.show_stashes(ui, git);
         ui.separator();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -504,6 +509,97 @@ impl GitPanel {
                     self.rename_branch_name.clear();
                 }
             });
+    }
+
+    fn show_stashes(&mut self, ui: &mut egui::Ui, git: &mut GitStatus) {
+        egui::CollapsingHeader::new(
+            egui::RichText::new(format!("STASHES ({})", git.stashes.len()))
+                .strong()
+                .small(),
+        )
+        .id_salt("stashes")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.stash_message)
+                        .desired_width(140.0)
+                        .hint_text("Stash message (optional)"),
+                );
+                if ui
+                    .add_enabled(!git.files.is_empty(), egui::Button::new("Stash changes"))
+                    .on_hover_text("Stash staged, unstaged and untracked changes")
+                    .clicked()
+                {
+                    match git.stash_save(&self.stash_message) {
+                        Ok(()) => {
+                            self.stash_message.clear();
+                            git.last_error = None;
+                        }
+                        Err(e) => git.last_error = Some(e),
+                    }
+                }
+            });
+
+            enum StashAction {
+                Apply,
+                Pop,
+                Drop,
+            }
+            let mut action: Option<(StashAction, usize)> = None;
+            for entry in &git.stashes {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("stash@{{{}}}", entry.index))
+                            .monospace()
+                            .small()
+                            .color(egui::Color32::from_gray(140)),
+                    );
+                    ui.label(egui::RichText::new(&entry.message).small());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button(
+                                egui::RichText::new("Drop")
+                                    .color(egui::Color32::from_rgb(220, 80, 80)),
+                            )
+                            .on_hover_text("Delete this stash")
+                            .clicked()
+                        {
+                            action = Some((StashAction::Drop, entry.index));
+                        }
+                        if ui
+                            .small_button("Pop")
+                            .on_hover_text("Apply and remove")
+                            .clicked()
+                        {
+                            action = Some((StashAction::Pop, entry.index));
+                        }
+                        if ui
+                            .small_button("Apply")
+                            .on_hover_text("Apply and keep")
+                            .clicked()
+                        {
+                            action = Some((StashAction::Apply, entry.index));
+                        }
+                    });
+                });
+            }
+            if git.stashes.is_empty() {
+                ui.label(
+                    egui::RichText::new("No stashes")
+                        .color(egui::Color32::GRAY)
+                        .small(),
+                );
+            }
+            if let Some((action, index)) = action {
+                let result = match action {
+                    StashAction::Apply => git.stash_apply(index),
+                    StashAction::Pop => git.stash_pop(index),
+                    StashAction::Drop => git.stash_drop(index),
+                };
+                git.last_error = result.err();
+            }
+        });
     }
 
     /// Check whether a file (given by relative path) contains git conflict markers.
