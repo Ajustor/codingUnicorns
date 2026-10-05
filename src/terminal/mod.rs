@@ -47,8 +47,12 @@ pub struct Terminal {
     master: Option<Box<dyn MasterPty + Send>>,
     /// Last (rows, cols) applied to the PTY and screen buffer.
     grid_size: (u16, u16),
-    /// Set to true when new output arrives — triggers a one-shot scroll to bottom.
+    /// Set to true when new output arrives — keeps the view pinned to the bottom
+    /// if it already was there (the user may have scrolled up to read history).
     needs_scroll: bool,
+    /// Force the view back to the bottom on the next frame, even when the user
+    /// scrolled into the scrollback (set on keyboard input / paste).
+    snap_to_bottom: bool,
     /// Whether this terminal has keyboard focus.
     focused: bool,
     /// Mouse text selection, in scrollback-then-screen line space.
@@ -76,6 +80,7 @@ impl Terminal {
             master,
             grid_size: (INITIAL_ROWS, INITIAL_COLS),
             needs_scroll: true,
+            snap_to_bottom: false,
             focused,
             selection: None,
         }
@@ -268,6 +273,7 @@ Is it installed and on PATH?
     /// Signals the terminal to scroll to the bottom on the next render frame.
     pub fn scroll_to_bottom(&mut self) {
         self.needs_scroll = true;
+        self.snap_to_bottom = true;
     }
 
     /// Cells of `line` in scrollback-then-screen line space.
@@ -486,6 +492,11 @@ Is it installed and on PATH?
                             };
                             render_row(ui, row, &row_style, cur, sel_on(sb_len + i, row));
                         }
+                        // Unlike `stick_to_bottom`, this also works after the user
+                        // scrolled up into the scrollback with the mouse wheel.
+                        if std::mem::take(&mut self.snap_to_bottom) {
+                            ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                        }
                     });
 
                 if self.focused {
@@ -624,6 +635,9 @@ Is it installed and on PATH?
             // Typing clears the selection highlight, like other terminals.
             self.selection = None;
             self.send_input(&to_send);
+            // Any input jumps back to the prompt (applied on the next frame).
+            self.snap_to_bottom = true;
+            ctx.request_repaint();
         }
     }
 }
@@ -803,6 +817,7 @@ mod tests {
             master: None,
             grid_size: (INITIAL_ROWS, INITIAL_COLS),
             needs_scroll: false,
+            snap_to_bottom: false,
             focused: false,
             selection: None,
         };
@@ -881,6 +896,58 @@ mod tests {
         let (mut t, _tx, _out) = fake_terminal();
         t.scroll_to_bottom();
         assert!(t.needs_scroll);
+        assert!(t.snap_to_bottom);
+    }
+
+    #[test]
+    fn key_input_snaps_back_to_bottom_after_scrolling_up() {
+        let ctx = egui::Context::default();
+        let lines: String = (0..300)
+            .map(|i| {
+                format!(
+                    "line {i}
+"
+                )
+            })
+            .collect();
+        let (mut t, _out, cell) = shown_terminal(&ctx, &lines);
+        t.focused = true;
+        let none = egui::Modifiers::NONE;
+        // Scroll far up with the mouse wheel over the terminal.
+        let wheel = vec![
+            egui::Event::PointerMoved(egui::pos2(300.0, 300.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 100_000.0),
+                modifiers: none,
+            },
+        ];
+        // Which line is at the top of the view: double-click there and look at
+        // the selected line (after letting time pass so clicks don't chain).
+        let top_line = |t: &mut Terminal| {
+            for _ in 0..30 {
+                run_frame_in(&ctx, t, vec![], none);
+            }
+            let primary = egui::PointerButton::Primary;
+            run_frame_in(&ctx, t, click_at(cell(0, 0), primary), none);
+            run_frame_in(&ctx, t, click_at(cell(0, 0), primary), none);
+            t.selection
+                .take()
+                .expect("double-click selects")
+                .anchor
+                .line
+        };
+        let bottom_top = top_line(&mut t);
+        assert!(bottom_top > 200, "starts at the bottom ({bottom_top})");
+
+        run_frame_in(&ctx, &mut t, wheel, none);
+        assert_eq!(top_line(&mut t), 0, "wheel scrolls into the scrollback");
+        assert!(!t.snap_to_bottom, "wheel scrolling does not snap");
+
+        run_frame_in(&ctx, &mut t, vec![egui::Event::Text("x".into())], none);
+        assert!(t.snap_to_bottom, "typing requests a snap");
+        assert_eq!(top_line(&mut t), bottom_top, "back at the bottom");
+        assert!(!t.snap_to_bottom);
     }
 
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
