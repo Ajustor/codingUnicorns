@@ -62,3 +62,75 @@ impl Plugin for WordCountPlugin {
         }]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx(text: &str) -> PluginContext<'_> {
+        PluginContext {
+            buffer_text: text,
+            filename: None,
+            cursor_row: 0,
+            cursor_col: 0,
+            is_modified: false,
+            hovered_word: None,
+        }
+    }
+
+    #[test]
+    fn new_and_default_start_at_zero() {
+        for p in [WordCountPlugin::new(), WordCountPlugin::default()] {
+            assert_eq!((p.word_count, p.line_count, p.char_count), (0, 0, 0));
+        }
+    }
+
+    #[test]
+    fn metadata() {
+        let p = WordCountPlugin::new();
+        assert_eq!(p.name(), "Word Count");
+        let cmds = p.commands();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].id, "word-count.show");
+        let panels = p.sidebar_panels();
+        assert_eq!(panels.len(), 1);
+        assert_eq!(panels[0].id, "word-count.panel");
+    }
+
+    #[test]
+    fn update_counts_words_lines_and_chars() {
+        let mut p = WordCountPlugin::new();
+        let r = p.update(&ctx("hello  world\nsecond line here\n"));
+        assert_eq!(r.status_text.as_deref(), Some("5 words | 2 lines"));
+        assert!(r.notifications.is_empty());
+        assert_eq!(p.char_count, 30);
+    }
+
+    #[test]
+    fn update_counts_unicode_chars_not_bytes() {
+        let mut p = WordCountPlugin::new();
+        p.update(&ctx("héllo 🦄"));
+        assert_eq!(p.char_count, 7);
+        assert_eq!(p.word_count, 2);
+        assert_eq!(p.line_count, 1);
+    }
+
+    #[test]
+    fn update_empty_buffer() {
+        let mut p = WordCountPlugin::new();
+        p.update(&ctx("something"));
+        let r = p.update(&ctx(""));
+        assert_eq!(r.status_text.as_deref(), Some("0 words | 0 lines"));
+        assert_eq!(p.char_count, 0);
+    }
+
+    #[test]
+    fn render_sidebar_runs() {
+        let mut p = WordCountPlugin::new();
+        p.update(&ctx("a b c"));
+        let ectx = egui::Context::default();
+        let _ = ectx.run(egui::RawInput::default(), |c| {
+            egui::CentralPanel::default().show(c, |ui| p.render_sidebar("word-count.panel", ui));
+        });
+    }
+}

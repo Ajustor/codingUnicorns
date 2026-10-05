@@ -27,3 +27,53 @@ pub(super) fn detect_indent(content: &str) -> (bool, usize) {
     };
     (use_spaces, size)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_four_space_indent() {
+        assert_eq!(detect_indent("fn a() {\n    x;\n        y;\n}"), (true, 4));
+    }
+
+    #[test]
+    fn detects_two_space_indent_even_with_deeper_lines() {
+        assert_eq!(detect_indent("a:\n  b:\n    c: 1\n  d: 2"), (true, 2));
+    }
+
+    #[test]
+    fn detects_three_and_eight_space_indent() {
+        assert_eq!(detect_indent("a\n   b\n      c"), (true, 3));
+        assert_eq!(detect_indent("a\n        b"), (true, 8));
+    }
+
+    #[test]
+    fn unusual_space_width_falls_back_to_four() {
+        assert_eq!(detect_indent("a\n      b"), (true, 4));
+    }
+
+    #[test]
+    fn tabs_win_when_more_frequent() {
+        assert_eq!(detect_indent("\ta\n\t\tb\n  c"), (false, 4));
+    }
+
+    #[test]
+    fn ties_and_empty_content_prefer_spaces() {
+        assert_eq!(detect_indent(""), (true, 4));
+        assert_eq!(detect_indent("no indent\nat all"), (true, 4));
+        assert_eq!(detect_indent("\ta\n  b"), (true, 2));
+    }
+
+    #[test]
+    fn single_leading_space_is_ignored() {
+        assert_eq!(detect_indent("\ta\n b\n c"), (false, 4));
+    }
+
+    #[test]
+    fn only_first_200_lines_are_sampled() {
+        let mut src = "\tx\n".repeat(200);
+        src.push_str(&"  y\n".repeat(300));
+        assert_eq!(detect_indent(&src), (false, 4));
+    }
+}

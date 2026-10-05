@@ -371,6 +371,20 @@ impl Terminal {
                         to_send.push_str(text);
                         false
                     }
+                    // egui-winit turns Ctrl+C / Ctrl+X / Ctrl+V into these and emits no
+                    // Key event; the terminal has no selection, so forward the control codes.
+                    egui::Event::Copy => {
+                        to_send.push('');
+                        false
+                    }
+                    egui::Event::Cut => {
+                        to_send.push('');
+                        false
+                    }
+                    egui::Event::Paste(text) => {
+                        to_send.push_str(text);
+                        false
+                    }
                     egui::Event::Key {
                         key,
                         pressed: true,
@@ -522,4 +536,267 @@ fn render_row(
 
     let galley = ui.fonts(|f| f.layout_job(job));
     ui.painter().galley(rect.left_top(), galley, default_fg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct Shared(Arc<Mutex<Vec<u8>>>);
+    impl Write for Shared {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Shared {
+        fn take(&self) -> Vec<u8> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    /// A terminal wired to in-memory channels instead of a real PTY.
+    fn fake_terminal() -> (Terminal, Sender<Vec<u8>>, Shared) {
+        let (tx, rx) = unbounded();
+        let out = Shared::default();
+        let term = Terminal {
+            shell_name: "fake".into(),
+            performer: AnsiPerformer::new(),
+            rx: Some(rx),
+            writer: Some(Box::new(out.clone())),
+            parser: Parser::new(),
+            _child: None,
+            needs_scroll: false,
+            focused: false,
+        };
+        (term, tx, out)
+    }
+
+    fn row_text(t: &Terminal, r: usize) -> String {
+        t.performer.buf.rows[r]
+            .iter()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn update_parses_pending_chunks_and_requests_scroll() {
+        let (mut t, tx, _out) = fake_terminal();
+        tx.send(b"hel".to_vec()).unwrap();
+        tx.send(b"lo\r\n\xc3".to_vec()).unwrap();
+        tx.send(b"\xa9!".to_vec()).unwrap(); // UTF-8 'é' split across chunks
+        t.update();
+        assert_eq!(row_text(&t, 0), "hello");
+        assert_eq!(row_text(&t, 1), "é!");
+        assert!(t.needs_scroll);
+    }
+
+    #[test]
+    fn update_without_data_does_not_request_scroll() {
+        let (mut t, _tx, out) = fake_terminal();
+        t.update();
+        assert!(!t.needs_scroll);
+        assert!(out.take().is_empty());
+    }
+
+    #[test]
+    fn update_answers_cursor_position_queries() {
+        let (mut t, tx, out) = fake_terminal();
+        tx.send(b"ab\x1b[6n".to_vec()).unwrap();
+        t.update();
+        assert_eq!(out.take(), b"\x1b[1;3R");
+        assert!(t.performer.responses.is_empty());
+        // Responses are sent once.
+        t.update();
+        assert!(out.take().is_empty());
+    }
+
+    #[test]
+    fn responses_are_dropped_without_writer() {
+        let (mut t, tx, _out) = fake_terminal();
+        t.writer = None;
+        tx.send(b"\x1b[5n".to_vec()).unwrap();
+        t.update();
+        assert!(t.performer.responses.is_empty());
+    }
+
+    #[test]
+    fn update_without_pty_is_noop() {
+        let (mut t, _tx, _out) = fake_terminal();
+        t.rx = None;
+        t.update();
+        assert!(!t.needs_scroll);
+    }
+
+    #[test]
+    fn send_input_writes_to_pty() {
+        let (mut t, _tx, out) = fake_terminal();
+        t.send_input("ls -la\r");
+        assert_eq!(out.take(), b"ls -la\r");
+        t.writer = None;
+        t.send_input("ignored"); // no writer → silently dropped
+    }
+
+    #[test]
+    fn scroll_to_bottom_sets_flag() {
+        let (mut t, _tx, _out) = fake_terminal();
+        t.scroll_to_bottom();
+        assert!(t.needs_scroll);
+    }
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn run_frame(t: &mut Terminal, events: Vec<egui::Event>) {
+        let ctx = egui::Context::default();
+        let cfg = crate::config::Config::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| t.show_content(ui, &cfg));
+        });
+    }
+
+    #[test]
+    fn focused_terminal_forwards_clipboard_events() {
+        // egui-winit sends these (no Key event) for Ctrl+C / Ctrl+X / Ctrl+V.
+        let (mut t, _tx, out) = fake_terminal();
+        t.focused = true;
+        run_frame(
+            &mut t,
+            vec![
+                egui::Event::Copy,
+                egui::Event::Cut,
+                egui::Event::Paste("echo hi".into()),
+            ],
+        );
+        assert_eq!(out.take(), b"echo hi");
+    }
+
+    #[test]
+    fn focused_terminal_forwards_text_and_special_keys() {
+        let (mut t, _tx, out) = fake_terminal();
+        t.focused = true;
+        let none = egui::Modifiers::NONE;
+        let ctrl = egui::Modifiers::CTRL;
+        run_frame(
+            &mut t,
+            vec![
+                egui::Event::Text("ls".into()),
+                key(egui::Key::Enter, none),
+                key(egui::Key::Backspace, none),
+                key(egui::Key::Tab, none),
+                key(egui::Key::Escape, none),
+                key(egui::Key::ArrowUp, none),
+                key(egui::Key::ArrowDown, none),
+                key(egui::Key::ArrowRight, none),
+                key(egui::Key::ArrowLeft, none),
+                key(egui::Key::Delete, none),
+                key(egui::Key::Home, none),
+                key(egui::Key::End, none),
+                key(egui::Key::PageUp, none),
+                key(egui::Key::PageDown, none),
+                key(egui::Key::F1, none), // unmapped → not sent
+                key(egui::Key::C, ctrl),
+                key(egui::Key::A, ctrl),
+                key(egui::Key::B, ctrl),
+                key(egui::Key::D, ctrl),
+                key(egui::Key::E, ctrl),
+                key(egui::Key::F, ctrl),
+                key(egui::Key::K, ctrl),
+                key(egui::Key::L, ctrl),
+                key(egui::Key::N, ctrl),
+                key(egui::Key::P, ctrl),
+                key(egui::Key::R, ctrl),
+                key(egui::Key::U, ctrl),
+                key(egui::Key::W, ctrl),
+                key(egui::Key::Z, ctrl),
+                key(egui::Key::Q, ctrl), // unmapped ctrl combo → not sent
+                key(egui::Key::A, egui::Modifiers::ALT), // alt combos are ignored
+            ],
+        );
+        let expected = "ls\r\x7f\t\x1b\x1b[A\x1b[B\x1b[C\x1b[D\x1b[3~\x1b[H\x1b[F\x1b[5~\x1b[6~\
+                        \x03\x01\x02\x04\x05\x06\x0b\x0c\x1b[B\x1b[A\x12\x15\x17\x1a";
+        assert_eq!(String::from_utf8(out.take()).unwrap(), expected);
+    }
+
+    #[test]
+    fn unfocused_terminal_does_not_consume_input() {
+        let (mut t, _tx, out) = fake_terminal();
+        run_frame(
+            &mut t,
+            vec![
+                egui::Event::Text("x".into()),
+                key(egui::Key::Enter, egui::Modifiers::NONE),
+            ],
+        );
+        assert!(out.take().is_empty());
+    }
+
+    #[test]
+    fn clicking_focuses_and_clicking_outside_blurs() {
+        let (mut t, _tx, _out) = fake_terminal();
+        let click = |x: f32, y: f32| {
+            let pos = egui::pos2(x, y);
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        run_frame(&mut t, click(100.0, 100.0));
+        assert!(t.focused);
+        run_frame(&mut t, click(5000.0, 5000.0));
+        assert!(!t.focused);
+    }
+
+    #[test]
+    fn rendering_consumes_scroll_flag_and_handles_rich_content() {
+        let (mut t, tx, _out) = fake_terminal();
+        let mut data = Vec::new();
+        for i in 0..60 {
+            data.extend_from_slice(
+                format!("\x1b[1;3{}mline {i}\x1b[0m plain\r\n", i % 8).as_bytes(),
+            );
+        }
+        data.extend_from_slice(b"prompt> ");
+        tx.send(data).unwrap();
+        t.focused = true;
+        run_frame(&mut t, vec![]);
+        assert!(!t.needs_scroll, "scroll request consumed by the frame");
+        assert!(!t.performer.buf.scrollback.is_empty());
+        // Render again with the cursor at column 0 on a blank screen.
+        t.performer.buf.erase_display(2);
+        run_frame(&mut t, vec![]);
+    }
 }

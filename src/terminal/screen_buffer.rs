@@ -198,3 +198,317 @@ impl ScreenBuffer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row_text(b: &ScreenBuffer, r: usize) -> String {
+        b.rows[r].iter().map(|c| c.ch).collect::<String>()
+    }
+
+    fn write_str(b: &mut ScreenBuffer, s: &str) {
+        for ch in s.chars() {
+            b.write_char(ch);
+        }
+    }
+
+    #[test]
+    fn new_buffer_is_blank() {
+        let b = ScreenBuffer::new(4, 3);
+        assert_eq!(b.rows.len(), 3);
+        assert!(b.rows.iter().all(|r| r.len() == 4));
+        assert!(b.rows.iter().flatten().all(|c| c.ch == ' ' && !c.bold));
+        assert_eq!((b.cursor_row, b.cursor_col), (0, 0));
+        assert!(b.scrollback.is_empty());
+        assert_eq!(b.current_fg, DEFAULT_FG);
+    }
+
+    #[test]
+    fn write_char_stores_attributes_and_advances() {
+        let mut b = ScreenBuffer::new(5, 2);
+        b.current_fg = Color32::RED;
+        b.current_bold = true;
+        b.write_char('x');
+        assert_eq!(b.rows[0][0].ch, 'x');
+        assert_eq!(b.rows[0][0].fg, Color32::RED);
+        assert!(b.rows[0][0].bold);
+        assert_eq!(b.cursor_col, 1);
+    }
+
+    #[test]
+    fn writing_past_last_column_wraps_to_next_line() {
+        let mut b = ScreenBuffer::new(3, 3);
+        write_str(&mut b, "abcde");
+        assert_eq!(row_text(&b, 0), "abc");
+        assert_eq!(row_text(&b, 1), "de ");
+        assert_eq!((b.cursor_row, b.cursor_col), (1, 2));
+    }
+
+    #[test]
+    fn cursor_sits_past_end_until_next_char() {
+        let mut b = ScreenBuffer::new(3, 2);
+        write_str(&mut b, "abc");
+        // Pending-wrap state: no line feed until another character arrives.
+        assert_eq!((b.cursor_row, b.cursor_col), (0, 3));
+        b.carriage_return();
+        assert_eq!(b.cursor_col, 0);
+        b.write_char('z');
+        assert_eq!(row_text(&b, 0), "zbc");
+    }
+
+    #[test]
+    fn line_feed_scrolls_into_scrollback_at_bottom() {
+        let mut b = ScreenBuffer::new(2, 2);
+        b.write_char('1');
+        b.line_feed();
+        b.carriage_return();
+        b.write_char('2');
+        b.line_feed();
+        b.carriage_return();
+        b.write_char('3');
+        assert_eq!(b.scrollback.len(), 1);
+        assert_eq!(b.scrollback[0][0].ch, '1');
+        assert_eq!(row_text(&b, 0), "2 ");
+        assert_eq!(row_text(&b, 1), "3 ");
+        assert_eq!(b.cursor_row, 1);
+        assert_eq!(b.rows.len(), 2, "visible height is constant");
+    }
+
+    #[test]
+    fn scrollback_is_trimmed_to_max() {
+        let mut b = ScreenBuffer::new(1, 1);
+        b.max_scrollback = 3;
+        for ch in ['a', 'b', 'c', 'd', 'e'] {
+            b.carriage_return();
+            b.write_char(ch);
+            b.line_feed();
+        }
+        let sb: String = b.scrollback.iter().map(|r| r[0].ch).collect();
+        assert_eq!(sb, "cde");
+    }
+
+    #[test]
+    fn line_feed_on_empty_buffer_is_noop() {
+        let mut b = ScreenBuffer::new(0, 0);
+        b.line_feed();
+        b.write_char('x');
+        b.erase_display(0);
+        b.erase_line(0);
+        assert!(b.rows.is_empty());
+        assert!(b.scrollback.is_empty());
+    }
+
+    #[test]
+    fn write_char_with_out_of_range_row_is_clamped() {
+        let mut b = ScreenBuffer::new(3, 2);
+        b.cursor_row = 10;
+        b.write_char('q');
+        assert_eq!(b.rows[1][0].ch, 'q');
+    }
+
+    #[test]
+    fn move_cursor_clamps_in_every_direction() {
+        let mut b = ScreenBuffer::new(10, 5);
+        b.move_cursor('B', 2);
+        assert_eq!(b.cursor_row, 2);
+        b.move_cursor('B', 100);
+        assert_eq!(b.cursor_row, 4);
+        b.move_cursor('A', 1);
+        assert_eq!(b.cursor_row, 3);
+        b.move_cursor('A', 100);
+        assert_eq!(b.cursor_row, 0);
+        b.move_cursor('C', 3);
+        assert_eq!(b.cursor_col, 3);
+        b.move_cursor('C', 100);
+        assert_eq!(b.cursor_col, 9);
+        b.move_cursor('D', 4);
+        assert_eq!(b.cursor_col, 5);
+        b.move_cursor('D', 100);
+        assert_eq!(b.cursor_col, 0);
+        b.move_cursor('Z', 3);
+        assert_eq!((b.cursor_row, b.cursor_col), (0, 0));
+    }
+
+    #[test]
+    fn set_cursor_pos_is_one_based_and_clamped() {
+        let mut b = ScreenBuffer::new(10, 5);
+        b.set_cursor_pos(3, 4);
+        assert_eq!((b.cursor_row, b.cursor_col), (2, 3));
+        b.set_cursor_pos(0, 0);
+        assert_eq!((b.cursor_row, b.cursor_col), (0, 0));
+        b.set_cursor_pos(99, 99);
+        assert_eq!((b.cursor_row, b.cursor_col), (4, 9));
+    }
+
+    fn filled(cols: usize, rows: usize) -> ScreenBuffer {
+        let mut b = ScreenBuffer::new(cols, rows);
+        for r in 0..rows {
+            for c in 0..cols {
+                b.rows[r][c].ch = 'x';
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn erase_display_below() {
+        let mut b = filled(4, 3);
+        b.set_cursor_pos(2, 3);
+        b.erase_display(0);
+        assert_eq!(row_text(&b, 0), "xxxx");
+        assert_eq!(row_text(&b, 1), "xx  ");
+        assert_eq!(row_text(&b, 2), "    ");
+        assert_eq!((b.cursor_row, b.cursor_col), (1, 2), "cursor unchanged");
+    }
+
+    #[test]
+    fn erase_display_above() {
+        let mut b = filled(4, 3);
+        b.set_cursor_pos(2, 3);
+        b.erase_display(1);
+        assert_eq!(row_text(&b, 0), "    ");
+        assert_eq!(row_text(&b, 1), "   x");
+        assert_eq!(row_text(&b, 2), "xxxx");
+    }
+
+    #[test]
+    fn erase_display_all_homes_cursor() {
+        for mode in [2, 3] {
+            let mut b = filled(4, 3);
+            b.set_cursor_pos(3, 3);
+            b.erase_display(mode);
+            assert!(b.rows.iter().flatten().all(|c| c.ch == ' '));
+            assert_eq!((b.cursor_row, b.cursor_col), (0, 0));
+        }
+    }
+
+    #[test]
+    fn erase_display_unknown_mode_is_ignored() {
+        let mut b = filled(2, 2);
+        b.erase_display(7);
+        assert_eq!(row_text(&b, 0), "xx");
+    }
+
+    #[test]
+    fn erase_display_with_pending_wrap_cursor() {
+        let mut b = filled(3, 2);
+        b.cursor_col = 3; // past the end after writing the last column
+        b.erase_display(0);
+        assert_eq!(row_text(&b, 0), "xx ");
+        assert_eq!(row_text(&b, 1), "   ");
+    }
+
+    #[test]
+    fn erase_line_modes() {
+        let mut b = filled(5, 2);
+        b.set_cursor_pos(1, 3);
+        b.erase_line(0);
+        assert_eq!(row_text(&b, 0), "xx   ");
+
+        let mut b = filled(5, 2);
+        b.set_cursor_pos(1, 3);
+        b.erase_line(1);
+        assert_eq!(row_text(&b, 0), "   xx");
+
+        let mut b = filled(5, 2);
+        b.set_cursor_pos(2, 3);
+        b.erase_line(2);
+        assert_eq!(row_text(&b, 1), "     ");
+        assert_eq!(row_text(&b, 0), "xxxxx", "other rows untouched");
+
+        let mut b = filled(5, 2);
+        b.erase_line(9);
+        assert_eq!(row_text(&b, 0), "xxxxx");
+    }
+
+    #[test]
+    fn erase_resets_attributes() {
+        let mut b = ScreenBuffer::new(3, 1);
+        b.current_fg = Color32::RED;
+        b.current_bold = true;
+        write_str(&mut b, "abc");
+        b.cursor_col = 0;
+        b.erase_line(2);
+        assert!(b.rows[0].iter().all(|c| c.fg == DEFAULT_FG && !c.bold));
+    }
+
+    #[test]
+    fn sgr_basic_colors_and_bold() {
+        let mut b = ScreenBuffer::new(1, 1);
+        b.set_sgr(&[1, 31]);
+        assert!(b.current_bold);
+        assert_eq!(b.current_fg, ansi_color(1, false));
+        b.set_sgr(&[94]);
+        assert_eq!(b.current_fg, ansi_color(4, true));
+        b.set_sgr(&[22]);
+        assert!(!b.current_bold);
+        b.set_sgr(&[39]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+        b.set_sgr(&[37, 1]);
+        b.set_sgr(&[0]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+        assert!(!b.current_bold);
+        b.set_sgr(&[30]);
+        assert_eq!(b.current_fg, ansi_color(0, false));
+        b.set_sgr(&[90]);
+        assert_eq!(b.current_fg, ansi_color(0, true));
+        b.set_sgr(&[97]);
+        assert_eq!(b.current_fg, ansi_color(7, true));
+    }
+
+    #[test]
+    fn sgr_256_color() {
+        let mut b = ScreenBuffer::new(1, 1);
+        b.set_sgr(&[38, 5, 196]);
+        assert_eq!(b.current_fg, color_256(196));
+        // Params after the 256-color triple are still processed.
+        b.set_sgr(&[38, 5, 21, 1]);
+        assert_eq!(b.current_fg, color_256(21));
+        assert!(b.current_bold);
+    }
+
+    #[test]
+    fn sgr_truncated_256_color_is_ignored() {
+        let mut b = ScreenBuffer::new(1, 1);
+        b.set_sgr(&[38, 5]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+        b.set_sgr(&[38]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+    }
+
+    #[test]
+    fn sgr_unknown_codes_are_ignored() {
+        let mut b = ScreenBuffer::new(1, 1);
+        b.set_sgr(&[4, 7, 49, 100]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+        assert!(!b.current_bold);
+        b.set_sgr(&[]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+    }
+
+    #[test]
+    #[ignore = "BUG: 24-bit SGR (38;2;r;g;b) unsupported; r/g/b are misread as standalone SGR codes"]
+    fn sgr_truecolor() {
+        let mut b = ScreenBuffer::new(1, 1);
+        b.set_sgr(&[38, 2, 10, 31, 0]);
+        assert_eq!(b.current_fg, Color32::from_rgb(10, 31, 0));
+    }
+
+    #[test]
+    #[ignore = "BUG: background SGR 48;5;n / 48;2;r;g;b leaks n/r/g/b into the foreground color"]
+    fn sgr_background_256_does_not_change_foreground() {
+        let mut b = ScreenBuffer::new(1, 1);
+        b.set_sgr(&[48, 5, 31]);
+        assert_eq!(b.current_fg, DEFAULT_FG);
+    }
+
+    #[test]
+    fn cell_default_is_blank() {
+        let c = Cell::default();
+        assert_eq!(c.ch, ' ');
+        assert_eq!(c.fg, DEFAULT_FG);
+        assert!(!c.bold);
+        assert_eq!(c.clone().ch, ' ');
+    }
+}

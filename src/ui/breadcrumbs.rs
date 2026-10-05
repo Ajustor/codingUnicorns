@@ -70,4 +70,74 @@ mod tests {
         assert_eq!(enclosing_symbol(&syms, 0), Some("alpha"));
         assert_eq!(enclosing_symbol(&[], 5), None);
     }
+
+    #[test]
+    fn cursor_above_all_symbols_has_none() {
+        let syms = vec![sym("late", 10)];
+        assert_eq!(enclosing_symbol(&syms, 9), None);
+        assert_eq!(enclosing_symbol(&syms, 10), Some("late"));
+        assert_eq!(enclosing_symbol(&syms, u32::MAX), Some("late"));
+    }
+
+    #[test]
+    fn unordered_symbols_still_pick_closest_preceding() {
+        let syms = vec![sym("gamma", 20), sym("alpha", 0), sym("beta", 10)];
+        assert_eq!(enclosing_symbol(&syms, 15), Some("beta"));
+        assert_eq!(enclosing_symbol(&syms, 25), Some("gamma"));
+    }
+
+    fn palette() -> Palette {
+        Palette::from_theme(&crate::config::Config::default().theme)
+    }
+
+    /// Render the breadcrumb bar headlessly and return every text run painted.
+    fn rendered(
+        path: Option<&std::path::Path>,
+        workspace: Option<&std::path::Path>,
+        symbols: &[DocumentSymbol],
+        cursor_line: u32,
+    ) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render(ui, palette(), path, workspace, symbols, cursor_line);
+            });
+        });
+        let mut texts = Vec::new();
+        for clipped in &out.shapes {
+            collect_texts(&clipped.shape, &mut texts);
+        }
+        texts
+    }
+
+    fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn no_path_renders_nothing() {
+        assert!(rendered(None, None, &[sym("f", 0)], 3).is_empty());
+    }
+
+    #[test]
+    fn workspace_relative_path_and_symbol() {
+        let ws = std::path::PathBuf::from("ws");
+        let file = ws.join("src").join("main.rs");
+        let texts = rendered(Some(&file), Some(&ws), &[sym("main", 0)], 4);
+        assert_eq!(texts, ["src", "›", "main.rs", "›", "main"]);
+    }
+
+    #[test]
+    fn path_outside_workspace_is_shown_in_full_without_symbol() {
+        let file = std::path::PathBuf::from("other").join("lib.rs");
+        let ws = std::path::PathBuf::from("ws");
+        let texts = rendered(Some(&file), Some(&ws), &[sym("later", 50)], 4);
+        assert_eq!(texts, ["other", "›", "lib.rs"]);
+        let texts = rendered(Some(&file), None, &[], 0);
+        assert_eq!(texts, ["other", "›", "lib.rs"]);
+    }
 }

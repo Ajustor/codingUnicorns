@@ -412,3 +412,442 @@ impl Default for CommandPalette {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
+
+    // ---- command metadata ----
+
+    #[test]
+    fn every_command_has_metadata() {
+        let all = PaletteCommand::all();
+        assert_eq!(all.len(), 12);
+        let mut labels = std::collections::HashSet::new();
+        for cmd in all {
+            assert!(!cmd.label().trim().is_empty(), "{cmd:?} label");
+            assert!(!cmd.description().trim().is_empty(), "{cmd:?} description");
+            assert!(
+                labels.insert(cmd.label()),
+                "duplicate label {}",
+                cmd.label()
+            );
+            let s = cmd.shortcut();
+            assert!(
+                s.is_empty() || s.starts_with("Ctrl+"),
+                "{cmd:?} shortcut {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_lists_every_variant_once() {
+        // Exhaustive match: adding a variant without listing it here (and in all()) fails.
+        fn index(c: &PaletteCommand) -> usize {
+            match c {
+                PaletteCommand::ToggleTerminal => 0,
+                PaletteCommand::ToggleClaude => 1,
+                PaletteCommand::ToggleSidebar => 2,
+                PaletteCommand::GoToLine => 3,
+                PaletteCommand::SaveFile => 4,
+                PaletteCommand::NewFile => 5,
+                PaletteCommand::OpenFolder => 6,
+                PaletteCommand::OpenSettings => 7,
+                PaletteCommand::Find => 8,
+                PaletteCommand::FindReplace => 9,
+                PaletteCommand::RestartLsp => 10,
+                PaletteCommand::CheckForUpdates => 11,
+            }
+        }
+        let mut seen = [false; 12];
+        for c in PaletteCommand::all() {
+            assert!(!seen[index(c)], "{c:?} listed twice");
+            seen[index(c)] = true;
+        }
+        assert!(seen.iter().all(|s| *s));
+    }
+
+    #[test]
+    fn shortcuts_match_known_bindings() {
+        assert_eq!(PaletteCommand::SaveFile.shortcut(), "Ctrl+S");
+        assert_eq!(PaletteCommand::ToggleClaude.shortcut(), "Ctrl+Shift+I");
+        assert_eq!(PaletteCommand::RestartLsp.shortcut(), "");
+        assert_eq!(PaletteCommand::CheckForUpdates.label(), "Check for Updates");
+    }
+
+    // ---- open/close state ----
+
+    #[test]
+    fn toggle_opens_in_file_mode_and_resets() {
+        let mut p = CommandPalette::default();
+        assert!(!p.is_open());
+        p.query = "stale".into();
+        p.selected_idx = 3;
+        p.cached_files = vec![PathBuf::from("x")];
+        p.toggle();
+        assert!(p.is_open());
+        assert!(p.query.is_empty());
+        assert_eq!(p.selected_idx, 0);
+        assert!(p.cached_files.is_empty(), "file cache refreshed on open");
+        p.query = "keep".into();
+        p.toggle();
+        assert!(!p.is_open());
+        assert_eq!(p.query, "keep", "closing does not reset");
+    }
+
+    #[test]
+    fn toggle_commands_opens_with_prefix() {
+        let mut p = CommandPalette::new();
+        p.selected_idx = 2;
+        p.toggle_commands();
+        assert!(p.is_open());
+        assert_eq!(p.query, ">");
+        assert_eq!(p.selected_idx, 0);
+        p.toggle_commands();
+        assert!(!p.is_open());
+    }
+
+    // ---- headless show() ----
+
+    struct Harness {
+        ctx: egui::Context,
+        p: CommandPalette,
+        tree: FileTree,
+    }
+
+    impl Harness {
+        fn new(files: &[&str]) -> Self {
+            let mut p = CommandPalette::new();
+            p.toggle();
+            // Pre-filled cache: with no workspace show() never spawns `git`.
+            p.cached_files = files.iter().map(PathBuf::from).collect();
+            Self {
+                ctx: egui::Context::default(),
+                p,
+                tree: FileTree::new(),
+            }
+        }
+
+        fn frame(&mut self, events: Vec<Event>) -> (Option<PathBuf>, Option<PaletteCommand>) {
+            let palette =
+                crate::ui::theme::Palette::from_theme(&crate::config::Config::default().theme);
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+                events,
+                ..Default::default()
+            };
+            let mut res = (None, None);
+            let mut ws = None;
+            let Self { ctx, p, tree } = self;
+            let _ = ctx.run(input, |ctx| {
+                res = p.show(ctx, tree, &mut ws, palette);
+            });
+            res
+        }
+
+        fn key(&mut self, key: Key) -> (Option<PathBuf>, Option<PaletteCommand>) {
+            self.frame(vec![Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }])
+        }
+
+        fn query(&mut self, q: &str) {
+            self.p.query = q.into();
+            // Two frames: the window is laid out invisibly on its first one.
+            for _ in 0..2 {
+                let r = self.frame(vec![]);
+                assert_eq!(r, (None, None), "typing never triggers");
+            }
+        }
+
+        /// Result rows (selectable labels) of the last frame, top to bottom. Excludes
+        /// the window background, which also senses clicks but spans the whole window.
+        fn rows(&self) -> Vec<Rect> {
+            let mut rows: Vec<Rect> = self.ctx.viewport(|vp| {
+                let w = &vp.prev_pass.widgets;
+                w.layer_ids()
+                    .flat_map(|l| w.get_layer(l))
+                    .filter(|r| {
+                        r.sense.is_focusable()
+                            && r.sense.senses_click()
+                            && !r.sense.senses_drag()
+                            && r.rect.width() < 500.0
+                    })
+                    .map(|r| r.rect)
+                    .collect()
+            });
+            rows.sort_by(|a, b| a.top().partial_cmp(&b.top()).unwrap());
+            rows
+        }
+
+        fn files(&self) -> Vec<String> {
+            self.p
+                .entries
+                .iter()
+                .filter_map(|e| match e {
+                    PaletteEntry::File(p) => Some(p.to_string_lossy().replace('\\', "/")),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn commands(&self) -> Vec<PaletteCommand> {
+            self.p
+                .entries
+                .iter()
+                .filter_map(|e| match e {
+                    PaletteEntry::Command(c) => Some(c.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn empty_query_lists_files_then_all_commands() {
+        let mut h = Harness::new(&["a.rs", "b.rs"]);
+        h.query("");
+        assert_eq!(h.files(), ["a.rs", "b.rs"]);
+        assert_eq!(h.commands(), PaletteCommand::all());
+        assert!(matches!(h.p.entries[0], PaletteEntry::File(_)));
+        assert!(matches!(h.p.entries[2], PaletteEntry::Command(_)));
+    }
+
+    #[test]
+    fn empty_query_caps_files_at_15() {
+        let names: Vec<String> = (0..30).map(|i| format!("f{i:02}.rs")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut h = Harness::new(&refs);
+        h.query("");
+        assert_eq!(h.files().len(), 15);
+        assert_eq!(h.files()[0], "f00.rs");
+    }
+
+    #[test]
+    fn fuzzy_query_ranks_and_filters_files() {
+        let mut h = Harness::new(&[
+            "docs/readme.md",
+            "src/main.rs",
+            "src/ui/mainmenu.rs",
+            "x.txt",
+        ]);
+        h.query("src/main");
+        let files = h.files();
+        assert_eq!(files.first().map(String::as_str), Some("src/main.rs"));
+        assert!(!files.contains(&"x.txt".to_string()));
+        assert!(!files.contains(&"docs/readme.md".to_string()));
+    }
+
+    #[test]
+    fn fuzzy_query_caps_files_at_20() {
+        let names: Vec<String> = (0..40).map(|i| format!("mod{i:02}.rs")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut h = Harness::new(&refs);
+        h.query("mod");
+        assert_eq!(h.files().len(), 20);
+    }
+
+    #[test]
+    fn file_mode_query_also_matches_commands_by_description() {
+        let mut h = Harness::new(&["a.rs"]);
+        h.query("upgrade");
+        assert!(h.files().is_empty());
+        assert_eq!(h.commands(), [PaletteCommand::CheckForUpdates]);
+    }
+
+    #[test]
+    fn command_mode_hides_files() {
+        let mut h = Harness::new(&["settings.rs", "a.rs"]);
+        h.query(">");
+        assert!(h.files().is_empty());
+        assert_eq!(h.commands(), PaletteCommand::all());
+
+        h.query(">  settings ");
+        assert!(h.files().is_empty());
+        assert_eq!(h.commands()[0], PaletteCommand::OpenSettings);
+    }
+
+    #[test]
+    fn command_mode_matches_label_and_description() {
+        let mut h = Harness::new(&[]);
+        h.query(">restart");
+        assert_eq!(h.commands(), [PaletteCommand::RestartLsp]);
+        h.query(">diagnostics");
+        assert_eq!(h.commands(), [PaletteCommand::RestartLsp]);
+        h.query(">qqqzzz");
+        assert!(h.p.entries.is_empty());
+    }
+
+    #[test]
+    fn enter_runs_first_command() {
+        let mut h = Harness::new(&[]);
+        h.query(">restart");
+        let (file, cmd) = h.key(Key::Enter);
+        assert_eq!(file, None);
+        assert_eq!(cmd, Some(PaletteCommand::RestartLsp));
+        assert!(!h.p.is_open());
+    }
+
+    #[test]
+    fn enter_opens_selected_file() {
+        let mut h = Harness::new(&["one.rs", "two.rs"]);
+        h.query("");
+        h.key(Key::ArrowDown);
+        assert_eq!(h.p.selected_idx, 1);
+        let (file, cmd) = h.key(Key::Enter);
+        assert_eq!(file, Some(PathBuf::from("two.rs")));
+        assert_eq!(cmd, None);
+        assert!(!h.p.is_open());
+        assert_eq!(h.p.selected_idx, 0, "selection reset on close");
+    }
+
+    #[test]
+    fn enter_with_no_results_does_nothing() {
+        let mut h = Harness::new(&["a.rs"]);
+        h.query(">qqqzzz");
+        assert_eq!(h.key(Key::Enter), (None, None));
+        assert!(h.p.is_open());
+        assert_eq!(h.p.selected_idx, 0);
+    }
+
+    #[test]
+    fn arrow_and_tab_navigation_wraps() {
+        let mut h = Harness::new(&[]);
+        h.query(">"); // 12 commands
+        let n = PaletteCommand::all().len();
+        h.key(Key::ArrowUp);
+        assert_eq!(h.p.selected_idx, n - 1, "up from top wraps to bottom");
+        h.key(Key::ArrowDown);
+        assert_eq!(h.p.selected_idx, 0, "down from bottom wraps to top");
+        h.key(Key::Tab);
+        assert_eq!(h.p.selected_idx, 1, "Tab moves down");
+        h.key(Key::ArrowUp);
+        assert_eq!(h.p.selected_idx, 0);
+        h.key(Key::ArrowDown);
+        h.key(Key::ArrowDown);
+        let (_, cmd) = h.key(Key::Enter);
+        assert_eq!(cmd, Some(PaletteCommand::all()[2].clone()));
+    }
+
+    #[test]
+    fn selection_clamped_when_results_shrink() {
+        let mut h = Harness::new(&[]);
+        h.query(">");
+        h.key(Key::ArrowUp);
+        assert_eq!(h.p.selected_idx, 11);
+        h.query(">restart");
+        assert_eq!(h.p.selected_idx, 0);
+        h.query(">qqqzzz");
+        assert_eq!(h.p.selected_idx, 0);
+    }
+
+    #[test]
+    fn escape_closes_without_result() {
+        let mut h = Harness::new(&["a.rs"]);
+        h.query("");
+        h.key(Key::ArrowDown);
+        assert_eq!(h.key(Key::Escape), (None, None));
+        assert!(!h.p.is_open());
+        assert_eq!(h.p.selected_idx, 0);
+    }
+
+    #[test]
+    fn clicking_an_entry_triggers_it() {
+        let mut h = Harness::new(&[]);
+        h.query(">restart");
+        let rows = h.rows();
+        assert_eq!(rows.len(), 1, "one matching command row {rows:?}");
+        let pos = rows[0].center();
+        let press = |pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.p.query = ">restart".into();
+        assert_eq!(
+            h.frame(vec![Event::PointerMoved(pos), press(true)]),
+            (None, None)
+        );
+        let (_, cmd) = h.frame(vec![press(false)]);
+        assert_eq!(cmd, Some(PaletteCommand::RestartLsp));
+        assert!(!h.p.is_open());
+    }
+
+    #[test]
+    fn clicking_a_file_row_opens_it() {
+        let mut h = Harness::new(&["dir/only.rs"]);
+        h.query(">qqqzzz"); // nothing
+        h.query("only");
+        let rows = h.rows();
+        assert!(!rows.is_empty());
+        // Files come first, so the top row is the file.
+        let pos = rows[0].center();
+        let press = |pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frame(vec![Event::PointerMoved(pos), press(true)]);
+        let (file, _) = h.frame(vec![press(false)]);
+        assert_eq!(file, Some(PathBuf::from("dir/only.rs")));
+    }
+
+    // ---- fallback directory walk ----
+
+    #[test]
+    fn walk_skips_hidden_and_build_dirs() {
+        let root = std::env::temp_dir().join(format!("cu-palette-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in [
+            "src/nested",
+            ".git",
+            "target",
+            "node_modules",
+            "dist",
+            "build",
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        for f in [
+            "README.md",
+            "src/lib.rs",
+            "src/nested/deep.rs",
+            ".hidden",
+            ".git/config",
+            "target/out",
+            "node_modules/pkg.js",
+            "dist/a.js",
+            "build/b.o",
+        ] {
+            std::fs::write(root.join(f), b"").unwrap();
+        }
+        let mut out = Vec::new();
+        walk_dir_fallback(&root, &mut out);
+        let mut rel: Vec<String> = out
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        rel.sort();
+        assert_eq!(rel, ["README.md", "src/lib.rs", "src/nested/deep.rs"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn walk_missing_dir_is_empty() {
+        let mut out = Vec::new();
+        walk_dir_fallback(std::path::Path::new("definitely/not/here/xyz"), &mut out);
+        assert!(out.is_empty());
+    }
+}

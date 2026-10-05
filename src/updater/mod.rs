@@ -155,6 +155,17 @@ impl Updater {
     /// Start a background check. `manual` checks report "up to date" and errors to the user,
     /// and ignore `skipped_version`.
     pub fn check(&mut self, manual: bool, skipped_version: Option<&str>, ctx: &egui::Context) {
+        self.check_with(manual, skipped_version, ctx, fetch_latest);
+    }
+
+    /// `check()` with the manifest fetch injected (tests substitute a fake).
+    fn check_with(
+        &mut self,
+        manual: bool,
+        skipped_version: Option<&str>,
+        ctx: &egui::Context,
+        fetch: fn() -> Result<Option<ReleaseInfo>, String>,
+    ) {
         if self.is_busy() || matches!(self.state, UpdateState::Ready(_)) {
             return;
         }
@@ -169,8 +180,7 @@ impl Updater {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let res =
-                fetch_latest().map(|r| r.filter(|info| Some(&info.version) != skipped.as_ref()));
+            let res = fetch().map(|r| r.filter(|info| Some(&info.version) != skipped.as_ref()));
             let _ = tx.send(Msg::Checked(res));
             ctx.request_repaint();
         });
@@ -178,6 +188,15 @@ impl Updater {
 
     /// Download and install (or stage) the available release.
     pub fn install(&mut self, ctx: &egui::Context) {
+        self.install_with(ctx, download_and_apply);
+    }
+
+    /// `install()` with the download/apply step injected (tests substitute a fake).
+    fn install_with(
+        &mut self,
+        ctx: &egui::Context,
+        apply: fn(&ReleaseInfo) -> Result<Option<PathBuf>, String>,
+    ) {
         let UpdateState::Available(info) = &self.state else {
             return;
         };
@@ -186,7 +205,7 @@ impl Updater {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let res = download_and_apply(&info);
+            let res = apply(&info);
             let _ = tx.send(Msg::Installed(res));
             ctx.request_repaint();
         });
@@ -290,11 +309,16 @@ fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
         .body_mut()
         .read_to_string()
         .map_err(|e| format!("reading release manifest: {e}"))?;
+    release_from_manifest(&text, install_kind())
+}
+
+/// Parse `latest.json` and pick the update for this build, if any.
+fn release_from_manifest(text: &str, kind: InstallKind) -> Result<Option<ReleaseInfo>, String> {
     let manifest: Manifest =
-        serde_json::from_str(&text).map_err(|e| format!("parsing release manifest: {e}"))?;
+        serde_json::from_str(text).map_err(|e| format!("parsing release manifest: {e}"))?;
     let current = semver::Version::parse(Updater::current_version())
         .map_err(|e| format!("bad current version: {e}"))?;
-    select_update(manifest, &current, install_kind())
+    select_update(manifest, &current, kind)
 }
 
 /// Pick the asset to install if `manifest` is newer than `current`.
@@ -331,18 +355,27 @@ fn select_update(
 /// installer must handle the upgrade. Everything else is a portable binary we replace.
 fn install_kind() -> InstallKind {
     if cfg!(windows) {
-        let in_program_files = std::env::current_exe()
-            .ok()
-            .and_then(|exe| {
-                let pf = std::env::var_os("ProgramFiles")?;
-                Some(exe.starts_with(pf))
-            })
-            .unwrap_or(false);
-        if in_program_files {
-            return InstallKind::Msi;
-        }
+        return kind_for_location(
+            std::env::current_exe().ok(),
+            std::env::var_os("ProgramFiles"),
+        );
     }
     InstallKind::ReplaceBinary
+}
+
+/// Windows: `Msi` when `exe` lives under `program_files`, else `ReplaceBinary`.
+fn kind_for_location(
+    exe: Option<PathBuf>,
+    program_files: Option<std::ffi::OsString>,
+) -> InstallKind {
+    let in_program_files = exe
+        .and_then(|exe| Some(exe.starts_with(program_files?)))
+        .unwrap_or(false);
+    if in_program_files {
+        InstallKind::Msi
+    } else {
+        InstallKind::ReplaceBinary
+    }
 }
 
 /// Returns the staged MSI path for MSI installs, `None` once the binary has been replaced.
@@ -354,12 +387,21 @@ fn download_and_apply(info: &ReleaseInfo) -> Result<Option<PathBuf>, String> {
         .limit(MAX_ASSET_BYTES)
         .read_to_vec()
         .map_err(|e| format!("downloading {}: {e}", info.asset.name))?;
-    verify_digest(&bytes, &info.asset.sha256)?;
-
     let dir = std::env::temp_dir().join("coding-unicorns-update");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    stage_and_apply(info, &bytes, &dir)
+}
+
+/// Verify `bytes`, write them into `dir`, then stage (MSI) or self-replace (binary).
+fn stage_and_apply(
+    info: &ReleaseInfo,
+    bytes: &[u8],
+    dir: &std::path::Path,
+) -> Result<Option<PathBuf>, String> {
+    verify_digest(bytes, &info.asset.sha256)?;
+
+    std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     let path = dir.join(&info.asset.name);
-    std::fs::write(&path, &bytes).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    std::fs::write(&path, bytes).map_err(|e| format!("writing {}: {e}", path.display()))?;
 
     match info.kind {
         InstallKind::Msi => Ok(Some(path)),
@@ -466,6 +508,563 @@ mod tests {
         assert!(verify_digest(b"abc", abc).is_ok());
         assert!(verify_digest(b"abd", abc).is_err());
         assert!(verify_digest(b"abc", "").is_err());
+    }
+
+    #[test]
+    fn digest_is_case_insensitive_and_reports_actual() {
+        let upper = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
+        assert!(verify_digest(b"abc", upper).is_ok());
+        let err = verify_digest(b"", "00").unwrap_err();
+        // sha256("") is reported so a bad manifest can be diagnosed.
+        assert!(err.contains("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+        assert!(err.contains("expected 00"));
+    }
+
+    // ---- select_update / manifest edge cases ----
+
+    #[test]
+    fn select_update_copies_notes_page_and_kind() {
+        let cur = semver::Version::new(0, 1, 0);
+        let mut m = manifest("1.0.0", &[MSI_ASSET]);
+        m.notes = "notes".into();
+        m.page_url = "https://example.invalid/".into();
+        let info = select_update(m, &cur, InstallKind::Msi).unwrap().unwrap();
+        assert_eq!(info.notes, "notes");
+        assert_eq!(info.page_url, "https://example.invalid/");
+        assert_eq!(info.kind, InstallKind::Msi);
+    }
+
+    #[test]
+    fn select_update_rejects_bad_version() {
+        let cur = semver::Version::new(0, 1, 0);
+        let err =
+            select_update(manifest("latest", &[MSI_ASSET]), &cur, InstallKind::Msi).unwrap_err();
+        assert!(err.contains("bad release version"), "{err}");
+    }
+
+    #[test]
+    fn select_update_prerelease_ordering() {
+        let cur = semver::Version::parse("1.0.0").unwrap();
+        // 1.0.0-rc.1 < 1.0.0: not an update
+        let m = manifest("1.0.0-rc.1", &[MSI_ASSET]);
+        assert!(select_update(m, &cur, InstallKind::Msi).unwrap().is_none());
+        let m = manifest("1.0.1-rc.1", &[MSI_ASSET]);
+        assert!(select_update(m, &cur, InstallKind::Msi).unwrap().is_some());
+    }
+
+    #[test]
+    fn select_update_binary_asset_for_this_platform() {
+        let cur = semver::Version::new(0, 1, 0);
+        match BINARY_ASSET {
+            Some(name) => {
+                let m = manifest("9.0.0", &[MSI_ASSET, name]);
+                let info = select_update(m, &cur, InstallKind::ReplaceBinary)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(info.asset.name, name);
+                assert_eq!(info.kind, InstallKind::ReplaceBinary);
+                // MSI alone is not enough for a portable install.
+                let m = manifest("9.0.0", &[MSI_ASSET]);
+                assert!(select_update(m, &cur, InstallKind::ReplaceBinary).is_err());
+            }
+            None => {
+                let m = manifest("9.0.0", &[MSI_ASSET]);
+                assert!(select_update(m, &cur, InstallKind::ReplaceBinary).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn release_from_manifest_parses_and_compares_to_current() {
+        let json = format!(
+            r#"{{"version":"999.0.0","page_url":"p","assets":[{{"name":"{MSI_ASSET}","url":"u","sha256":"s"}}]}}"#
+        );
+        let info = release_from_manifest(&json, InstallKind::Msi)
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.version, semver::Version::new(999, 0, 0));
+        assert_eq!(info.notes, "", "notes default to empty");
+        assert_eq!(info.asset.url, "u");
+
+        let same = format!(
+            r#"{{"version":"{}","page_url":"p"}}"#,
+            Updater::current_version()
+        );
+        assert!(release_from_manifest(&same, InstallKind::Msi)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn release_from_manifest_rejects_malformed() {
+        let err = release_from_manifest("{not json", InstallKind::Msi).unwrap_err();
+        assert!(err.starts_with("parsing release manifest"), "{err}");
+        // page_url is required
+        assert!(release_from_manifest(r#"{"version":"1.0.0"}"#, InstallKind::Msi).is_err());
+    }
+
+    #[test]
+    fn current_version_is_semver() {
+        assert!(semver::Version::parse(Updater::current_version()).is_ok());
+    }
+
+    // ---- install kind ----
+
+    #[test]
+    fn kind_for_location_detects_program_files() {
+        // Built from components so the test holds on every platform's separator.
+        let root = std::env::temp_dir();
+        let pf_dir = root.join("Program Files");
+        let pf = pf_dir.clone().into_os_string();
+        assert_eq!(
+            kind_for_location(
+                Some(pf_dir.join("Coding Unicorns").join("cu.exe")),
+                Some(pf.clone())
+            ),
+            InstallKind::Msi
+        );
+        assert_eq!(
+            kind_for_location(Some(root.join("tools").join("cu.exe")), Some(pf.clone())),
+            InstallKind::ReplaceBinary
+        );
+        // Path-component match, not string prefix.
+        assert_eq!(
+            kind_for_location(
+                Some(root.join("Program Files (x86)").join("cu.exe")),
+                Some(pf.clone())
+            ),
+            InstallKind::ReplaceBinary
+        );
+        assert_eq!(
+            kind_for_location(None, Some(pf)),
+            InstallKind::ReplaceBinary
+        );
+        assert_eq!(
+            kind_for_location(Some(root.join("x").join("cu.exe")), None),
+            InstallKind::ReplaceBinary
+        );
+    }
+
+    #[test]
+    fn test_binary_is_a_portable_install() {
+        // The test executable lives under target/, never Program Files.
+        assert_eq!(install_kind(), InstallKind::ReplaceBinary);
+    }
+
+    // ---- stage_and_apply (MSI path only: never self-replace the test binary) ----
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "cu-updater-test-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn stage_msi_writes_verified_file() {
+        let dir = scratch_dir("stage");
+        let mut i = info("1.0.0", InstallKind::Msi);
+        i.asset.sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into();
+        let staged = stage_and_apply(&i, b"abc", &dir).unwrap().unwrap();
+        assert_eq!(staged, dir.join(MSI_ASSET));
+        assert_eq!(std::fs::read(&staged).unwrap(), b"abc");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_refuses_checksum_mismatch_without_writing() {
+        let dir = scratch_dir("mismatch");
+        let mut i = info("1.0.0", InstallKind::Msi);
+        i.asset.sha256 = "00".repeat(32);
+        let err = stage_and_apply(&i, b"abc", &dir).unwrap_err();
+        assert!(err.contains("checksum mismatch"));
+        assert!(!dir.exists(), "nothing written before verification");
+        // Even a ReplaceBinary asset is refused before self_replace is reached.
+        let mut i = info("1.0.0", InstallKind::ReplaceBinary);
+        i.asset.sha256 = String::new();
+        assert!(stage_and_apply(&i, b"abc", &dir).is_err());
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn stage_reports_unwritable_dir() {
+        // A regular file where the directory should be.
+        let file = scratch_dir("notadir");
+        std::fs::write(&file, b"x").unwrap();
+        let mut i = info("1.0.0", InstallKind::Msi);
+        i.asset.sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into();
+        let err = stage_and_apply(&i, b"abc", &file).unwrap_err();
+        assert!(err.starts_with("creating"), "{err}");
+        let _ = std::fs::remove_file(&file);
+    }
+
+    // ---- Updater state machine ----
+
+    fn info(version: &str, kind: InstallKind) -> ReleaseInfo {
+        ReleaseInfo {
+            version: semver::Version::parse(version).unwrap(),
+            notes: String::new(),
+            page_url: String::new(),
+            asset: ManifestAsset {
+                name: MSI_ASSET.into(),
+                url: String::new(),
+                sha256: String::new(),
+            },
+            kind,
+        }
+    }
+
+    fn send(u: &Updater, msg: Msg) {
+        u.tx.send(msg).unwrap();
+    }
+
+    /// Poll until the worker result has been consumed (state leaves Checking/Downloading).
+    fn wait(u: &mut Updater) -> Option<UpdateEvent> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let ev = u.poll();
+            if !u.is_busy() {
+                return ev;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("worker never reported");
+    }
+
+    #[test]
+    fn new_updater_is_idle() {
+        let mut u = Updater::default();
+        assert!(matches!(u.state, UpdateState::Idle));
+        assert!(!u.dismissed);
+        assert!(!u.is_busy());
+        assert!(u.exit_action.is_none());
+        assert!(u.poll().is_none(), "no message, no event");
+    }
+
+    #[test]
+    fn is_busy_only_while_checking_or_downloading() {
+        let mut u = Updater::new();
+        for (state, busy) in [
+            (UpdateState::Idle, false),
+            (UpdateState::Checking, true),
+            (UpdateState::UpToDate, false),
+            (
+                UpdateState::Available(info("1.0.0", InstallKind::Msi)),
+                false,
+            ),
+            (
+                UpdateState::Downloading(info("1.0.0", InstallKind::Msi)),
+                true,
+            ),
+            (UpdateState::Ready(info("1.0.0", InstallKind::Msi)), false),
+            (UpdateState::Failed("x".into()), false),
+        ] {
+            u.state = state;
+            assert_eq!(u.is_busy(), busy, "{:?}", u.state);
+        }
+    }
+
+    #[test]
+    fn poll_checked_available() {
+        let mut u = Updater::new();
+        u.state = UpdateState::Checking;
+        send(&u, Msg::Checked(Ok(Some(info("2.0.0", InstallKind::Msi)))));
+        match u.poll() {
+            Some(UpdateEvent::Available(v)) => assert_eq!(v, semver::Version::new(2, 0, 0)),
+            _ => panic!("expected Available"),
+        }
+        assert!(matches!(&u.state, UpdateState::Available(i) if i.version.major == 2));
+    }
+
+    #[test]
+    fn poll_up_to_date_reports_only_when_manual() {
+        let mut u = Updater::new();
+        send(&u, Msg::Checked(Ok(None)));
+        assert!(u.poll().is_none());
+        assert!(matches!(u.state, UpdateState::UpToDate));
+
+        u.manual = true;
+        send(&u, Msg::Checked(Ok(None)));
+        assert!(matches!(u.poll(), Some(UpdateEvent::UpToDate)));
+    }
+
+    #[test]
+    fn poll_check_error_reports_only_when_manual() {
+        let mut u = Updater::new();
+        send(&u, Msg::Checked(Err("offline".into())));
+        assert!(u.poll().is_none());
+        assert!(matches!(&u.state, UpdateState::Failed(e) if e == "offline"));
+
+        u.manual = true;
+        send(&u, Msg::Checked(Err("boom".into())));
+        assert!(matches!(u.poll(), Some(UpdateEvent::Error(e)) if e == "boom"));
+        assert!(matches!(&u.state, UpdateState::Failed(e) if e == "boom"));
+    }
+
+    #[test]
+    fn poll_installed_binary_becomes_ready() {
+        let mut u = Updater::new();
+        u.state = UpdateState::Downloading(info("2.0.0", InstallKind::ReplaceBinary));
+        send(&u, Msg::Installed(Ok(None)));
+        assert!(matches!(u.poll(), Some(UpdateEvent::Ready)));
+        assert!(matches!(&u.state, UpdateState::Ready(i) if i.version.major == 2));
+        assert!(u.staged_msi.is_none());
+    }
+
+    #[test]
+    fn poll_installed_msi_is_staged() {
+        let mut u = Updater::new();
+        u.state = UpdateState::Downloading(info("2.0.0", InstallKind::Msi));
+        send(&u, Msg::Installed(Ok(Some(PathBuf::from("setup.msi")))));
+        assert!(matches!(u.poll(), Some(UpdateEvent::Ready)));
+        assert_eq!(
+            u.staged_msi.as_deref(),
+            Some(std::path::Path::new("setup.msi"))
+        );
+    }
+
+    #[test]
+    fn poll_install_error_always_reported() {
+        let mut u = Updater::new();
+        assert!(!u.manual);
+        u.state = UpdateState::Downloading(info("2.0.0", InstallKind::Msi));
+        send(&u, Msg::Installed(Err("disk full".into())));
+        assert!(matches!(u.poll(), Some(UpdateEvent::Error(e)) if e == "disk full"));
+        assert!(matches!(&u.state, UpdateState::Failed(e) if e == "disk full"));
+    }
+
+    #[test]
+    fn poll_installed_without_download_is_ignored() {
+        let mut u = Updater::new();
+        u.state = UpdateState::UpToDate;
+        send(&u, Msg::Installed(Ok(None)));
+        assert!(u.poll().is_none());
+        // The stray result resets to Idle rather than claiming Ready.
+        assert!(matches!(u.state, UpdateState::Idle));
+        assert!(u.staged_msi.is_none());
+    }
+
+    #[test]
+    fn poll_drains_one_message_per_call() {
+        let mut u = Updater::new();
+        u.manual = true;
+        send(&u, Msg::Checked(Ok(None)));
+        send(&u, Msg::Checked(Err("e".into())));
+        assert!(matches!(u.poll(), Some(UpdateEvent::UpToDate)));
+        assert!(matches!(u.poll(), Some(UpdateEvent::Error(_))));
+        assert!(u.poll().is_none());
+    }
+
+    #[test]
+    fn schedule_restart_requires_ready() {
+        let mut u = Updater::new();
+        u.state = UpdateState::Available(info("2.0.0", InstallKind::Msi));
+        u.schedule_restart();
+        assert!(u.exit_action.is_none());
+
+        u.state = UpdateState::Ready(info("2.0.0", InstallKind::ReplaceBinary));
+        u.schedule_restart();
+        assert!(matches!(u.exit_action, Some(ExitAction::Relaunch)));
+
+        u.staged_msi = Some(PathBuf::from("a.msi"));
+        u.schedule_restart();
+        assert!(
+            matches!(&u.exit_action, Some(ExitAction::RunMsi(p)) if p == &PathBuf::from("a.msi"))
+        );
+    }
+
+    #[test]
+    fn schedule_on_quit_only_for_staged_msi() {
+        let mut u = Updater::new();
+        u.state = UpdateState::Ready(info("2.0.0", InstallKind::ReplaceBinary));
+        u.schedule_on_quit();
+        assert!(
+            u.exit_action.is_none(),
+            "binary updates need nothing on quit"
+        );
+
+        u.staged_msi = Some(PathBuf::from("b.msi"));
+        u.state = UpdateState::Failed("x".into());
+        u.schedule_on_quit();
+        assert!(u.exit_action.is_none(), "not Ready");
+
+        u.state = UpdateState::Ready(info("2.0.0", InstallKind::Msi));
+        u.schedule_on_quit();
+        assert!(
+            matches!(&u.exit_action, Some(ExitAction::RunMsi(p)) if p == &PathBuf::from("b.msi"))
+        );
+    }
+
+    fn fetch_v2() -> Result<Option<ReleaseInfo>, String> {
+        Ok(Some(info("2.0.0", InstallKind::Msi)))
+    }
+
+    fn fetch_none() -> Result<Option<ReleaseInfo>, String> {
+        Ok(None)
+    }
+
+    fn fetch_err() -> Result<Option<ReleaseInfo>, String> {
+        Err("no network".into())
+    }
+
+    fn fetch_unreachable() -> Result<Option<ReleaseInfo>, String> {
+        panic!("guarded check must not fetch")
+    }
+
+    #[test]
+    fn check_finds_update_and_resets_dismissed() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        u.dismissed = true;
+        u.check_with(false, None, &ctx, fetch_v2);
+        assert!(matches!(u.state, UpdateState::Checking));
+        assert!(!u.dismissed);
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::Available(_))));
+        assert!(matches!(u.state, UpdateState::Available(_)));
+    }
+
+    #[test]
+    fn automatic_check_filters_skipped_version() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        u.check_with(false, Some("2.0.0"), &ctx, fetch_v2);
+        assert!(wait(&mut u).is_none(), "skipped silently");
+        assert!(matches!(u.state, UpdateState::UpToDate));
+    }
+
+    #[test]
+    fn manual_check_ignores_skipped_version() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        u.check_with(true, Some("2.0.0"), &ctx, fetch_v2);
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::Available(_))));
+    }
+
+    #[test]
+    fn skipped_older_or_invalid_version_does_not_hide_update() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        u.check_with(false, Some("1.9.0"), &ctx, fetch_v2);
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::Available(_))));
+
+        let mut u = Updater::new();
+        u.check_with(false, Some("not-a-version"), &ctx, fetch_v2);
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::Available(_))));
+    }
+
+    #[test]
+    fn manual_check_reports_up_to_date_and_errors() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        u.check_with(true, None, &ctx, fetch_none);
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::UpToDate)));
+
+        // Failed is not busy, so a new check may start.
+        u.check_with(true, None, &ctx, fetch_err);
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::Error(e)) if e == "no network"));
+
+        // A later automatic check clears the manual flag.
+        u.check_with(false, None, &ctx, fetch_none);
+        assert!(wait(&mut u).is_none());
+    }
+
+    #[test]
+    fn check_is_ignored_while_busy_or_ready() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        for state in [
+            UpdateState::Checking,
+            UpdateState::Downloading(info("2.0.0", InstallKind::Msi)),
+            UpdateState::Ready(info("2.0.0", InstallKind::Msi)),
+        ] {
+            u.state = state;
+            u.dismissed = true;
+            u.check_with(true, None, &ctx, fetch_unreachable);
+            assert!(u.dismissed, "guarded check must not touch state");
+            assert!(!u.manual);
+        }
+        assert!(matches!(u.state, UpdateState::Ready(_)));
+        // Public entry point honours the same guard (and so never hits the network here).
+        u.check(true, None, &ctx);
+        assert!(matches!(u.state, UpdateState::Ready(_)));
+    }
+
+    fn apply_ok_binary(_: &ReleaseInfo) -> Result<Option<PathBuf>, String> {
+        Ok(None)
+    }
+
+    fn apply_ok_msi(i: &ReleaseInfo) -> Result<Option<PathBuf>, String> {
+        Ok(Some(PathBuf::from(&i.asset.name)))
+    }
+
+    fn apply_err(_: &ReleaseInfo) -> Result<Option<PathBuf>, String> {
+        Err("checksum mismatch".into())
+    }
+
+    fn apply_unreachable(_: &ReleaseInfo) -> Result<Option<PathBuf>, String> {
+        panic!("guarded install must not download")
+    }
+
+    #[test]
+    fn install_binary_then_restart_relaunches() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        u.state = UpdateState::Available(info("2.0.0", InstallKind::ReplaceBinary));
+        u.install_with(&ctx, apply_ok_binary);
+        assert!(matches!(u.state, UpdateState::Downloading(_)));
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::Ready)));
+        u.schedule_restart();
+        assert!(matches!(u.exit_action, Some(ExitAction::Relaunch)));
+    }
+
+    #[test]
+    fn install_msi_then_quit_runs_installer() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        u.state = UpdateState::Available(info("2.0.0", InstallKind::Msi));
+        u.install_with(&ctx, apply_ok_msi);
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::Ready)));
+        u.schedule_on_quit();
+        assert!(
+            matches!(&u.exit_action, Some(ExitAction::RunMsi(p)) if p == &PathBuf::from(MSI_ASSET))
+        );
+    }
+
+    #[test]
+    fn install_failure_is_reported() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        u.state = UpdateState::Available(info("2.0.0", InstallKind::Msi));
+        u.install_with(&ctx, apply_err);
+        assert!(matches!(wait(&mut u), Some(UpdateEvent::Error(e)) if e == "checksum mismatch"));
+        assert!(matches!(u.state, UpdateState::Failed(_)));
+        u.schedule_restart();
+        assert!(u.exit_action.is_none());
+    }
+
+    #[test]
+    fn install_requires_available() {
+        let ctx = egui::Context::default();
+        let mut u = Updater::new();
+        for state in [
+            UpdateState::Idle,
+            UpdateState::Checking,
+            UpdateState::UpToDate,
+            UpdateState::Downloading(info("2.0.0", InstallKind::Msi)),
+            UpdateState::Ready(info("2.0.0", InstallKind::Msi)),
+            UpdateState::Failed("x".into()),
+        ] {
+            let before = format!("{state:?}");
+            u.state = state;
+            u.install_with(&ctx, apply_unreachable);
+            assert_eq!(format!("{:?}", u.state), before);
+        }
+        // Public entry point honours the same guard.
+        u.install(&ctx);
+        assert!(matches!(u.state, UpdateState::Failed(_)));
     }
 }
 
