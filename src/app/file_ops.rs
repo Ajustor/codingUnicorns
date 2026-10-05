@@ -43,18 +43,24 @@ impl CodingUnicorns {
             return;
         }
 
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok((content, lossy)) = crate::editor::text_format::read_text_file(&path) {
             self.tab_manager.open(path.clone(), content.clone());
-            self.editor.set_content(content.clone(), Some(path.clone()));
+            self.editor.set_content(content, Some(path.clone()));
+            if lossy {
+                self.editor.decoded_lossy = true;
+                log::warn!("{} is not valid UTF-8; decoded lossily", path.display());
+                self.toast("File is not valid UTF-8: invalid bytes shown as \u{FFFD}");
+            }
             self.config.last_file = Some(path.to_string_lossy().to_string());
             self.config.save();
             self.ensure_lsp_for_file(&path);
-            // Notify LSP server that a file was opened.
+            // Notify LSP server that a file was opened — with the normalized
+            // (LF-only) buffer text, so later edits line up with it.
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 let lang_id = super::lsp_ops::language_id_for_ext(ext);
                 let uri = crate::lsp::client::path_to_uri(&path);
                 if let Some(client) = self.lsp.get_mut(ext) {
-                    client.did_open(&uri, lang_id, &content);
+                    client.did_open(&uri, lang_id, &self.editor.buffer.to_string());
                 }
             }
             self.last_lsp_content_version = 0;
@@ -71,12 +77,13 @@ impl CodingUnicorns {
     }
 
     pub fn open_file_in_pane2(&mut self, path: PathBuf) {
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok((content, lossy)) = crate::editor::text_format::read_text_file(&path) {
             if let Some(ref mut tm2) = self.tab_manager2 {
                 tm2.open(path.clone(), content.clone());
             }
             if let Some(ref mut e2) = self.editor2 {
                 e2.set_content(content, Some(path));
+                e2.decoded_lossy = lossy;
             }
         }
     }
