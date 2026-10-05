@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod session;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyBinding {
     pub key: String,

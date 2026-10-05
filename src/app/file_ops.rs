@@ -15,6 +15,8 @@ pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
 
 impl CodingUnicorns {
     pub fn open_file(&mut self, path: PathBuf) {
+        // Keep the outgoing file's cursor/scroll so returning to it restores them.
+        self.remember_view_state();
         // Always clear any previous image state when opening a new file.
         self.pending_image = None;
         self.image_texture = None;
@@ -60,6 +62,7 @@ impl CodingUnicorns {
             self.last_lsp_content_version = 0;
             self.editor.refresh_line_diff();
             self.editor.focus_requested = true;
+            self.apply_view_state(&path);
         }
     }
 
@@ -82,6 +85,11 @@ impl CodingUnicorns {
     }
 
     pub fn open_folder(&mut self, path: PathBuf) {
+        // Persist the outgoing workspace's tabs before switching.
+        let switching = self.workspace_path.as_ref() != Some(&path);
+        if switching {
+            self.save_session();
+        }
         self.workspace_path = Some(path.clone());
         self.file_tree.show_gitignored = self.config.editor.show_gitignored;
         self.file_tree.load(path.clone());
@@ -91,6 +99,9 @@ impl CodingUnicorns {
         self.config.push_recent_workspace(&path_str);
         self.config.last_workspace = Some(path_str);
         self.config.save();
+        if switching {
+            self.restore_session(&path);
+        }
     }
 
     /// Open a folder picked from the "Open Recent" list. A folder that no
