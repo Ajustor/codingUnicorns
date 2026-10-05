@@ -32,7 +32,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     if let Some(t) = app.last_edit_instant {
         if t.elapsed().as_secs() >= 2 {
             if app.editor.is_modified {
-                let _ = app.editor.save();
+                app.save_editor_guarded(false);
             }
             app.last_edit_instant = None;
         } else {
@@ -147,8 +147,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 }
                 ui.separator();
                 if ui.button("Save              Ctrl+S").clicked() {
-                    let _ = app.editor.save();
-                    app.toast("Saved");
+                    if app.save_editor_guarded(true) {
+                        app.toast("Saved");
+                    }
                     ui.close_menu();
                 }
                 ui.separator();
