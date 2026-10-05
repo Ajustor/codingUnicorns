@@ -25,6 +25,7 @@ use crate::ui::statusbar::StatusBar;
 mod claude_ops;
 mod debug_ops;
 pub mod file_ops;
+pub mod file_watch;
 mod lsp_ops;
 mod navigation;
 pub mod session;
@@ -161,6 +162,8 @@ pub struct CodingUnicorns {
     pub updater: crate::updater::Updater,
     /// Per-workspace session (open tabs, cursor/scroll) persistence.
     pub session: session::SessionState,
+    /// External file change detection (workspace watcher + save guard).
+    pub file_watch: file_watch::FileWatchState,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -312,6 +315,7 @@ impl CodingUnicorns {
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),
             session: session::SessionState::load(),
+            file_watch: file_watch::FileWatchState::new(Some(cc.egui_ctx.clone())),
         };
 
         if let Some(path) = initial_path {
@@ -335,6 +339,7 @@ impl CodingUnicorns {
                     app.runner.load_for_workspace(&ws_path);
                     app.config.push_recent_workspace(&ws_str);
                     restored = app.restore_session(&ws_path);
+                    app.start_file_watcher(&ws_path);
                 }
             }
             if let Some(file_str) = app.config.last_file.clone().filter(|_| !restored) {
@@ -408,10 +413,12 @@ impl eframe::App for CodingUnicorns {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save All & Quit").clicked() {
-                            let _ = self.editor.save();
-                            self.confirmed_close = true;
                             self.show_close_warning = false;
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            // A file changed on disk raises the overwrite prompt instead.
+                            if self.save_editor_guarded(true) {
+                                self.confirmed_close = true;
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
                         }
                         if ui.button("Quit Without Saving").clicked() {
                             self.confirmed_close = true;
@@ -453,10 +460,11 @@ impl eframe::App for CodingUnicorns {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save & Close").clicked() {
-                            let _ = self.editor.save();
-                            self.tab_manager.close(pending_id);
                             self.close_tab_id_pending = None;
-                            self.load_active_tab();
+                            if self.save_editor_guarded(true) {
+                                self.tab_manager.close(pending_id);
+                                self.load_active_tab();
+                            }
                         }
                         if ui.button("Discard & Close").clicked() {
                             self.tab_manager.close(pending_id);
@@ -1010,6 +1018,7 @@ impl eframe::App for CodingUnicorns {
             }
         }
 
+        self.tick_file_watch(ctx);
         crate::ui::layout::render(self, ctx);
         self.tick_session();
 
@@ -1116,8 +1125,9 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
                     PaletteCommand::GoToLine => self.editor.show_goto_line = true,
                     PaletteCommand::SaveFile => {
-                        let _ = self.editor.save();
-                        self.toast("Saved");
+                        if self.save_editor_guarded(true) {
+                            self.toast("Saved");
+                        }
                     }
                     PaletteCommand::NewFile => self.open_new_file(),
                     PaletteCommand::OpenFolder => {
@@ -1159,7 +1169,7 @@ impl eframe::App for CodingUnicorns {
         if self.config.editor.auto_save && self.editor.is_modified {
             let window_focused = ctx.input(|i| i.focused);
             if !window_focused {
-                let _ = self.editor.save();
+                self.save_editor_guarded(false);
             }
         }
 

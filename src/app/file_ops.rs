@@ -63,6 +63,7 @@ impl CodingUnicorns {
             self.editor.refresh_line_diff();
             self.editor.focus_requested = true;
             self.apply_view_state(&path);
+            self.record_file_stamp(&path);
         }
     }
 
@@ -101,6 +102,7 @@ impl CodingUnicorns {
         self.config.save();
         if switching {
             self.restore_session(&path);
+            self.start_file_watcher(&path);
         }
     }
 
