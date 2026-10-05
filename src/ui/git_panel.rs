@@ -80,6 +80,17 @@ impl GitPanel {
                     git.last_error = None;
                 }
             }
+            if ui
+                .button("Fetch")
+                .on_hover_text("Fetch origin and update ahead/behind counts")
+                .clicked()
+            {
+                if let Err(e) = git.fetch() {
+                    git.last_error = Some(e);
+                } else {
+                    git.last_error = None;
+                }
+            }
         });
 
         // Error display

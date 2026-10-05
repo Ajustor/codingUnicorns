@@ -9,6 +9,7 @@
 //! failed attempt, so each strategy is tried once and the callback then gives
 //! up with a readable error instead of looping forever.
 
+use super::GitStatus;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -247,9 +248,23 @@ pub(crate) fn push_remote(remote: &mut git2::Remote, refspecs: &[&str]) -> Resul
     }
 }
 
+impl GitStatus {
+    /// Fetch every configured refspec of `origin`, then refresh (ahead/behind).
+    pub fn fetch(&mut self) -> Result<(), String> {
+        let repo = self.open_repo()?;
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|e| format!("Remote error: {e}"))?;
+        fetch_remote(&mut remote, &[])?;
+        self.refresh();
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::tests::{bare_origin, TestRepo};
     use git2::CredentialType as T;
 
     const SSH_URL: &str = "git@example.com:me/repo.git";
@@ -382,5 +397,56 @@ mod tests {
             s.describe_error("Push", &generic),
             "Authentication failed for x: tried y"
         );
+    }
+
+    #[test]
+    fn fetch_updates_tracking_refs_and_behind_count() {
+        let r = TestRepo::new();
+        r.write("a.txt", "1");
+        r.commit_all("init");
+        let (_bare, url) = bare_origin();
+        r.repo.remote("origin", &url).unwrap();
+        let mut s = r.status();
+        s.push().unwrap();
+
+        // Someone else pushes two commits.
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = git2::Repository::clone(&url, other_dir.path()).unwrap();
+        for i in 0..2 {
+            std::fs::write(other_dir.path().join("b.txt"), i.to_string()).unwrap();
+            let mut idx = other.index().unwrap();
+            idx.add_path(Path::new("b.txt")).unwrap();
+            idx.write().unwrap();
+            let tree = other.find_tree(idx.write_tree().unwrap()).unwrap();
+            let sig = crate::git::tests::sig("Other");
+            let parent = other.head().unwrap().peel_to_commit().unwrap();
+            other
+                .commit(Some("HEAD"), &sig, &sig, "remote", &tree, &[&parent])
+                .unwrap();
+        }
+        let tip = other.head().unwrap().target().unwrap();
+        push_remote(
+            &mut other.find_remote("origin").unwrap(),
+            &["refs/heads/main:refs/heads/main"],
+        )
+        .unwrap();
+
+        assert_eq!((s.ahead, s.behind), (0, 0), "not fetched yet");
+        s.fetch().unwrap();
+        assert_eq!((s.ahead, s.behind), (0, 2));
+        let tracking = r.repo.find_reference("refs/remotes/origin/main").unwrap();
+        assert_eq!(tracking.target(), Some(tip));
+    }
+
+    #[test]
+    fn fetch_errors() {
+        let mut s = GitStatus::new();
+        assert!(s.fetch().is_err());
+        let r = TestRepo::new();
+        let mut s = r.status();
+        assert!(s.fetch().unwrap_err().starts_with("Remote error"));
+        let missing = r.path().join("no-such-remote-dir");
+        r.repo.remote("origin", &missing.to_string_lossy()).unwrap();
+        assert!(s.fetch().unwrap_err().starts_with("Fetch error"));
     }
 }
