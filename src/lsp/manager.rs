@@ -66,6 +66,20 @@ impl LspManager {
         out
     }
 
+    /// Send `workspace/symbol` to every connected server. Returns the
+    /// `(extension, request id)` pairs to match against [`Self::poll_all`] output.
+    pub fn request_workspace_symbols(&mut self, query: &str) -> Vec<(String, u64)> {
+        let mut out: Vec<(String, u64)> = self
+            .clients
+            .iter_mut()
+            .filter(|(_, c)| c.is_connected)
+            .map(|(ext, c)| (ext.clone(), c.request_workspace_symbols(query)))
+            .filter(|(_, id)| *id != 0)
+            .collect();
+        out.sort();
+        out
+    }
+
     /// No-op: LSP servers are only started when an extension provides a command
     /// via `ensure_started_with_cmd()`.
     pub fn ensure_started(&mut self, _ext: &str, _workspace: &Path) {
@@ -289,6 +303,23 @@ mod tests {
         m.restart_all();
         assert_ne!(m.diagnostics_revision(), rev);
         assert!(m.workspace_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn workspace_symbols_go_to_every_connected_server() {
+        let mut m = LspManager::new();
+        let (t1, _tx1, _a1) = transport();
+        let (t2, _tx2, _a2) = transport();
+        let (t3, _tx3, _a3) = transport();
+        m.clients
+            .insert("rs".into(), LspClient::connected_for_test(t1));
+        m.clients
+            .insert("py".into(), LspClient::connected_for_test(t2));
+        m.clients
+            .insert("go".into(), LspClient::reconnecting_for_test(t3));
+        let sent = m.request_workspace_symbols("Foo");
+        assert_eq!(sent, vec![("py".to_string(), 2), ("rs".to_string(), 2)]);
+        assert!(LspManager::new().request_workspace_symbols("x").is_empty());
     }
 
     #[test]

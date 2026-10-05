@@ -166,6 +166,18 @@ pub struct DocumentSymbol {
     pub line: u32,
 }
 
+/// One result of a `workspace/symbol` query.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspaceSymbol {
+    pub name: String,
+    pub kind: String,
+    /// Enclosing symbol (module, class, …) as reported by the server.
+    pub container: Option<String>,
+    pub path: PathBuf,
+    pub line: u32,
+    pub col: u32,
+}
+
 /// Human-readable name of an LSP `SymbolKind` number.
 pub fn symbol_kind_name(kind: u64) -> &'static str {
     match kind {
@@ -351,6 +363,9 @@ impl LspClient {
                                 "hover": { "contentFormat": ["plaintext", "markdown"] },
                                 "completion": { "completionItem": { "snippetSupport": false } },
                                 "publishDiagnostics": {}
+                            },
+                            "workspace": {
+                                "symbol": {}
                             }
                         }
                     }
@@ -741,6 +756,49 @@ impl LspClient {
             }
         }
         symbols
+    }
+
+    /// Request `workspace/symbol` for `query`. Returns the request id.
+    pub fn request_workspace_symbols(&mut self, query: &str) -> u64 {
+        let Some(inner) = &mut self.inner else {
+            return 0;
+        };
+        let id = Self::next_id(inner);
+        let _ = inner.transport.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "workspace/symbol",
+            "params": { "query": query }
+        }));
+        id
+    }
+
+    /// Parse a `workspace/symbol` response. Accepts both `SymbolInformation[]`
+    /// (`location.range`) and `WorkspaceSymbol[]` (whose `location` may be just
+    /// `{ uri }`, in which case the position defaults to the top of the file).
+    pub fn parse_workspace_symbols(response: &Value) -> Vec<WorkspaceSymbol> {
+        let Some(result) = response.get("result").and_then(|r| r.as_array()) else {
+            return vec![];
+        };
+        result
+            .iter()
+            .filter_map(|item| {
+                let name = item["name"].as_str().filter(|n| !n.is_empty())?;
+                let uri = item["location"]["uri"].as_str()?;
+                let start = &item["location"]["range"]["start"];
+                Some(WorkspaceSymbol {
+                    name: name.to_string(),
+                    kind: symbol_kind_name(item["kind"].as_u64().unwrap_or(0)).to_string(),
+                    container: item["containerName"]
+                        .as_str()
+                        .filter(|c| !c.is_empty())
+                        .map(|c| c.to_string()),
+                    path: uri_to_path(uri),
+                    line: start["line"].as_u64().unwrap_or(0) as u32,
+                    col: start["character"].as_u64().unwrap_or(0) as u32,
+                })
+            })
+            .collect()
     }
 
     /// Request find-all-references. Returns the request id.
@@ -1612,6 +1670,54 @@ mod tests {
         assert_eq!(syms[4].line, 0, "missing range defaults to 0");
         assert!(LspClient::parse_document_symbols(&json!({"result": null})).is_empty());
         assert!(LspClient::parse_document_symbols(&json!({"result": {}})).is_empty());
+    }
+
+    #[test]
+    fn workspace_symbols_request_and_disconnected_noop() {
+        assert_eq!(LspClient::new().request_workspace_symbols("q"), 0);
+        let mut h = connected();
+        let id = h.client.request_workspace_symbols("Foo");
+        assert_eq!(id, 2);
+        let sent = h.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["method"], "workspace/symbol");
+        assert_eq!(sent[0]["id"], 2);
+        assert_eq!(sent[0]["params"], json!({"query": "Foo"}));
+    }
+
+    #[test]
+    fn parse_workspace_symbols_both_formats() {
+        let resp = json!({"result": [
+            {"name": "Foo", "kind": 23, "containerName": "crate::a",
+             "location": {"uri": "file:///src/a.rs",
+                          "range": {"start": {"line": 4, "character": 11}}}},
+            // WorkspaceSymbol with a location lacking a range.
+            {"name": "bar", "kind": 12, "containerName": "",
+             "location": {"uri": "file:///my%20dir/b.rs"}},
+            {"name": "", "kind": 12, "location": {"uri": "file:///c.rs"}},
+            {"name": "nouri", "kind": 12},
+            {"name": "Odd", "kind": 999, "location": {"uri": "file:///d.rs"}}
+        ]});
+        let syms = LspClient::parse_workspace_symbols(&resp);
+        assert_eq!(syms.len(), 3);
+        assert_eq!(
+            syms[0],
+            WorkspaceSymbol {
+                name: "Foo".into(),
+                kind: "Struct".into(),
+                container: Some("crate::a".into()),
+                path: PathBuf::from("/src/a.rs"),
+                line: 4,
+                col: 11,
+            }
+        );
+        assert_eq!(syms[1].kind, "Function");
+        assert_eq!(syms[1].container, None, "empty container dropped");
+        assert_eq!(syms[1].path, PathBuf::from("/my dir/b.rs"));
+        assert_eq!((syms[1].line, syms[1].col), (0, 0));
+        assert_eq!(syms[2].kind, "Symbol");
+        assert!(LspClient::parse_workspace_symbols(&json!({"result": null})).is_empty());
+        assert!(LspClient::parse_workspace_symbols(&json!({})).is_empty());
     }
 
     #[test]

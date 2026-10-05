@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use serde_json::Value;
+
 use super::workspace_search::{find_definition_in_buffer, search_workspace_for_symbol};
 use super::CodingUnicorns;
 
@@ -19,6 +21,83 @@ impl CodingUnicorns {
         let len = self.editor.buffer.line(row).chars().count();
         self.editor.cursor.set_position(row, col.min(len));
         self.editor.scroll_to_cursor = true;
+    }
+
+    /// Called after each palette frame: sends the debounced `#` query to every
+    /// server, fetches document symbols for `@`, and navigates to a picked symbol.
+    pub(crate) fn drive_palette_symbols(&mut self, ctx: &egui::Context) {
+        if !self.command_palette.is_open() {
+            self.palette_ws_symbol_ids.clear();
+            self.palette_doc_symbols_id = None;
+        }
+        let now = std::time::Instant::now();
+        if let Some(query) = self.command_palette.take_workspace_symbol_query(now) {
+            self.palette_ws_symbol_ids = self.lsp.request_workspace_symbols(&query);
+            if self.palette_ws_symbol_ids.is_empty() {
+                // No server to ask: settle on an empty result instead of "Searching…".
+                self.command_palette
+                    .receive_workspace_symbols(vec![], false);
+            }
+        }
+        if self.command_palette.workspace_symbol_debounce_pending()
+            || self.command_palette.workspace_symbols_pending
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if self.command_palette.take_document_symbols_request() {
+            self.request_palette_document_symbols();
+        }
+        if let Some((path, line, col)) = self.command_palette.picked_location.take() {
+            self.goto_location(path, line, col);
+        }
+    }
+
+    /// Seed `@` mode with the outline's symbols and ask the server for fresh ones.
+    fn request_palette_document_symbols(&mut self) {
+        let path = self.editor.current_path.clone();
+        self.command_palette.document_symbols_path = path.clone();
+        self.command_palette.document_symbols = match path {
+            Some(_) => self.outline_symbols.clone(),
+            None => vec![],
+        };
+        self.palette_doc_symbols_id = None;
+        let Some(path) = path else { return };
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            return;
+        };
+        if let Some(client) = self.lsp.get_mut(ext) {
+            if client.is_connected {
+                let uri = crate::lsp::client::path_to_uri(&path);
+                let id = client.request_document_symbols(&uri);
+                self.palette_doc_symbols_id = Some((ext.to_string(), id));
+            }
+        }
+    }
+
+    /// Route responses to the palette's symbol requests (matched on server +
+    /// id, since ids are only unique per server). Returns true when consumed.
+    pub(crate) fn handle_palette_lsp_response(
+        &mut self,
+        ext: &str,
+        id: u64,
+        response: &Value,
+    ) -> bool {
+        let matches = |k: &(String, u64)| k.0 == ext && k.1 == id;
+        if self.palette_doc_symbols_id.as_ref().is_some_and(matches) {
+            self.palette_doc_symbols_id = None;
+            self.command_palette.document_symbols =
+                crate::lsp::LspClient::parse_document_symbols(response);
+            return true;
+        }
+        if let Some(pos) = self.palette_ws_symbol_ids.iter().position(matches) {
+            self.palette_ws_symbol_ids.remove(pos);
+            let symbols = crate::lsp::LspClient::parse_workspace_symbols(response);
+            let still_pending = !self.palette_ws_symbol_ids.is_empty();
+            self.command_palette
+                .receive_workspace_symbols(symbols, still_pending);
+            return true;
+        }
+        false
     }
 
     pub(crate) fn ensure_lsp_for_file(&mut self, path: &std::path::Path) {
