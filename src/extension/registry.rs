@@ -240,10 +240,7 @@ mod tests {
             .unwrap();
         assert!(g.enabled);
         assert_eq!(g.path, good);
-        assert_eq!(
-            g.lib_path.as_deref(),
-            Some(good.join(&lib).as_path())
-        );
+        assert_eq!(g.lib_path.as_deref(), Some(good.join(&lib).as_path()));
         let src = g.source.as_ref().unwrap();
         assert_eq!(src.kind, super::super::manifest::SourceKind::Folder);
         assert_eq!(src.path.as_deref(), Some("/src/good"));

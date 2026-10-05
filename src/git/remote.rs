@@ -331,16 +331,8 @@ mod tests {
         let dir = ssh_dir_with(&["id_ed25519"]);
         let mut st = AuthState::default();
         let mut call = || st.credentials(SSH_URL, Some("git"), T::SSH_KEY, Some(dir.path()));
-        assert_eq!(
-            credtype(&call().unwrap()),
-            T::SSH_KEY.bits(),
-            "agent"
-        );
-        assert_eq!(
-            credtype(&call().unwrap()),
-            T::SSH_KEY.bits(),
-            "key file"
-        );
+        assert_eq!(credtype(&call().unwrap()), T::SSH_KEY.bits(), "agent");
+        assert_eq!(credtype(&call().unwrap()), T::SSH_KEY.bits(), "key file");
         let err = call().err().unwrap();
         assert_eq!(err.code(), git2::ErrorCode::Auth);
         let msg = err.message();
