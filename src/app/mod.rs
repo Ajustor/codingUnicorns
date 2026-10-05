@@ -411,13 +411,16 @@ impl eframe::App for CodingUnicorns {
                         }
                         if ui.button("Cancel").clicked() {
                             self.show_close_warning = false;
-                            // A "Restart now" from the updater shouldn't fire on a later quit.
-                            if matches!(
-                                self.updater.exit_action,
-                                Some(crate::updater::ExitAction::Relaunch)
-                            ) {
-                                self.updater.exit_action = None;
-                            }
+                            // A "Restart now" from the updater shouldn't relaunch on a later
+                            // quit; a staged MSI is still applied then, just without relaunch.
+                            use crate::updater::ExitAction;
+                            self.updater.exit_action = match self.updater.exit_action.take() {
+                                Some(ExitAction::Relaunch) => None,
+                                Some(ExitAction::RunMsiThenRelaunch(msi)) => {
+                                    Some(ExitAction::RunMsi(msi))
+                                }
+                                other => other,
+                            };
                         }
                     });
                 });
