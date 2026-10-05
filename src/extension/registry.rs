@@ -68,15 +68,7 @@ impl ExtensionRegistry {
     }
 
     fn find_lib(dir: &std::path::Path) -> Option<PathBuf> {
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
-            let p = entry.path();
-            if let Some(ext) = p.extension() {
-                if ext == "so" || ext == "dll" || ext == "dylib" {
-                    return Some(p);
-                }
-            }
-        }
-        None
+        find_platform_lib(dir)
     }
 
     /// Check all installed extensions for available updates (compares version strings).
@@ -147,6 +139,24 @@ impl Default for ExtensionRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Whether `path` is a dynamic library loadable on this platform.
+///
+/// Release archives ship `.dll`, `.so` and `.dylib` side by side; only the one
+/// matching the running OS can be loaded.
+pub(crate) fn is_platform_lib(path: &std::path::Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext == std::env::consts::DLL_EXTENSION)
+}
+
+/// First library in `dir` loadable on this platform.
+pub(crate) fn find_platform_lib(dir: &std::path::Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|p| is_platform_lib(p))
 }
 
 #[cfg(test)]
@@ -270,16 +280,16 @@ mod tests {
     }
 
     #[test]
-    fn find_lib_recognises_all_platform_extensions() {
-        for ext in ["so", "dll", "dylib"] {
-            let tmp = tempfile::tempdir().unwrap();
-            std::fs::write(tmp.path().join("readme.md"), b"").unwrap();
-            std::fs::write(tmp.path().join(format!("libx.{ext}")), b"").unwrap();
-            assert_eq!(
-                ExtensionRegistry::find_lib(tmp.path()),
-                Some(tmp.path().join(format!("libx.{ext}")))
-            );
+    fn find_lib_picks_only_the_current_platform_library() {
+        // Release archives ship every platform's build side by side.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("readme.md"), b"").unwrap();
+        for name in ["libx.dylib", "libx.so", "x.dll"] {
+            std::fs::write(tmp.path().join(name), b"").unwrap();
         }
+        let found = ExtensionRegistry::find_lib(tmp.path()).unwrap();
+        assert_eq!(found.extension().unwrap(), std::env::consts::DLL_EXTENSION);
+
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("noext"), b"").unwrap();
         assert!(ExtensionRegistry::find_lib(tmp.path()).is_none());

@@ -1009,15 +1009,7 @@ fn copy_lib_safe(src: &std::path::Path, dest: &std::path::Path) -> std::io::Resu
 }
 
 fn find_lib_file(release_dir: &std::path::Path) -> Option<PathBuf> {
-    for entry in std::fs::read_dir(release_dir).ok()?.flatten() {
-        let p = entry.path();
-        if let Some(ext) = p.extension() {
-            if ext == "so" || ext == "dll" || ext == "dylib" {
-                return Some(p);
-            }
-        }
-    }
-    None
+    super::registry::find_platform_lib(release_dir)
 }
 
 // ── ZIP installer ────────────────────────────────────────────────────────────
@@ -1180,9 +1172,8 @@ fn zip_install_inner(
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
 
-            let is_lib = file_name.ends_with(".dll")
-                || file_name.ends_with(".so")
-                || file_name.ends_with(".dylib");
+            // Archives may bundle every platform's build; keep only ours.
+            let is_lib = super::registry::is_platform_lib(std::path::Path::new(file_name));
             let is_manifest = file_name == "manifest.toml";
 
             if !is_lib && !is_manifest {
@@ -1227,7 +1218,7 @@ fn zip_install_inner(
             let _ = tx.send(WorkspaceStatus::ModuleFailed {
                 name: dir_name.clone(),
                 reason: if !has_lib {
-                    "No .dll/.so/.dylib found".to_string()
+                    format!("No .{} library found", std::env::consts::DLL_EXTENSION)
                 } else {
                     "No manifest.toml found".to_string()
                 },
@@ -1244,6 +1235,9 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::path::Path;
+
+    /// Library extension for the running platform (zip installs keep only it).
+    const DLL: &str = std::env::consts::DLL_EXTENSION;
 
     fn manifest(id: &str) -> String {
         format!(
@@ -1384,16 +1378,20 @@ mod tests {
     }
 
     #[test]
-    fn find_lib_file_returns_any_library() {
+    fn find_lib_file_returns_the_platform_library() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(find_lib_file(&tmp.path().join("missing")).is_none());
         write(&tmp.path().join("build.log"), b"");
         assert!(find_lib_file(tmp.path()).is_none());
-        write(&tmp.path().join("foo.dylib"), b"");
-        assert_eq!(
-            find_lib_file(tmp.path()),
-            Some(tmp.path().join("foo.dylib"))
+        let other = if cfg!(windows) { "foo.so" } else { "foo.dll" };
+        write(&tmp.path().join(other), b"");
+        assert!(
+            find_lib_file(tmp.path()).is_none(),
+            "foreign library ignored"
         );
+        let native = format!("foo.{}", std::env::consts::DLL_EXTENSION);
+        write(&tmp.path().join(&native), b"");
+        assert_eq!(find_lib_file(tmp.path()), Some(tmp.path().join(native)));
     }
 
     #[test]
@@ -1521,7 +1519,10 @@ mod tests {
             let m = manifest(id);
             make_zip(
                 &zip,
-                &[("m/manifest.toml", m.as_bytes()), ("m/m.dll", b"pwned")],
+                &[
+                    ("m/manifest.toml", m.as_bytes()),
+                    (&format!("m/m.{DLL}"), b"pwned"),
+                ],
             );
             // Unsafe manifests are not offered for install at all.
             assert!(discover_zip_modules(&zip).unwrap().is_empty(), "{id}");
@@ -1544,8 +1545,8 @@ mod tests {
             &zip,
             &[
                 ("m\\manifest.toml", m.as_bytes()),
-                ("m\\target\\release\\m.dll", b"1"),
-                ("m\\..\\..\\evil.dll", b"pwned"),
+                (&format!("m\\target\\release\\m.{DLL}"), b"1"),
+                (&format!("m\\..\\..\\evil.{DLL}"), b"pwned"),
             ],
         );
         let st = run_zip(&zip, &exts, None);
@@ -1556,10 +1557,10 @@ mod tests {
                 total: 1
             })
         );
-        assert!(exts.join("acme.m").join("m.dll").is_file());
-        assert!(exts.join("acme.m").join("evil.dll").is_file());
-        assert!(!tmp.path().join("evil.dll").exists());
-        assert!(!exts.join("evil.dll").exists());
+        assert!(exts.join("acme.m").join(format!("m.{DLL}")).is_file());
+        assert!(exts.join("acme.m").join(format!("evil.{DLL}")).is_file());
+        assert!(!tmp.path().join(format!("evil.{DLL}")).exists());
+        assert!(!exts.join(format!("evil.{DLL}")).exists());
     }
 
     #[test]
@@ -1785,6 +1786,7 @@ mod tests {
                 ("mod-a/manifest.toml", ma.as_bytes()),
                 ("mod-a/mod_a.dll", b"dll-bytes"),
                 ("mod-a/libmod_a.so", b"so-bytes"),
+                ("mod-a/libmod_a.dylib", b"dylib-bytes"),
                 ("mod-a/README.md", b"ignored"),
                 ("mod-a/src/", b""),
                 ("mod-b/manifest.toml", mb.as_bytes()),
@@ -1800,7 +1802,7 @@ mod tests {
         };
         let no_lib = |n: &str| WorkspaceStatus::ModuleFailed {
             name: n.into(),
-            reason: "No .dll/.so/.dylib found".into(),
+            reason: format!("No .{} library found", std::env::consts::DLL_EXTENSION),
         };
         assert_eq!(
             st,
@@ -1817,8 +1819,19 @@ mod tests {
             ]
         );
         let a = exts.join("acme.a");
-        assert_eq!(std::fs::read(a.join("mod_a.dll")).unwrap(), b"dll-bytes");
-        assert_eq!(std::fs::read(a.join("libmod_a.so")).unwrap(), b"so-bytes");
+        // Only the library for the running platform is extracted.
+        let libs = [
+            ("mod_a.dll", "dll", b"dll-bytes".as_slice()),
+            ("libmod_a.so", "so", b"so-bytes".as_slice()),
+            ("libmod_a.dylib", "dylib", b"dylib-bytes".as_slice()),
+        ];
+        for (name, ext, bytes) in libs {
+            if ext == std::env::consts::DLL_EXTENSION {
+                assert_eq!(std::fs::read(a.join(name)).unwrap(), bytes);
+            } else {
+                assert!(!a.join(name).exists(), "{name} is for another platform");
+            }
+        }
         assert!(a.join("manifest.toml").is_file());
         assert!(
             !a.join("README.md").exists(),
@@ -1840,9 +1853,9 @@ mod tests {
             &zip,
             &[
                 ("a/manifest.toml", ma.as_bytes()),
-                ("a/a.dll", b"1"),
+                (&format!("a/a.{DLL}"), b"1"),
                 ("b/manifest.toml", mb.as_bytes()),
-                ("b/b.dll", b"2"),
+                (&format!("b/b.{DLL}"), b"2"),
             ],
         );
         let exts = tmp.path().join("exts");
@@ -1855,7 +1868,7 @@ mod tests {
                 total: 1
             })
         );
-        assert!(exts.join("acme.b").join("b.dll").is_file());
+        assert!(exts.join("acme.b").join(format!("b.{DLL}")).is_file());
         assert!(!exts.join("acme.a").exists());
 
         let none = vec!["zzz".to_string()];
@@ -1893,8 +1906,8 @@ mod tests {
             &zip,
             &[
                 ("m/manifest.toml", m.as_bytes()),
-                ("m/../../evil.dll", b"pwned"),
-                ("m/../../../evil2.dll", b"pwned"),
+                (&format!("m/../../evil.{DLL}"), b"pwned"),
+                (&format!("m/../../../evil2.{DLL}"), b"pwned"),
                 ("m/sub/../../manifest.toml", m.as_bytes()),
             ],
         );
@@ -1907,11 +1920,11 @@ mod tests {
             })
         );
         // Entries are flattened to their file name inside the extension dir.
-        assert!(exts.join("acme.m").join("evil.dll").is_file());
-        assert!(!root.join("evil.dll").exists());
-        assert!(!tmp.path().join("evil.dll").exists());
-        assert!(!tmp.path().join("evil2.dll").exists());
-        assert!(!exts.join("evil.dll").exists());
+        assert!(exts.join("acme.m").join(format!("evil.{DLL}")).is_file());
+        assert!(!root.join(format!("evil.{DLL}")).exists());
+        assert!(!tmp.path().join(format!("evil.{DLL}")).exists());
+        assert!(!tmp.path().join(format!("evil2.{DLL}")).exists());
+        assert!(!exts.join(format!("evil.{DLL}")).exists());
     }
 
     #[test]
@@ -1922,7 +1935,10 @@ mod tests {
         let m = manifest("../escaped");
         make_zip(
             &zip,
-            &[("m/manifest.toml", m.as_bytes()), ("m/m.dll", b"pwned")],
+            &[
+                ("m/manifest.toml", m.as_bytes()),
+                (&format!("m/m.{DLL}"), b"pwned"),
+            ],
         );
         let _ = run_zip(&zip, &exts, None);
         assert!(
@@ -1938,7 +1954,10 @@ mod tests {
         let m = manifest("acme.m");
         make_zip(
             &zip,
-            &[("m\\manifest.toml", m.as_bytes()), ("m\\m.dll", b"1")],
+            &[
+                ("m\\manifest.toml", m.as_bytes()),
+                (&format!("m\\m.{DLL}"), b"1"),
+            ],
         );
         assert_eq!(discover_zip_modules(&zip).unwrap().len(), 1);
         let st = run_zip(&zip, &tmp.path().join("exts"), None);
