@@ -1673,22 +1673,36 @@ impl Editor {
                     });
 
                     // Copy / Cut (need ui for output_mut)
-                    let do_copy =
-                        ui.input(|i| {
-                            i.events.iter().any(|e| matches!(
-                        e,
-                        egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. }
-                        if modifiers.ctrl
-                    ))
-                        });
-                    let do_cut =
-                        ui.input(|i| {
-                            i.events.iter().any(|e| matches!(
-                        e,
-                        egui::Event::Key { key: egui::Key::X, pressed: true, modifiers, .. }
-                        if modifiers.ctrl
-                    ))
-                        });
+                    // egui-winit turns Ctrl+C / Ctrl+X into Event::Copy / Event::Cut
+                    // and emits no Key event for them; the Key arms cover other backends.
+                    let do_copy = ui.input(|i| {
+                        i.events.iter().any(|e| {
+                            matches!(
+                                e,
+                                egui::Event::Copy
+                                    | egui::Event::Key {
+                                        key: egui::Key::C,
+                                        pressed: true,
+                                        modifiers: egui::Modifiers { ctrl: true, .. },
+                                        ..
+                                    }
+                            )
+                        })
+                    });
+                    let do_cut = ui.input(|i| {
+                        i.events.iter().any(|e| {
+                            matches!(
+                                e,
+                                egui::Event::Cut
+                                    | egui::Event::Key {
+                                        key: egui::Key::X,
+                                        pressed: true,
+                                        modifiers: egui::Modifiers { ctrl: true, .. },
+                                        ..
+                                    }
+                            )
+                        })
+                    });
 
                     if do_copy {
                         if !self.extra_cursors.is_empty() {
@@ -4171,6 +4185,21 @@ mod tests {
         ed.extra_cursors = vec![extra(0, 0)];
         let out = h.press(&mut ed, Key::C, CTRL);
         assert_eq!(copied(&out).as_deref(), Some("def\nabc"));
+    }
+
+    #[test]
+    fn copy_and_cut_events_from_winit_hit_the_clipboard() {
+        // egui-winit sends Event::Copy / Event::Cut (no Key event) for Ctrl+C / Ctrl+X.
+        let (mut h, mut ed) = setup("hello world");
+        ed.cursor.set_position(0, 5);
+        ed.cursor.sel_anchor = Some((0, 0));
+        let out = h.frame(&mut ed, vec![Event::Copy], NONE);
+        assert_eq!(copied(&out).as_deref(), Some("hello"));
+        assert_eq!(text(&ed), "hello world");
+
+        let out = h.frame(&mut ed, vec![Event::Cut], NONE);
+        assert_eq!(copied(&out).as_deref(), Some("hello"));
+        assert_eq!(text(&ed), " world");
     }
 
     #[test]
