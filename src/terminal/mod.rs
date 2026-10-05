@@ -369,9 +369,14 @@ Is it installed and on PATH?
                 _ => None,
             };
         }
+        // Windows Terminal style: right-click copies the selection, or pastes.
         if resp.secondary_clicked() {
             self.focused = true;
-            self.copy_selection(ui.ctx());
+            if !self.copy_selection(ui.ctx()) {
+                // The integration answers with an `Event::Paste` next frame.
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
         }
     }
 
@@ -506,6 +511,9 @@ Is it installed and on PATH?
         let has_selection = self.selection.is_some();
         let mut to_send = String::new();
         let mut copy = false;
+        let bracketed = self.performer.bracketed_paste;
+        let mut pasted = false;
+        let mut paste_key = false;
         ctx.input_mut(|i| {
             // egui-winit reports Ctrl+Shift+C as `Event::Copy` as well; tell them
             // apart by the modifiers held this frame.
@@ -530,8 +538,10 @@ Is it installed and on PATH?
                     to_send.push('\x18');
                     false
                 }
+                // Ctrl+V and Ctrl+Shift+V both arrive as this from egui-winit.
                 egui::Event::Paste(text) => {
-                    to_send.push_str(text);
+                    to_send.push_str(&paste_payload(text, bracketed));
+                    pasted = true;
                     false
                 }
                 egui::Event::Key {
@@ -543,6 +553,12 @@ Is it installed and on PATH?
                     if modifiers.ctrl && !modifiers.alt {
                         if *key == egui::Key::C && (modifiers.shift || has_selection) {
                             copy = true;
+                            return false;
+                        }
+                        if *key == egui::Key::V && modifiers.shift {
+                            // A backend that reports Ctrl+Shift+V as a key; the
+                            // clipboard is fetched below unless a Paste came too.
+                            paste_key = true;
                             return false;
                         }
                         let seq: Option<&str> = match key {
@@ -601,11 +617,31 @@ Is it installed and on PATH?
         if copy {
             self.copy_selection(ctx);
         }
+        if paste_key && !pasted {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+        }
         if !to_send.is_empty() {
             // Typing clears the selection highlight, like other terminals.
             self.selection = None;
             self.send_input(&to_send);
         }
+    }
+}
+
+/// Bytes to send to the PTY for pasted `text`. When the application enabled
+/// bracketed paste (`CSI ?2004h`) the text is wrapped in `ESC[200~ … ESC[201~`
+/// (with any embedded end marker removed so it cannot break out of the bracket);
+/// otherwise newlines become carriage returns, as typing Enter would send.
+fn paste_payload(text: &str, bracketed: bool) -> String {
+    if bracketed {
+        const END: &str = "\x1b[201~";
+        let mut body = text.to_string();
+        while body.contains(END) {
+            body = body.replace(END, "");
+        }
+        format!("\x1b[200~{body}{END}")
+    } else {
+        text.replace("\r\n", "\r").replace('\n', "\r")
     }
 }
 
@@ -863,12 +899,12 @@ mod tests {
 
     /// Run one frame on a persistent `ctx` (needed for multi-frame pointer
     /// gestures); returns the text copied to the clipboard during the frame.
-    fn run_frame_in(
+    fn run_frame_full(
         ctx: &egui::Context,
         t: &mut Terminal,
         events: Vec<egui::Event>,
         modifiers: egui::Modifiers,
-    ) -> Option<String> {
+    ) -> egui::FullOutput {
         let cfg = crate::config::Config::default();
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -879,10 +915,111 @@ mod tests {
             modifiers,
             ..Default::default()
         };
-        let out = ctx.run(raw, |ctx| {
+        ctx.run(raw, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| t.show_content(ui, &cfg));
-        });
-        out.platform_output
+        })
+    }
+
+    /// Whether the frame asked the integration to read the clipboard.
+    fn requested_paste(out: &egui::FullOutput) -> bool {
+        out.viewport_output.values().any(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::RequestPaste))
+        })
+    }
+
+    #[test]
+    fn paste_payload_brackets_or_converts_newlines() {
+        assert_eq!(paste_payload("a\nb\r\nc", false), "a\rb\rc");
+        assert_eq!(
+            paste_payload("a\nb", true),
+            "\x1b[200~a\nb\x1b[201~",
+            "bracketed text is sent verbatim"
+        );
+        // An embedded end marker cannot terminate the bracket early.
+        assert_eq!(
+            paste_payload("x\x1b[20\x1b[201~1~y", true),
+            "\x1b[200~xy\x1b[201~",
+        );
+    }
+
+    #[test]
+    fn paste_honours_bracketed_paste_mode() {
+        let (mut t, tx, out) = fake_terminal();
+        t.focused = true;
+        run_frame(&mut t, vec![egui::Event::Paste("ls\ncd ..".into())]);
+        assert_eq!(out.take(), b"ls\rcd ..");
+
+        tx.send(b"\x1b[?2004h".to_vec()).unwrap();
+        run_frame(&mut t, vec![egui::Event::Paste("ls\ncd ..".into())]);
+        assert_eq!(out.take(), b"\x1b[200~ls\ncd ..\x1b[201~");
+
+        tx.send(b"\x1b[?2004l".to_vec()).unwrap();
+        run_frame(&mut t, vec![egui::Event::Paste("x\n".into())]);
+        assert_eq!(out.take(), b"x\r");
+    }
+
+    #[test]
+    fn ctrl_shift_v_pastes_exactly_once() {
+        let ctx = egui::Context::default();
+        let (mut t, out, _cell) = shown_terminal(&ctx, "");
+        t.focused = true;
+        let ctrl_shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
+        // egui-winit: a Paste event only.
+        let o = run_frame_full(
+            &ctx,
+            &mut t,
+            vec![egui::Event::Paste("p".into())],
+            ctrl_shift,
+        );
+        assert!(!requested_paste(&o));
+        assert_eq!(out.take(), b"p");
+        // Both a key and a Paste event in the same frame: pasted once.
+        let o = run_frame_full(
+            &ctx,
+            &mut t,
+            vec![
+                key(egui::Key::V, ctrl_shift),
+                egui::Event::Paste("q".into()),
+            ],
+            ctrl_shift,
+        );
+        assert!(!requested_paste(&o));
+        assert_eq!(out.take(), b"q");
+        // Key only: the clipboard is requested (arrives as Paste next frame).
+        let o = run_frame_full(
+            &ctx,
+            &mut t,
+            vec![key(egui::Key::V, ctrl_shift)],
+            ctrl_shift,
+        );
+        assert!(requested_paste(&o));
+        assert!(out.take().is_empty(), "nothing typed for the key itself");
+    }
+
+    #[test]
+    fn right_click_without_selection_requests_paste() {
+        let ctx = egui::Context::default();
+        let (mut t, _out, cell) = shown_terminal(&ctx, "abc");
+        let o = run_frame_full(
+            &ctx,
+            &mut t,
+            click_at(cell(0, 1), egui::PointerButton::Secondary),
+            egui::Modifiers::NONE,
+        );
+        assert!(requested_paste(&o));
+        assert!(t.focused);
+    }
+
+    fn run_frame_in(
+        ctx: &egui::Context,
+        t: &mut Terminal,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> Option<String> {
+        run_frame_full(ctx, t, events, modifiers)
+            .platform_output
             .commands
             .into_iter()
             .find_map(|c| match c {
