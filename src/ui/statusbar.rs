@@ -91,6 +91,34 @@ impl StatusBar {
                             .small(),
                     );
                     ui.separator();
+
+                    // On-disk line ending / encoding (re-applied on save)
+                    let format = editor.text_format;
+                    let encoding = if format.bom { "UTF-8 BOM" } else { "UTF-8" };
+                    ui.label(
+                        egui::RichText::new(format.line_ending.label())
+                            .color(palette.on_accent)
+                            .small(),
+                    );
+                    ui.separator();
+                    if editor.decoded_lossy {
+                        ui.label(
+                            egui::RichText::new("⚠ Invalid UTF-8")
+                                .color(palette.on_accent)
+                                .small(),
+                        )
+                        .on_hover_text(
+                            "The file was not valid UTF-8: invalid bytes are shown as \u{FFFD} \
+                             and saving will replace them.",
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(encoding)
+                                .color(palette.on_accent)
+                                .small(),
+                        );
+                    }
+                    ui.separator();
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -209,8 +237,24 @@ mod tests {
         assert!(has(&t, "main.rs"), "{t:?}");
         assert!(has(&t, "RS"));
         assert!(has(&t, "Spaces: 2"));
+        assert!(has(&t, "LF"));
+        assert!(has(&t, "UTF-8"));
         assert!(has(&t, "Ln 10, Col 5"));
         assert!(!t.iter().any(|s| s.contains("LSP")));
+    }
+
+    #[test]
+    fn line_ending_bom_and_lossy_decoding_indicators() {
+        let mut editor = Editor::new();
+        editor.set_content("\u{FEFF}a\r\nb".to_string(), Some(PathBuf::from("win.txt")));
+        let t = rendered(&editor, "main", LspStatus::Inactive);
+        assert!(has(&t, "CRLF"), "{t:?}");
+        assert!(has(&t, "UTF-8 BOM"), "{t:?}");
+
+        editor.decoded_lossy = true;
+        let t = rendered(&editor, "main", LspStatus::Inactive);
+        assert!(has(&t, "⚠ Invalid UTF-8"), "{t:?}");
+        assert!(!has(&t, "UTF-8 BOM"));
     }
 
     #[test]
