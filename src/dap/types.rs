@@ -43,6 +43,31 @@ pub struct Variable {
     pub variables_reference: i64,
 }
 
+/// A variable scope of a stack frame (Locals, Globals, Registers…).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scope {
+    pub name: String,
+    /// Reference to pass to a `variables` request (0 = no variables).
+    pub variables_reference: i64,
+    /// The adapter flagged this scope as costly to fetch: it is shown
+    /// collapsed and its variables are only requested on expand.
+    pub expensive: bool,
+}
+
+/// Latest evaluation of a watch expression.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WatchResult {
+    /// Evaluation requested, no answer yet (or the session is not paused).
+    Pending,
+    Value {
+        value: String,
+        var_type: Option<String>,
+        /// Non-zero when the result is structured and can be expanded.
+        variables_reference: i64,
+    },
+    Error(String),
+}
+
 /// Lifecycle state of the active debug session.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum DebugSessionState {

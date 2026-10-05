@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::client::DapClient;
-use super::types::{DapConfig, DebugSessionState, StackFrame, Variable};
+use super::types::{DapConfig, DebugSessionState, Scope, StackFrame, Variable};
 
 /// Manages the active debug session and breakpoint storage.
 #[derive(Default)]
@@ -126,11 +126,45 @@ impl DapManager {
             .unwrap_or(&[])
     }
 
-    pub fn variables(&self) -> &[Variable] {
+    /// Index of the call-stack frame whose scopes are shown.
+    pub fn selected_frame(&self) -> usize {
+        self.session.as_ref().map(|s| s.selected_frame).unwrap_or(0)
+    }
+
+    pub fn select_frame(&mut self, idx: usize) {
+        if let Some(sess) = &mut self.session {
+            sess.select_frame(idx);
+        }
+    }
+
+    /// Scopes (Locals, Globals…) of the selected frame.
+    pub fn scopes(&self) -> &[Scope] {
         self.session
             .as_ref()
-            .map(|s| s.variables.as_slice())
+            .map(|s| s.scopes.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Fetched children of a scope or structured variable, `None` if not loaded.
+    pub fn children(&self, variables_reference: i64) -> Option<&[Variable]> {
+        self.session
+            .as_ref()?
+            .children
+            .get(&variables_reference)
+            .map(|v| v.as_slice())
+    }
+
+    pub fn is_loading(&self, variables_reference: i64) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|s| s.is_loading(variables_reference))
+    }
+
+    /// Lazily fetch the children of a scope or structured variable.
+    pub fn request_variables(&mut self, variables_reference: i64) {
+        if let Some(sess) = &mut self.session {
+            sess.request_variables(variables_reference);
+        }
     }
 
     pub fn output_log(&self) -> &[String] {
@@ -215,9 +249,51 @@ mod tests {
         assert!(!m.is_paused());
         assert_eq!(m.paused_thread_id(), None);
         assert!(m.call_stack().is_empty());
-        assert!(m.variables().is_empty());
+        assert!(m.scopes().is_empty());
+        assert!(m.children(1).is_none());
+        assert!(!m.is_loading(1));
+        assert_eq!(m.selected_frame(), 0);
         assert!(m.output_log().is_empty());
         assert_eq!(m.session_state(), DebugSessionState::Idle);
+    }
+
+    #[test]
+    fn scope_queries_delegate_to_session() {
+        let mut m = DapManager::new();
+        // Without a session these are no-ops.
+        m.request_variables(5);
+        m.select_frame(1);
+        let (out, tx, _alive) = with_session(&mut m);
+        tx.send(json!({"type": "event", "event": "stopped", "body": {"threadId": 1}}))
+            .unwrap();
+        m.poll();
+        let seq = sent(&out)[0]["seq"].as_u64().unwrap();
+        tx.send(
+            json!({"type": "response", "command": "stackTrace", "request_seq": seq,
+            "body": {"stackFrames": [{"id": 1}, {"id": 2}]}}),
+        )
+        .unwrap();
+        m.poll();
+        let seq = sent(&out)[0]["seq"].as_u64().unwrap();
+        tx.send(
+            json!({"type": "response", "command": "scopes", "request_seq": seq,
+            "body": {"scopes": [{"name": "Globals", "variablesReference": 8, "expensive": true}]}}),
+        )
+        .unwrap();
+        m.poll();
+        assert_eq!(m.scopes()[0].name, "Globals");
+        assert!(sent(&out).is_empty(), "expensive scope not fetched eagerly");
+        m.request_variables(8);
+        assert!(m.is_loading(8));
+        let msgs = sent(&out);
+        tx.send(json!({"type": "response", "command": "variables",
+            "request_seq": msgs[0]["seq"], "body": {"variables": [{"name": "g"}]}}))
+            .unwrap();
+        m.poll();
+        assert_eq!(m.children(8).unwrap()[0].name, "g");
+        m.select_frame(1);
+        assert_eq!(m.selected_frame(), 1);
+        assert!(m.children(8).is_none());
     }
 
     #[test]
@@ -282,7 +358,7 @@ mod tests {
         assert_eq!(m.paused_thread_id(), None);
         assert_eq!(m.output_log(), ["hi".to_string()]);
         assert!(m.call_stack().is_empty());
-        assert!(m.variables().is_empty());
+        assert!(m.scopes().is_empty());
     }
 
     #[test]

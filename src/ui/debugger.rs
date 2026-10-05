@@ -35,7 +35,7 @@ pub struct DebugPanelAction {
 }
 
 impl DebuggerPanel {
-    pub fn show(&mut self, ui: &mut egui::Ui, dap: &DapManager) -> DebugPanelAction {
+    pub fn show(&mut self, ui: &mut egui::Ui, dap: &mut DapManager) -> DebugPanelAction {
         let mut action = DebugPanelAction::default();
         let state = dap.session_state();
         let is_active = dap.is_active();
@@ -109,13 +109,10 @@ impl DebuggerPanel {
 
         // ── Call Stack ────────────────────────────────────────────────────────
         let frames = dap.call_stack();
+        let selected = dap.selected_frame();
+        let mut select_frame = None;
         if !frames.is_empty() {
-            ui.label(
-                RichText::new("CALL STACK")
-                    .size(10.0)
-                    .color(Color32::from_gray(130))
-                    .strong(),
-            );
+            section_label(ui, "CALL STACK");
             ScrollArea::vertical()
                 .id_salt("dap_call_stack")
                 .max_height(120.0)
@@ -132,16 +129,19 @@ impl DebuggerPanel {
                                 .unwrap_or_default(),
                             frame.line
                         );
-                        let is_top = i == 0;
+                        let is_selected = i == selected;
                         let response = ui.selectable_label(
-                            is_top,
-                            RichText::new(&label).size(11.0).color(if is_top {
+                            is_selected,
+                            RichText::new(&label).size(11.0).color(if is_selected {
                                 Color32::WHITE
                             } else {
                                 Color32::from_gray(180)
                             }),
                         );
                         if response.clicked() {
+                            if i != selected {
+                                select_frame = Some(i);
+                            }
                             if let Some(ref file) = frame.file {
                                 action.navigate_to =
                                     Some((file.clone(), frame.line.saturating_sub(1)));
@@ -151,31 +151,42 @@ impl DebuggerPanel {
                 });
             ui.separator();
         }
+        if let Some(i) = select_frame {
+            dap.select_frame(i);
+        }
 
         // ── Variables ────────────────────────────────────────────────────────
-        let vars = dap.variables();
-        if !vars.is_empty() {
-            ui.label(
-                RichText::new("VARIABLES")
-                    .size(10.0)
-                    .color(Color32::from_gray(130))
-                    .strong(),
-            );
+        // Rendering only borrows `dap`; expansions that need data are collected
+        // and requested afterwards.
+        let mut to_fetch: Vec<i64> = Vec::new();
+        let scopes = dap.scopes();
+        if !scopes.is_empty() {
+            section_label(ui, "VARIABLES");
             ScrollArea::vertical()
                 .id_salt("dap_variables")
-                .max_height(150.0)
+                .max_height(220.0)
                 .show(ui, |ui| {
-                    for v in vars.iter().take(50) {
-                        let type_hint = v.var_type.as_deref().unwrap_or("");
-                        let label = if type_hint.is_empty() {
-                            format!("{}: {}", v.name, v.value)
-                        } else {
-                            format!("{}: {} ({})", v.name, v.value, type_hint)
-                        };
-                        ui.label(RichText::new(label).size(11.0).monospace());
+                    for scope in scopes {
+                        let id = ui.id().with(("dap_scope", &scope.name));
+                        egui::CollapsingHeader::new(RichText::new(&scope.name).size(11.0).strong())
+                            .id_salt(id)
+                            .default_open(!scope.expensive)
+                            .show(ui, |ui| {
+                                show_children(
+                                    ui,
+                                    dap,
+                                    scope.variables_reference,
+                                    id,
+                                    0,
+                                    &mut to_fetch,
+                                );
+                            });
                     }
                 });
             ui.separator();
+        }
+        for r in to_fetch {
+            dap.request_variables(r);
         }
 
         // ── Output log ────────────────────────────────────────────────────────
@@ -208,5 +219,88 @@ impl DebuggerPanel {
         }
 
         action
+    }
+}
+
+/// Nesting limit for structured variables (guards against cyclic object graphs).
+const MAX_VARIABLE_DEPTH: usize = 12;
+
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        RichText::new(text)
+            .size(10.0)
+            .color(Color32::from_gray(130))
+            .strong(),
+    );
+}
+
+/// `name: value (type)` — the type hint is omitted when unknown.
+fn variable_label(name: &str, value: &str, var_type: Option<&str>) -> String {
+    match var_type.filter(|t| !t.is_empty()) {
+        Some(t) => format!("{name}: {value} ({t})"),
+        None => format!("{name}: {value}"),
+    }
+}
+
+/// Render the children of `variables_reference`. Only runs for expanded
+/// nodes, so not-yet-fetched references are queued in `to_fetch` (lazy load).
+fn show_children(
+    ui: &mut egui::Ui,
+    dap: &DapManager,
+    variables_reference: i64,
+    parent_id: egui::Id,
+    depth: usize,
+    to_fetch: &mut Vec<i64>,
+) {
+    let muted = |ui: &mut egui::Ui, text: &str| {
+        ui.label(
+            RichText::new(text)
+                .size(11.0)
+                .italics()
+                .color(Color32::GRAY),
+        );
+    };
+    if variables_reference <= 0 {
+        muted(ui, "No variables");
+        return;
+    }
+    let Some(vars) = dap.children(variables_reference) else {
+        if !dap.is_loading(variables_reference) {
+            to_fetch.push(variables_reference);
+        }
+        muted(ui, "Loading…");
+        return;
+    };
+    if vars.is_empty() {
+        muted(ui, "No variables");
+    }
+    for v in vars {
+        let label = RichText::new(variable_label(&v.name, &v.value, v.var_type.as_deref()))
+            .size(11.0)
+            .monospace();
+        if v.variables_reference > 0 && depth < MAX_VARIABLE_DEPTH {
+            // Keyed by name path (not reference) so expansions survive steps.
+            let id = parent_id.with(&v.name);
+            egui::CollapsingHeader::new(label)
+                .id_salt(id)
+                .default_open(false)
+                .show(ui, |ui| {
+                    show_children(ui, dap, v.variables_reference, id, depth + 1, to_fetch);
+                });
+        } else {
+            ui.label(label);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variable_label_includes_type_only_when_known() {
+        assert_eq!(variable_label("x", "1", Some("int")), "x: 1 (int)");
+        assert_eq!(variable_label("x", "1", Some("")), "x: 1");
+        assert_eq!(variable_label("x", "1", None), "x: 1");
     }
 }

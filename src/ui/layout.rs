@@ -668,7 +668,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         }
                     }
                     SidebarTab::Debug => {
-                        let action = app.debugger_panel.show(ui, &app.dap);
+                        let action = app.debugger_panel.show(ui, &mut app.dap);
                         if action.start_or_continue {
                             if app.dap.is_paused() {
                                 if let Some(tid) = app.dap.paused_thread_id() {
