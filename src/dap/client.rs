@@ -383,11 +383,7 @@ impl DapClient {
 /// Works on parsed values, so the replacement is never re-parsed as JSON.
 fn substitute_variable(value: &mut Value, var: &str, replacement: &str) {
     match value {
-        Value::String(s) => {
-            if s.contains(var) {
-                *s = s.replace(var, replacement);
-            }
-        }
+        Value::String(s) if s.contains(var) => *s = s.replace(var, replacement),
         Value::Array(items) => {
             for item in items {
                 substitute_variable(item, var, replacement);
