@@ -16,14 +16,22 @@ pub struct InstalledExtension {
 pub struct ExtensionRegistry {
     pub installed: Vec<InstalledExtension>,
     pub extensions_dir: PathBuf,
+    /// Last index fetched from the remote module registry, used by
+    /// `check_updates` for registry-installed extensions.
+    pub remote_index: Option<super::remote_registry::RegistryIndex>,
 }
 
 impl ExtensionRegistry {
     pub fn new() -> Self {
-        let extensions_dir = Self::extensions_dir();
+        Self::new_in(Self::extensions_dir())
+    }
+
+    /// Registry rooted at `extensions_dir` (does not scan the disk).
+    pub fn new_in(extensions_dir: PathBuf) -> Self {
         Self {
             installed: Vec::new(),
             extensions_dir,
+            remote_index: None,
         }
     }
 
@@ -72,13 +80,27 @@ impl ExtensionRegistry {
     }
 
     /// Check all installed extensions for available updates (compares version strings).
-    /// Updates `update_available` in-place. Non-blocking — reads only local files.
+    /// Updates `update_available` in-place. Non-blocking — reads only local files
+    /// and the already fetched `remote_index` (registry-installed extensions are
+    /// only checked once an index is loaded).
     pub fn check_updates(&mut self) {
         use super::manifest::SourceKind;
+        let remote_index = self.remote_index.as_ref();
         for ext in &mut self.installed {
             ext.update_available = None;
             let Some(source) = &ext.source else { continue };
             let source_manifest_path = match &source.kind {
+                SourceKind::Registry => {
+                    let id = source.id.as_deref().unwrap_or(&ext.manifest.extension.id);
+                    let Some(module) = remote_index.and_then(|i| i.module(id)) else {
+                        continue;
+                    };
+                    let cur_ver = &ext.manifest.extension.version;
+                    if module.current_asset().is_some() && version_gt(&module.version, cur_ver) {
+                        ext.update_available = Some(module.version.clone());
+                    }
+                    continue;
+                }
                 SourceKind::Workspace => {
                     let Some(path) = &source.path else { continue };
                     let Some(member) = &source.member else {
@@ -124,7 +146,7 @@ impl ExtensionRegistry {
 }
 
 /// Returns true if `a` is a strictly greater semver than `b`.
-fn version_gt(a: &str, b: &str) -> bool {
+pub(crate) fn version_gt(a: &str, b: &str) -> bool {
     fn parse(v: &str) -> (u32, u32, u32) {
         let mut parts = v.trim().splitn(3, '.');
         let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -172,10 +194,7 @@ mod tests {
 
     /// Registry rooted in a temp dir — never touches the real config dir.
     fn registry(root: &Path) -> ExtensionRegistry {
-        ExtensionRegistry {
-            installed: Vec::new(),
-            extensions_dir: root.to_path_buf(),
-        }
+        ExtensionRegistry::new_in(root.to_path_buf())
     }
 
     fn install(root: &Path, dir: &str, manifest_toml: &str) -> PathBuf {
@@ -191,6 +210,7 @@ mod tests {
         assert!(p.ends_with(Path::new("coding-unicorns").join("extensions")));
         let r = ExtensionRegistry::default();
         assert_eq!(r.extensions_dir, p);
+        assert!(r.remote_index.is_none());
         assert!(r.installed.is_empty(), "new() does not scan the disk");
     }
 
@@ -361,6 +381,7 @@ mod tests {
             path: path.map(|p| p.to_string_lossy().to_string()),
             member: member.map(|m| m.to_string()),
             url: None,
+            id: None,
         })
     }
 
@@ -456,5 +477,55 @@ mod tests {
                 ("acme.broken", None),
             ]
         );
+    }
+
+    #[test]
+    fn check_updates_compares_registry_sources_with_the_index() {
+        use super::super::manifest::SourceKind;
+        let key = super::super::remote_registry::platform_key();
+        let index = super::super::remote_registry::parse_index(&format!(
+            r#"{{"schema":1,"modules":[
+                {{"id":"u.newer","dir":"a","name":"A","version":"1.2.0",
+                  "assets":{{"{key}":{{"url":"u","sha256":"s"}}}}}},
+                {{"id":"u.same","dir":"b","name":"B","version":"1.0.0",
+                  "assets":{{"{key}":{{"url":"u","sha256":"s"}}}}}},
+                {{"id":"u.other-platform","dir":"c","name":"C","version":"9.0.0",
+                  "assets":{{"plan9-mips":{{"url":"u","sha256":"s"}}}}}},
+                {{"id":"u.renamed","dir":"d","name":"D","version":"2.0.0",
+                  "assets":{{"{key}":{{"url":"u","sha256":"s"}}}}}}
+            ]}}"#
+        ))
+        .unwrap();
+        let reg_src = |id: Option<&str>| {
+            Some(ExtensionSource {
+                kind: SourceKind::Registry,
+                path: None,
+                member: None,
+                url: Some("https://example.invalid/registry.json".into()),
+                id: id.map(str::to_string),
+            })
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut r = registry(tmp.path());
+        with_source(&mut r, "u.newer", "1.0.0", reg_src(Some("u.newer")));
+        with_source(&mut r, "u.same", "1.0.0", reg_src(Some("u.same")));
+        with_source(&mut r, "u.other-platform", "1.0.0", reg_src(None));
+        with_source(&mut r, "u.unlisted", "1.0.0", reg_src(None));
+        // Source id takes precedence over the manifest id.
+        with_source(&mut r, "local.name", "1.0.0", reg_src(Some("u.renamed")));
+
+        // Without an index nothing is reported.
+        r.check_updates();
+        assert!(r.installed.iter().all(|e| e.update_available.is_none()));
+
+        r.remote_index = Some(index);
+        r.check_updates();
+        let upd: Vec<Option<&str>> = r
+            .installed
+            .iter()
+            .map(|e| e.update_available.as_deref())
+            .collect();
+        assert_eq!(upd, vec![Some("1.2.0"), None, None, None, Some("2.0.0")]);
     }
 }
