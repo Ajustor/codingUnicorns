@@ -280,6 +280,8 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
     let result = match action {
         ExitAction::Relaunch => std::env::current_exe().and_then(|exe| {
             let mut cmd = std::process::Command::new(exe);
+            // We may still be listening while exiting: never forward to ourselves.
+            cmd.arg(crate::single_instance::NEW_WINDOW_FLAG);
             if let Some(ws) = workspace {
                 cmd.arg(ws);
             }
