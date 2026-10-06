@@ -9,7 +9,11 @@ impl PluginManager {
         Self { plugins: vec![] }
     }
 
+    /// Add `plugin`, replacing an already-registered plugin with the same name.
+    /// Reloading extensions after an install re-registers every installed module, so
+    /// without this each reload would load (and dispatch to) duplicates.
     pub fn register(&mut self, plugin: Box<dyn Plugin>) {
+        self.plugins.retain(|p| p.name() != plugin.name());
         self.plugins.push(plugin);
     }
 
@@ -264,6 +268,27 @@ mod tests {
             is_modified: false,
             hovered_word: None,
         }
+    }
+
+    #[test]
+    fn registering_the_same_plugin_again_replaces_it() {
+        let mut m = PluginManager::default();
+        m.register(Box::new(Fake {
+            name: "rust",
+            hover: Some("old"),
+            ..Default::default()
+        }));
+        m.register(Box::new(Fake {
+            name: "python",
+            ..Default::default()
+        }));
+        m.register(Box::new(Fake {
+            name: "rust",
+            hover: Some("new"),
+            ..Default::default()
+        }));
+        assert_eq!(m.plugins.len(), 2);
+        assert_eq!(m.hover_info("rs", "x", "").as_deref(), Some("new"));
     }
 
     #[test]
