@@ -242,14 +242,18 @@ impl WorkspaceSearch {
             let mut do_replace_all = false;
             ui.horizontal(|ui| {
                 ui.label("↔");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.replace_query)
-                        .hint_text("Replace with…")
-                        .desired_width(ui.available_width() - 90.0),
-                );
-                if ui.small_button("Replace All").clicked() {
-                    do_replace_all = true;
-                }
+                // Button first, right to left, so the field fills exactly what is
+                // left: a row wider than the sidebar widens it every frame.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Replace All").clicked() {
+                        do_replace_all = true;
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.replace_query)
+                            .hint_text("Replace with…")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
             });
             if do_replace_all {
                 if let Some(ws) = workspace {
