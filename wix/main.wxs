@@ -60,6 +60,7 @@
     <Feature Id="ProductFeature" Title="Coding Unicorns" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
       <ComponentGroupRef Id="ProductShortcuts" />
+      <ComponentRef Id="FileAssociations" />
     </Feature>
 
     <!-- ── Components ───────────────────────────────────────────────────── -->
@@ -87,6 +88,51 @@
                      System="yes" />
       </Component>
     </ComponentGroup>
+
+    <!-- ── "Open with" for text files ───────────────────────────────────────
+         Offers Coding Unicorns in Explorer's "Open with" menu without taking over
+         any extension's default program: OpenWithProgids only adds a candidate.
+         Users can still make it the default from Settings > Default apps, which
+         reads the Capabilities registered below. All keys are removed on uninstall. -->
+    <?define TextExtensions = "txt;text;md;markdown;log;csv;tsv;json;jsonc;toml;yaml;yml;xml;ini;cfg;conf;properties;env;gitignore;gitattributes;editorconfig;rs;py;pyw;js;jsx;mjs;cjs;ts;tsx;go;cs;csx;java;kt;kts;c;h;cpp;hpp;cc;cxx;html;htm;css;scss;sass;less;vue;svelte;sh;bash;zsh;ps1;psm1;psd1;bat;cmd;sql;lua;rb;php;swift;dart;r;gradle;dockerfile;makefile;mk;cmake;tf;proto;graphql" ?>
+    <Component Id="FileAssociations" Directory="INSTALLFOLDER" Guid="{4E2B8C61-7A3F-4D59-9B1E-6C0F2A8D5E73}">
+      <!-- ProgId used by every association below -->
+      <RegistryValue Root="HKLM" Key="Software\Classes\CodingUnicorns.File"
+                     Type="string" Value="Text file (Coding Unicorns)" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="Software\Classes\CodingUnicorns.File\DefaultIcon"
+                     Type="string" Value="[INSTALLFOLDER]coding-unicorns.exe,0" />
+      <RegistryValue Root="HKLM" Key="Software\Classes\CodingUnicorns.File\shell\open\command"
+                     Type="string" Value="&quot;[INSTALLFOLDER]coding-unicorns.exe&quot; &quot;%1&quot;" />
+
+      <!-- Friendly name, icon and open command when picked from "Open with" -->
+      <RegistryValue Root="HKLM" Key="Software\Classes\Applications\coding-unicorns.exe"
+                     Name="FriendlyAppName" Type="string" Value="Coding Unicorns" />
+      <RegistryValue Root="HKLM" Key="Software\Classes\Applications\coding-unicorns.exe\DefaultIcon"
+                     Type="string" Value="[INSTALLFOLDER]coding-unicorns.exe,0" />
+      <RegistryValue Root="HKLM" Key="Software\Classes\Applications\coding-unicorns.exe\shell\open\command"
+                     Type="string" Value="&quot;[INSTALLFOLDER]coding-unicorns.exe&quot; &quot;%1&quot;" />
+
+      <!-- Any type Windows perceives as text (covers extensions not listed here) -->
+      <RegistryValue Root="HKLM" Key="Software\Classes\SystemFileAssociations\text\OpenWithList\coding-unicorns.exe"
+                     Type="string" Value="" />
+
+      <!-- Settings > Default apps -->
+      <RegistryValue Root="HKLM" Key="Software\CodingUnicorns\Capabilities"
+                     Name="ApplicationName" Type="string" Value="Coding Unicorns" />
+      <RegistryValue Root="HKLM" Key="Software\CodingUnicorns\Capabilities"
+                     Name="ApplicationDescription" Type="string" Value="Lightweight code editor" />
+      <RegistryValue Root="HKLM" Key="Software\RegisteredApplications"
+                     Name="Coding Unicorns" Type="string" Value="Software\CodingUnicorns\Capabilities" />
+
+      <?foreach Ext in $(var.TextExtensions) ?>
+      <RegistryValue Root="HKLM" Key="Software\Classes\.$(var.Ext)\OpenWithProgids"
+                     Name="CodingUnicorns.File" Type="string" Value="" />
+      <RegistryValue Root="HKLM" Key="Software\Classes\Applications\coding-unicorns.exe\SupportedTypes"
+                     Name=".$(var.Ext)" Type="string" Value="" />
+      <RegistryValue Root="HKLM" Key="Software\CodingUnicorns\Capabilities\FileAssociations"
+                     Name=".$(var.Ext)" Type="string" Value="CodingUnicorns.File" />
+      <?endforeach ?>
+    </Component>
 
     <ComponentGroup Id="ProductShortcuts">
       <!-- Start Menu shortcut -->

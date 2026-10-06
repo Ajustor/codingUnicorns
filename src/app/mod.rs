@@ -160,6 +160,8 @@ pub struct CodingUnicorns {
     pub toasts: Vec<crate::ui::widgets::Toast>,
     /// GitHub release self-updater.
     pub updater: crate::updater::Updater,
+    /// Receives files/folders opened while this window runs (Explorer, `cu <path>`).
+    pub single_instance: Option<crate::single_instance::Server>,
     /// Per-workspace session (open tabs, cursor/scroll) persistence.
     pub session: session::SessionState,
     /// External file change detection (workspace watcher + save guard).
@@ -330,6 +332,10 @@ impl CodingUnicorns {
             pending_delete: None,
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),
+            single_instance: {
+                let ctx = cc.egui_ctx.clone();
+                crate::single_instance::Server::start(move || ctx.request_repaint())
+            },
             session: session::SessionState::load(),
             file_watch: file_watch::FileWatchState::new(Some(cc.egui_ctx.clone())),
             problems_panel: crate::ui::problems::ProblemsPanel::new(),
@@ -410,6 +416,10 @@ impl CodingUnicorns {
 impl eframe::App for CodingUnicorns {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_session();
+        // Before any relaunch: the new process must not forward its path back to us.
+        if let Some(server) = &self.single_instance {
+            server.release();
+        }
         if let Some(action) = self.updater.exit_action.take() {
             crate::updater::run_exit_action(&action, self.workspace_path.as_deref());
         }
@@ -425,6 +435,7 @@ impl eframe::App for CodingUnicorns {
         }
 
         self.update_updater(ctx);
+        self.open_forwarded_paths(ctx);
 
         // App-quit unsaved-changes dialog
         if self.show_close_warning {
