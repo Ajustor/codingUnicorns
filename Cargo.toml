@@ -52,5 +52,9 @@ lto = true
 codegen-units = 1
 strip = true
 
+[build-dependencies]
+# Embeds assets/icon.ico in the Windows executable (see build.rs).
+winresource = "0.1"
+
 [dev-dependencies]
 tempfile = "3"
