@@ -57,7 +57,8 @@ impl DebuggerPanel {
         let is_running = dap.is_running();
 
         // ── Toolbar ──────────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
+        // Wrapped: on a single line the buttons are wider than the sidebar.
+        ui.horizontal_wrapped(|ui| {
             let start_label = if is_paused {
                 "▶ Continue (F5)"
             } else {
@@ -262,20 +263,23 @@ impl DebuggerPanel {
                 }
             });
         ui.horizontal(|ui| {
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut self.new_watch)
-                    .hint_text("Add expression to watch")
-                    .desired_width(ui.available_width() - 30.0),
-            );
-            let submitted = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (ui.button("+").on_hover_text("Add watch").clicked() || submitted)
-                && !self.new_watch.trim().is_empty()
-            {
-                add_watch = Some(std::mem::take(&mut self.new_watch));
-                if submitted {
-                    edit.request_focus();
+            // Button first, right to left, so the field fills exactly what is
+            // left: a row wider than the sidebar widens it every frame.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let add_clicked = ui.button("+").on_hover_text("Add watch").clicked();
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut self.new_watch)
+                        .hint_text("Add expression to watch")
+                        .desired_width(f32::INFINITY),
+                );
+                let submitted = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (add_clicked || submitted) && !self.new_watch.trim().is_empty() {
+                    add_watch = Some(std::mem::take(&mut self.new_watch));
+                    if submitted {
+                        edit.request_focus();
+                    }
                 }
-            }
+            });
         });
         ui.separator();
 

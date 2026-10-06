@@ -136,6 +136,30 @@ impl Default for Spacing {
     }
 }
 
+/// The app's fonts: egui's defaults plus the Phosphor icons and a Symbola fallback.
+pub fn app_fonts() -> egui::FontDefinitions {
+    // Load Phosphor icon font so sidebar icons render correctly
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+
+    // Add Symbola as a fallback so emoji and symbols (🦄, ●, ⚙, etc.) render correctly
+    fonts.font_data.insert(
+        "Symbola".to_owned(),
+        egui::FontData::from_static(include_bytes!("../../assets/Symbola.ttf")).into(),
+    );
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+        .unwrap()
+        .push("Symbola".to_owned());
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Monospace)
+        .unwrap()
+        .push("Symbola".to_owned());
+    fonts
+}
+
 /// Rebuild the palette + spacing from config, push the matching egui `Visuals`
 /// and UI `text_styles` into the context, and return them for renderers to read.
 /// Called once per frame at the top of `layout::render`; cost is negligible.

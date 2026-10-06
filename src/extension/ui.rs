@@ -600,27 +600,31 @@ impl ExtensionsPanel {
                 ui.label("Install from Git Repository");
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.install_url)
-                            .hint_text("https://github.com/user/extension")
-                            .desired_width(ui.available_width() - 70.0),
-                    );
-                    let installing = self.install_job.is_some();
-                    let install_btn = ui.add_enabled(
-                        !installing && !self.install_url.is_empty(),
-                        egui::Button::new(
-                            egui::RichText::new("Install").color(egui::Color32::WHITE),
-                        )
-                        .fill(egui::Color32::from_rgb(0, 120, 212)),
-                    );
-                    if install_btn.clicked() {
-                        let rx = InstallJob::start(
-                            self.install_url.clone(),
-                            ExtensionRegistry::extensions_dir(),
+                    // Button first, right to left, so the field fills exactly what
+                    // is left: a row wider than the sidebar widens it every frame.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let installing = self.install_job.is_some();
+                        let install_btn = ui.add_enabled(
+                            !installing && !self.install_url.is_empty(),
+                            egui::Button::new(
+                                egui::RichText::new("Install").color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(0, 120, 212)),
                         );
-                        self.install_job = Some(rx);
-                        self.install_status = InstallStatus::Cloning;
-                    }
+                        if install_btn.clicked() {
+                            let rx = InstallJob::start(
+                                self.install_url.clone(),
+                                ExtensionRegistry::extensions_dir(),
+                            );
+                            self.install_job = Some(rx);
+                            self.install_status = InstallStatus::Cloning;
+                        }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.install_url)
+                                .hint_text("https://github.com/user/extension")
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
                 });
 
                 let (status_text, is_error) = match &self.install_status {
@@ -806,19 +810,22 @@ impl ExtensionsPanel {
                 );
                 ui.add_space(4.0);
 
-                let ws_width = ui.available_width();
                 ui.horizontal(|ui| {
                     ui.label("Workspace:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.workspace_path)
-                            .hint_text("/path/to/modules")
-                            .desired_width((ws_width - 90.0).max(40.0)),
-                    );
-                    if ui.button("Browse…").clicked() {
-                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                            self.workspace_path = folder.to_string_lossy().to_string();
+                    // Button first, right to left, so the field fills exactly what
+                    // is left: a row wider than the sidebar widens it every frame.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Browse…").clicked() {
+                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                self.workspace_path = folder.to_string_lossy().to_string();
+                            }
                         }
-                    }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.workspace_path)
+                                .hint_text("/path/to/modules")
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
                 });
                 ui.add_space(4.0);
 
@@ -873,40 +880,44 @@ impl ExtensionsPanel {
                 );
                 ui.add_space(4.0);
 
-                let section_width = ui.available_width();
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.git_group_url)
-                            .hint_text("https://github.com/user/my-modules-workspace")
-                            .desired_width((section_width - 110.0).max(40.0)),
-                    );
-                    let is_running = self.git_group_job.is_some();
-                    let can_run = !is_running && !self.git_group_url.is_empty();
-                    if ui
-                        .add_enabled(
-                            can_run,
-                            egui::Button::new(
-                                egui::RichText::new("Install All").color(egui::Color32::WHITE),
+                    // Buttons first, right to left, so the field fills exactly what
+                    // is left: a row wider than the sidebar widens it every frame.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if !self.git_group_log.is_empty() && ui.small_button("Clear").clicked() {
+                            self.git_group_log.clear();
+                            self.git_group_status = WorkspaceStatus::Idle;
+                        }
+                        let is_running = self.git_group_job.is_some();
+                        if is_running {
+                            ui.spinner();
+                        }
+                        let can_run = !is_running && !self.git_group_url.is_empty();
+                        if ui
+                            .add_enabled(
+                                can_run,
+                                egui::Button::new(
+                                    egui::RichText::new("Install All")
+                                        .color(egui::Color32::WHITE),
+                                )
+                                .fill(egui::Color32::from_rgb(0, 120, 212)),
                             )
-                            .fill(egui::Color32::from_rgb(0, 120, 212)),
-                        )
-                        .clicked()
-                    {
-                        self.git_group_log.clear();
-                        self.git_group_status = WorkspaceStatus::Cloning;
-                        let rx = super::installer::install_group_from_git(
-                            self.git_group_url.clone(),
-                            registry.extensions_dir.clone(),
+                            .clicked()
+                        {
+                            self.git_group_log.clear();
+                            self.git_group_status = WorkspaceStatus::Cloning;
+                            let rx = super::installer::install_group_from_git(
+                                self.git_group_url.clone(),
+                                registry.extensions_dir.clone(),
+                            );
+                            self.git_group_job = Some(rx);
+                        }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.git_group_url)
+                                .hint_text("https://github.com/user/my-modules-workspace")
+                                .desired_width(f32::INFINITY),
                         );
-                        self.git_group_job = Some(rx);
-                    }
-                    if is_running {
-                        ui.spinner();
-                    }
-                    if !self.git_group_log.is_empty() && ui.small_button("Clear").clicked() {
-                        self.git_group_log.clear();
-                        self.git_group_status = WorkspaceStatus::Idle;
-                    }
+                    });
                 });
 
                 if !self.git_group_log.is_empty() {
