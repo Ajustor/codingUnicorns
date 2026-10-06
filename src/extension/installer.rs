@@ -320,6 +320,7 @@ fn workspace_install_inner(
                 path: Some(workspace_path.to_string_lossy().to_string()),
                 member: Some(member.clone()),
                 url: None,
+                id: None,
             },
         );
 
@@ -427,6 +428,7 @@ fn single_git_install_inner(
         &ExtensionSource {
             kind: SourceKind::Git,
             url: Some(repo_url.to_string()),
+            id: None,
             path: None,
             member: None,
         },
@@ -593,6 +595,7 @@ impl InstallJob {
                 &ExtensionSource {
                     kind: SourceKind::Git,
                     url: Some(repo_url.clone()),
+                    id: None,
                     path: None,
                     member: None,
                 },
@@ -714,6 +717,7 @@ pub fn install_from_folder(
                 path: Some(folder.to_string_lossy().to_string()),
                 member: None,
                 url: None,
+                id: None,
             },
         );
 
@@ -1065,17 +1069,55 @@ fn zip_install_inner(
     selected_dirs: Option<&[String]>,
     tx: &mpsc::Sender<WorkspaceStatus>,
 ) {
-    let file = match std::fs::File::open(&zip_path) {
+    let source_path = zip_path.to_string_lossy().to_string();
+    zip_install_core(
+        &zip_path,
+        &extensions_dir,
+        selected_dirs,
+        &ZipInstallOptions {
+            source: &|dir_name| ExtensionSource {
+                kind: SourceKind::Zip,
+                path: Some(source_path.clone()),
+                member: Some(dir_name.to_string()),
+                url: None,
+                id: None,
+            },
+            install_deps: false,
+        },
+        &|status| {
+            let _ = tx.send(status);
+        },
+    );
+}
+
+/// How `zip_install_core` records and finishes each installed module.
+pub(crate) struct ZipInstallOptions<'a> {
+    /// `source.toml` content for a module, given its directory inside the ZIP.
+    pub source: &'a dyn Fn(&str) -> ExtensionSource,
+    /// Run `install_deps` for the module's declared external dependencies.
+    pub install_deps: bool,
+}
+
+/// Extract the selected modules of a ZIP into `extensions_dir`, reporting
+/// progress through `emit`. Shared by the plain ZIP and the registry installer.
+pub(crate) fn zip_install_core(
+    zip_path: &std::path::Path,
+    extensions_dir: &std::path::Path,
+    selected_dirs: Option<&[String]>,
+    opts: &ZipInstallOptions,
+    emit: &dyn Fn(WorkspaceStatus),
+) {
+    let file = match std::fs::File::open(zip_path) {
         Ok(f) => f,
         Err(e) => {
-            let _ = tx.send(WorkspaceStatus::Failed(format!("Cannot open ZIP: {e}")));
+            emit(WorkspaceStatus::Failed(format!("Cannot open ZIP: {e}")));
             return;
         }
     };
     let mut archive = match zip::ZipArchive::new(file) {
         Ok(a) => a,
         Err(e) => {
-            let _ = tx.send(WorkspaceStatus::Failed(format!("Invalid ZIP: {e}")));
+            emit(WorkspaceStatus::Failed(format!("Invalid ZIP: {e}")));
             return;
         }
     };
@@ -1106,7 +1148,7 @@ fn zip_install_inner(
     }
 
     if modules.is_empty() {
-        let _ = tx.send(WorkspaceStatus::Failed(
+        emit(WorkspaceStatus::Failed(
             "No modules with manifest.toml found in this ZIP.".to_string(),
         ));
         return;
@@ -1116,16 +1158,16 @@ fn zip_install_inner(
     let mut installed = 0;
 
     for (i, (dir_name, manifest)) in modules.iter().enumerate() {
-        let _ = tx.send(WorkspaceStatus::Installing {
+        emit(WorkspaceStatus::Installing {
             current: manifest.extension.name.clone(),
             done: i,
             total,
         });
 
-        let dest_dir = match extension_dest_dir(&extensions_dir, manifest) {
+        let dest_dir = match extension_dest_dir(extensions_dir, manifest) {
             Ok(d) => d,
             Err(e) => {
-                let _ = tx.send(WorkspaceStatus::ModuleFailed {
+                emit(WorkspaceStatus::ModuleFailed {
                     name: dir_name.clone(),
                     reason: format!("Invalid manifest: {e}"),
                 });
@@ -1140,10 +1182,11 @@ fn zip_install_inner(
         let prefix = format!("{dir_name}/");
         let mut has_lib = false;
         let mut has_manifest = false;
+        let mut lib_failed = false;
 
         // Re-open archive for extraction (ZipArchive doesn't support seeking back)
-        let Ok(file2) = std::fs::File::open(&zip_path) else {
-            let _ = tx.send(WorkspaceStatus::ModuleFailed {
+        let Ok(file2) = std::fs::File::open(zip_path) else {
+            emit(WorkspaceStatus::ModuleFailed {
                 name: dir_name.clone(),
                 reason: "Cannot re-open ZIP".to_string(),
             });
@@ -1188,10 +1231,11 @@ fn zip_install_inner(
                     let _ = std::io::copy(&mut entry, &mut out);
                 }
                 if let Err(e) = copy_lib_safe(&tmp_path, &dest_file) {
-                    let _ = tx.send(WorkspaceStatus::ModuleFailed {
+                    emit(WorkspaceStatus::ModuleFailed {
                         name: dir_name.clone(),
                         reason: format!("Copy lib: {e}"),
                     });
+                    lib_failed = true;
                 }
                 let _ = std::fs::remove_file(&tmp_path);
                 has_lib = true;
@@ -1203,19 +1247,26 @@ fn zip_install_inner(
             }
         }
 
-        if has_lib && has_manifest {
-            write_source(
-                &dest_dir,
-                &ExtensionSource {
-                    kind: SourceKind::Zip,
-                    path: Some(zip_path.to_string_lossy().to_string()),
-                    member: Some(dir_name.clone()),
-                    url: None,
-                },
-            );
+        if lib_failed {
+            // Already reported; the module is not usable.
+        } else if has_lib && has_manifest {
+            write_source(&dest_dir, &(opts.source)(dir_name));
+            if opts.install_deps {
+                for err in install_deps(&manifest.dependencies, |step| {
+                    emit(WorkspaceStatus::InstallingDep {
+                        module: dir_name.clone(),
+                        step,
+                    });
+                }) {
+                    emit(WorkspaceStatus::ModuleFailed {
+                        name: dir_name.clone(),
+                        reason: format!("dependency error: {err}"),
+                    });
+                }
+            }
             installed += 1;
         } else {
-            let _ = tx.send(WorkspaceStatus::ModuleFailed {
+            emit(WorkspaceStatus::ModuleFailed {
                 name: dir_name.clone(),
                 reason: if !has_lib {
                     format!("No .{} library found", std::env::consts::DLL_EXTENSION)
@@ -1226,7 +1277,7 @@ fn zip_install_inner(
         }
     }
 
-    let _ = tx.send(WorkspaceStatus::Done { installed, total });
+    emit(WorkspaceStatus::Done { installed, total });
 }
 
 #[cfg(test)]
@@ -1299,6 +1350,7 @@ mod tests {
                 path: Some("/ws".into()),
                 member: Some("m".into()),
                 url: None,
+                id: None,
             },
         );
         let s = read_source(tmp.path());

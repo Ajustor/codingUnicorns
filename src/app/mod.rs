@@ -1093,6 +1093,16 @@ impl eframe::App for CodingUnicorns {
             self.extensions_panel.plugins_changed = true;
         }
 
+        // Registry installs/updates: drop the loaded plugin first so its DLL can
+        // be replaced; the download starts on the next frame.
+        for languages in self
+            .extensions_panel
+            .registry_browser
+            .take_unload_requests()
+        {
+            self.plugin_manager.unload_by_extensions(&languages);
+        }
+
         // Reload LSP + plugins when a module installation just completed.
         if self.extensions_panel.plugins_changed {
             self.extensions_panel.plugins_changed = false;
