@@ -25,8 +25,10 @@ use crate::ui::statusbar::StatusBar;
 mod claude_ops;
 mod debug_ops;
 pub mod file_ops;
+pub mod file_watch;
 mod lsp_ops;
 mod navigation;
+pub mod session;
 mod update_ops;
 mod workspace_search;
 
@@ -158,6 +160,16 @@ pub struct CodingUnicorns {
     pub toasts: Vec<crate::ui::widgets::Toast>,
     /// GitHub release self-updater.
     pub updater: crate::updater::Updater,
+    /// Per-workspace session (open tabs, cursor/scroll) persistence.
+    pub session: session::SessionState,
+    /// External file change detection (workspace watcher + save guard).
+    pub file_watch: file_watch::FileWatchState,
+    /// Workspace-wide LSP diagnostics (bottom panel, Ctrl+Shift+M).
+    pub problems_panel: crate::ui::problems::ProblemsPanel,
+    /// In-flight `workspace/symbol` requests for the palette's `#` mode.
+    pub palette_ws_symbol_ids: Vec<(String, u64)>,
+    /// In-flight `documentSymbol` request for the palette's `@` mode.
+    pub palette_doc_symbols_id: Option<(String, u64)>,
 }
 
 /// Raw RGBA pixel data for an image file opened in the editor.
@@ -215,6 +227,16 @@ impl CodingUnicorns {
                     "toggle_md_preview",
                     Chord::ctrl_shift(egui::Key::V),
                     "Toggle Markdown preview",
+                ),
+                (
+                    "toggle_problems",
+                    Chord::ctrl_shift(egui::Key::M),
+                    "Toggle Problems panel",
+                ),
+                (
+                    "workspace_symbols",
+                    Chord::ctrl(egui::Key::T),
+                    "Go to symbol in workspace",
                 ),
             ] {
                 if let Some(other) = keybinds.register(id, chord, desc) {
@@ -308,6 +330,11 @@ impl CodingUnicorns {
             pending_delete: None,
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),
+            session: session::SessionState::load(),
+            file_watch: file_watch::FileWatchState::new(Some(cc.egui_ctx.clone())),
+            problems_panel: crate::ui::problems::ProblemsPanel::new(),
+            palette_ws_symbol_ids: Vec::new(),
+            palette_doc_symbols_id: None,
         };
 
         if let Some(path) = initial_path {
@@ -318,7 +345,9 @@ impl CodingUnicorns {
                 app.open_file(path);
             }
         } else {
-            // No CLI arg: restore last workspace and last file from config.
+            // No CLI arg: restore last workspace and its session (or the last
+            // file when the workspace has no saved tabs) from config.
+            let mut restored = false;
             if let Some(ws_str) = app.config.last_workspace.clone() {
                 let ws_path = PathBuf::from(&ws_str);
                 if ws_path.is_dir() {
@@ -327,16 +356,24 @@ impl CodingUnicorns {
                     app.file_tree.load(ws_path.clone());
                     app.git_status.load(ws_path.clone());
                     app.runner.load_for_workspace(&ws_path);
+                    app.config.push_recent_workspace(&ws_str);
+                    restored = app.restore_session(&ws_path);
+                    app.start_file_watcher(&ws_path);
                 }
             }
-            if let Some(file_str) = app.config.last_file.clone() {
+            if let Some(file_str) = app.config.last_file.clone().filter(|_| !restored) {
                 let file_path = PathBuf::from(&file_str);
                 if file_path.is_file() {
                     // Read directly to avoid a redundant config save on startup.
-                    if let Ok(content) = std::fs::read_to_string(&file_path) {
+                    if let Ok((content, lossy)) =
+                        crate::editor::text_format::read_text_file(&file_path)
+                    {
                         app.tab_manager.open(file_path.clone(), content.clone());
                         app.editor
                             .set_content(content.clone(), Some(file_path.clone()));
+                        app.editor.decoded_lossy = lossy;
+                        // LSP sees the normalized (LF, no BOM) buffer, like open_file.
+                        let content = app.editor.buffer.to_string();
                         // Start the LSP for the restored file (mirrors open_file).
                         // Without this, resuming a session leaves the LSP cold.
                         app.ensure_lsp_for_file(&file_path);
@@ -372,6 +409,7 @@ impl CodingUnicorns {
 
 impl eframe::App for CodingUnicorns {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_session();
         if let Some(action) = self.updater.exit_action.take() {
             crate::updater::run_exit_action(&action, self.workspace_path.as_deref());
         }
@@ -399,10 +437,12 @@ impl eframe::App for CodingUnicorns {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save All & Quit").clicked() {
-                            let _ = self.editor.save();
-                            self.confirmed_close = true;
                             self.show_close_warning = false;
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            // A file changed on disk raises the overwrite prompt instead.
+                            if self.save_editor_guarded(true) {
+                                self.confirmed_close = true;
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
                         }
                         if ui.button("Quit Without Saving").clicked() {
                             self.confirmed_close = true;
@@ -444,10 +484,11 @@ impl eframe::App for CodingUnicorns {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save & Close").clicked() {
-                            let _ = self.editor.save();
-                            self.tab_manager.close(pending_id);
                             self.close_tab_id_pending = None;
-                            self.load_active_tab();
+                            if self.save_editor_guarded(true) {
+                                self.tab_manager.close(pending_id);
+                                self.load_active_tab();
+                            }
                         }
                         if ui.button("Discard & Close").clicked() {
                             self.tab_manager.close(pending_id);
@@ -528,6 +569,8 @@ impl eframe::App for CodingUnicorns {
                 "toggle_claude" => self.show_claude = !self.show_claude,
                 "command_palette_commands" => self.command_palette.toggle_commands(),
                 "toggle_md_preview" => self.show_md_preview = !self.show_md_preview,
+                "toggle_problems" => self.problems_panel.open = !self.problems_panel.open,
+                "workspace_symbols" => self.command_palette.open_with("#"),
                 _ => {}
             }
         }
@@ -641,6 +684,7 @@ impl eframe::App for CodingUnicorns {
 
         // Poll all LSP clients for incoming messages (also drives auto-restart).
         let (lsp_responses, reconnected_exts) = self.lsp.poll_all();
+        self.sync_problems();
         // Keep updating the "LSP loading…" status while a server is busy.
         if self.lsp.any_busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -663,8 +707,11 @@ impl eframe::App for CodingUnicorns {
                 }
             }
         }
-        for (_ext, msgs) in lsp_responses {
+        for (ext, msgs) in lsp_responses {
             for (id, response) in msgs {
+                if self.handle_palette_lsp_response(&ext, id, &response) {
+                    continue;
+                }
                 if Some(id) == self.pending_hover_id {
                     self.lsp_hover_result = LspClient::parse_hover(&response);
                     self.pending_hover_id = None;
@@ -1001,7 +1048,9 @@ impl eframe::App for CodingUnicorns {
             }
         }
 
+        self.tick_file_watch(ctx);
         crate::ui::layout::render(self, ctx);
+        self.tick_session();
 
         // Handle pending extension uninstall: unload plugin DLL first, then delete files.
         if let Some(id) = self.extensions_panel.pending_uninstall.take() {
@@ -1098,6 +1147,7 @@ impl eframe::App for CodingUnicorns {
             if let Some(path) = opened_file {
                 self.open_file(path);
             }
+            self.drive_palette_symbols(ctx);
             if let Some(cmd) = cmd {
                 use crate::ui::palette::PaletteCommand;
                 match cmd {
@@ -1106,8 +1156,9 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
                     PaletteCommand::GoToLine => self.editor.show_goto_line = true,
                     PaletteCommand::SaveFile => {
-                        let _ = self.editor.save();
-                        self.toast("Saved");
+                        if self.save_editor_guarded(true) {
+                            self.toast("Saved");
+                        }
                     }
                     PaletteCommand::NewFile => self.open_new_file(),
                     PaletteCommand::OpenFolder => {
@@ -1117,11 +1168,8 @@ impl eframe::App for CodingUnicorns {
                         self.tab_manager.open_settings();
                         self.settings_panel.open = true;
                     }
-                    PaletteCommand::Find => self.editor.show_find = true,
-                    PaletteCommand::FindReplace => {
-                        self.editor.show_find = true;
-                        self.editor.show_replace = true;
-                    }
+                    PaletteCommand::Find => self.editor.open_find(false),
+                    PaletteCommand::FindReplace => self.editor.open_find(true),
                     PaletteCommand::RestartLsp => {
                         self.lsp.restart_all();
                         // Re-start LSP for the current file if an extension provides one
@@ -1130,6 +1178,9 @@ impl eframe::App for CodingUnicorns {
                         }
                         self.toast("LSP restarted");
                     }
+                    PaletteCommand::ShowProblems => self.problems_panel.open = true,
+                    PaletteCommand::GoToWorkspaceSymbol => self.command_palette.open_with("#"),
+                    PaletteCommand::GoToFileSymbol => self.command_palette.open_with("@"),
                     PaletteCommand::CheckForUpdates => {
                         if matches!(self.updater.state, crate::updater::UpdateState::Ready(_)) {
                             self.updater.dismissed = false;
@@ -1152,7 +1203,7 @@ impl eframe::App for CodingUnicorns {
         if self.config.editor.auto_save && self.editor.is_modified {
             let window_focused = ctx.input(|i| i.focused);
             if !window_focused {
-                let _ = self.editor.save();
+                self.save_editor_guarded(false);
             }
         }
 

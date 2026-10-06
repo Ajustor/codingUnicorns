@@ -211,6 +211,7 @@ impl RunPanel {
                         cwd: self.new_config_cwd.clone(),
                         env: vec![],
                         args: vec![],
+                        debug: None,
                     });
                     runner.save();
                     self.show_add_config = false;

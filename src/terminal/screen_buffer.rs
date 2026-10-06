@@ -61,6 +61,44 @@ impl ScreenBuffer {
         }
     }
 
+    /// Resize the visible grid to `cols` x `rows`.
+    ///
+    /// Reflow is minimal: each visible row is truncated or padded to the new width
+    /// (scrollback is left untouched). When the height shrinks, blank rows below the
+    /// cursor are dropped first, then rows are pushed from the top into scrollback so
+    /// the cursor stays on screen. When it grows, blank rows are appended at the bottom.
+    pub(super) fn resize(&mut self, cols: usize, rows: usize) {
+        if cols == self.cols && rows == self.term_rows {
+            return;
+        }
+        for row in &mut self.rows {
+            row.resize(cols, Cell::default());
+        }
+        self.cols = cols;
+
+        while self.rows.len() > rows {
+            let last = self.rows.len() - 1;
+            let last_blank = !self.rows[last].iter().any(Cell::is_styled_or_printed);
+            if last > self.cursor_row && last_blank {
+                self.rows.pop();
+            } else {
+                let top = self.rows.remove(0);
+                self.scrollback.push(top);
+                self.cursor_row = self.cursor_row.saturating_sub(1);
+            }
+        }
+        if self.scrollback.len() > self.max_scrollback {
+            let excess = self.scrollback.len() - self.max_scrollback;
+            self.scrollback.drain(0..excess);
+        }
+        while self.rows.len() < rows {
+            self.rows.push(vec![Cell::default(); cols]);
+        }
+        self.term_rows = rows;
+        self.cursor_row = self.cursor_row.min(rows.saturating_sub(1));
+        self.cursor_col = self.cursor_col.min(cols);
+    }
+
     pub(super) fn write_char(&mut self, ch: char) {
         if self.cursor_col >= self.cols {
             self.line_feed();
@@ -591,6 +629,59 @@ mod tests {
         // Unknown colour space: just skip the 38.
         b.set_sgr(&[0, 38, 31]);
         assert_eq!(b.current_fg, ansi_color(1, false));
+    }
+
+    #[test]
+    fn resize_truncates_and_pads_columns() {
+        let mut b = ScreenBuffer::new(5, 2);
+        write_str(&mut b, "abcde");
+        b.resize(3, 2);
+        assert_eq!(row_text(&b, 0), "abc");
+        assert_eq!(b.cursor_col, 3, "cursor clamped to the pending-wrap column");
+        b.resize(6, 2);
+        assert_eq!(row_text(&b, 0), "abc   ");
+        assert!(b.rows.iter().all(|r| r.len() == 6));
+        // New text now wraps at the new width.
+        b.carriage_return();
+        write_str(&mut b, "1234567");
+        assert_eq!(row_text(&b, 0), "123456");
+        assert_eq!(row_text(&b, 1), "7     ");
+    }
+
+    #[test]
+    fn resize_shrinking_height_drops_blank_rows_then_scrolls() {
+        let mut b = ScreenBuffer::new(2, 5);
+        for ch in ['a', 'b', 'c'] {
+            b.carriage_return();
+            b.write_char(ch);
+            b.line_feed();
+        }
+        // Cursor on row 3, rows 3 and 4 blank.
+        b.resize(2, 4);
+        assert!(
+            b.scrollback.is_empty(),
+            "blank row below cursor dropped first"
+        );
+        b.resize(2, 2);
+        assert_eq!(b.scrollback.len(), 2);
+        assert_eq!(b.scrollback[0][0].ch, 'a');
+        assert_eq!(row_text(&b, 0), "c ");
+        assert_eq!(b.cursor_row, 1);
+        assert_eq!(b.rows.len(), 2);
+        // Growing appends blank rows; the cursor stays put.
+        b.resize(2, 4);
+        assert_eq!(b.rows.len(), 4);
+        assert_eq!(b.cursor_row, 1);
+        b.set_cursor_pos(99, 1);
+        assert_eq!(b.cursor_row, 3, "new height is honoured");
+    }
+
+    #[test]
+    fn resize_to_same_size_is_noop() {
+        let mut b = filled(3, 2);
+        b.resize(3, 2);
+        assert_eq!(row_text(&b, 0), "xxx");
+        assert_eq!(b.rows.len(), 2);
     }
 
     #[test]
