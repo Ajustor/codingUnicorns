@@ -207,7 +207,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let good = install(root, "acme.good", &manifest("acme.good", "1.0.0"));
-        std::fs::write(good.join("acme_good.dll"), b"").unwrap();
+        // Only the running platform's library is picked up.
+        let lib = format!("acme_good.{}", std::env::consts::DLL_EXTENSION);
+        std::fs::write(good.join(&lib), b"").unwrap();
         std::fs::write(
             good.join("source.toml"),
             "kind = \"folder\"\npath = \"/src/good\"\n",
@@ -238,10 +240,7 @@ mod tests {
             .unwrap();
         assert!(g.enabled);
         assert_eq!(g.path, good);
-        assert_eq!(
-            g.lib_path.as_deref(),
-            Some(good.join("acme_good.dll").as_path())
-        );
+        assert_eq!(g.lib_path.as_deref(), Some(good.join(&lib).as_path()));
         let src = g.source.as_ref().unwrap();
         assert_eq!(src.kind, super::super::manifest::SourceKind::Folder);
         assert_eq!(src.path.as_deref(), Some("/src/good"));

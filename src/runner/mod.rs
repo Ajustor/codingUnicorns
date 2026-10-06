@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod vscode_launch;
+
 /// A single run configuration (like VSCode's launch.json entry)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunConfig {
@@ -11,14 +13,32 @@ pub struct RunConfig {
     pub env: Vec<(String, String)>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Debug-adapter settings, set for configurations imported from
+    /// `.vscode/launch.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug: Option<DebugLaunch>,
+}
+
+/// How to start a DAP session for a run configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DebugLaunch {
+    /// VS Code debug `type` (e.g. "debugpy", "lldb"); picks the adapter.
+    #[serde(rename = "type")]
+    pub adapter_type: String,
+    /// "launch" or "attach".
+    pub request: String,
+    /// Arguments of the DAP `launch`/`attach` request: the original
+    /// launch.json entry, unknown keys included. `${workspaceFolder}` and
+    /// `${file}` are substituted by the DAP client at session start.
+    pub launch_args: serde_json::Value,
 }
 
 impl RunConfig {
     /// Resolve variables in command/cwd:
-    /// `${workspaceRoot}` → workspace path
+    /// `${workspaceRoot}` / `${workspaceFolder}` → workspace path
     /// `${file}` → current file path
-    /// `${fileDir}` → current file's directory
-    /// `${fileName}` → current file name without extension
+    /// `${fileDir}` / `${fileDirname}` → current file's directory
+    /// `${fileName}` / `${fileBasenameNoExtension}` → current file name without extension
     pub fn resolve(&self, workspace: Option<&Path>, current_file: Option<&Path>) -> ResolvedRun {
         let ws = workspace
             .map(|p| p.to_string_lossy().to_string())
@@ -37,6 +57,9 @@ impl RunConfig {
 
         let resolve_str = |s: &str| -> String {
             s.replace("${workspaceRoot}", &ws)
+                .replace("${workspaceFolder}", &ws)
+                .replace("${fileDirname}", &file_dir)
+                .replace("${fileBasenameNoExtension}", &file_name)
                 .replace("${file}", &file)
                 .replace("${fileDir}", &file_dir)
                 .replace("${fileName}", &file_name)
@@ -87,23 +110,33 @@ impl RunManager {
         }
     }
 
-    /// Call when the workspace changes. Loads `launch.toml` or auto-detects configs.
+    /// Call when the workspace changes. Loads `launch.toml`; without one,
+    /// imports `.vscode/launch.json` (if any) followed by auto-detected configs.
     pub fn load_for_workspace(&mut self, workspace: &Path) {
         self.workspace = Some(workspace.to_path_buf());
+        self.active_config = 0;
 
         let launch_file = workspace.join(".coding-unicorns").join("launch.toml");
         if launch_file.exists() {
             if let Ok(content) = std::fs::read_to_string(&launch_file) {
                 if let Ok(lf) = toml::from_str::<LaunchFile>(&content) {
                     self.configs = lf.configurations;
-                    self.active_config = 0;
                     return;
                 }
             }
         }
 
-        self.configs = auto_detect_configs(workspace);
-        self.active_config = 0;
+        let mut configs = if launch_file.exists() {
+            Vec::new() // launch.toml present but invalid: don't import over it
+        } else {
+            vscode_launch::load(workspace).unwrap_or_default()
+        };
+        for c in auto_detect_configs(workspace) {
+            if !configs.iter().any(|i| i.name == c.name) {
+                configs.push(c);
+            }
+        }
+        self.configs = configs;
     }
 
     /// Save current configs to `.coding-unicorns/launch.toml`.
@@ -187,6 +220,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
         configs.push(RunConfig {
             name: "Cargo Test".to_string(),
@@ -194,6 +228,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
         configs.push(RunConfig {
             name: "Cargo Build".to_string(),
@@ -201,6 +236,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
     }
 
@@ -213,6 +249,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
                     cwd: "${workspaceRoot}".to_string(),
                     env: vec![],
                     args: vec![],
+                    debug: None,
                 });
             }
             if content.contains("\"dev\"") {
@@ -222,6 +259,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
                     cwd: "${workspaceRoot}".to_string(),
                     env: vec![],
                     args: vec![],
+                    debug: None,
                 });
             }
             if content.contains("\"test\"") {
@@ -231,6 +269,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
                     cwd: "${workspaceRoot}".to_string(),
                     env: vec![],
                     args: vec![],
+                    debug: None,
                 });
             }
             if content.contains("\"build\"") {
@@ -240,6 +279,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
                     cwd: "${workspaceRoot}".to_string(),
                     env: vec![],
                     args: vec![],
+                    debug: None,
                 });
             }
         }
@@ -252,6 +292,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
     }
     if workspace.join("main.py").exists() {
@@ -261,6 +302,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
     }
 
@@ -271,6 +313,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
         configs.push(RunConfig {
             name: "Go test".to_string(),
@@ -278,6 +321,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
     }
 
@@ -288,6 +332,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
     }
 
@@ -300,6 +345,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
             cwd: "${workspaceRoot}".to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         });
     }
 
@@ -310,6 +356,7 @@ pub fn auto_detect_configs(workspace: &Path) -> Vec<RunConfig> {
         cwd: "${fileDir}".to_string(),
         env: vec![],
         args: vec![],
+        debug: None,
     });
 
     configs
@@ -326,6 +373,7 @@ mod tests {
             cwd: cwd.to_string(),
             env: vec![],
             args: vec![],
+            debug: None,
         }
     }
 
@@ -659,6 +707,124 @@ mod tests {
         assert_eq!(names(&rm2.configs), ["Custom"]);
         assert_eq!(rm2.configs[0].env[0].1, "dev");
         assert_eq!(rm2.configs[0].args, vec!["--inspect".to_string()]);
+    }
+
+    fn write_launch_json(dir: &Path, content: &str) {
+        let vs = dir.join(".vscode");
+        std::fs::create_dir_all(&vs).unwrap();
+        std::fs::write(vs.join("launch.json"), content).unwrap();
+    }
+
+    const LAUNCH_JSON: &str = r#"{
+        // VS Code launch file
+        "version": "0.2.0",
+        "configurations": [
+            {
+                "name": "Debug app",
+                "type": "lldb",
+                "request": "launch",
+                "program": "${workspaceFolder}/target/debug/app",
+                "args": ["-v"],
+                "env": {"RUST_LOG": "debug"},
+                "stopOnEntry": false,
+                "sourceLanguages": ["rust"],
+            },
+        ]
+    }"#;
+
+    #[test]
+    fn load_for_workspace_imports_vscode_launch_json_without_launch_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Cargo.toml", "");
+        write_launch_json(dir.path(), LAUNCH_JSON);
+        let mut rm = RunManager::new();
+        rm.load_for_workspace(dir.path());
+        assert_eq!(
+            names(&rm.configs),
+            [
+                "Debug app",
+                "Cargo Run",
+                "Cargo Test",
+                "Cargo Build",
+                "Run current file"
+            ]
+        );
+        let c = &rm.configs[0];
+        let d = c.debug.as_ref().unwrap();
+        assert_eq!(d.adapter_type, "lldb");
+        assert_eq!(
+            d.launch_args["sourceLanguages"],
+            serde_json::json!(["rust"])
+        );
+        let r = c.resolve(Some(Path::new("ws")), None);
+        assert_eq!(r.command, "ws/target/debug/app -v");
+        assert_eq!(r.cwd, "ws");
+        assert_eq!(r.env, vec![("RUST_LOG".to_string(), "debug".to_string())]);
+    }
+
+    #[test]
+    fn launch_toml_takes_precedence_over_launch_json() {
+        let dir = tempfile::tempdir().unwrap();
+        write_launch_json(dir.path(), LAUNCH_JSON);
+        let cu = dir.path().join(".coding-unicorns");
+        std::fs::create_dir_all(&cu).unwrap();
+        std::fs::write(
+            cu.join("launch.toml"),
+            "[[configurations]]\nname = \"Mine\"\ncommand = \"x\"\ncwd = \"\"",
+        )
+        .unwrap();
+        let mut rm = RunManager::new();
+        rm.load_for_workspace(dir.path());
+        assert_eq!(names(&rm.configs), ["Mine"]);
+        assert!(rm.configs[0].debug.is_none());
+
+        // An invalid launch.toml is not silently replaced by the import.
+        std::fs::write(cu.join("launch.toml"), "[[configurations]]\nname = 1").unwrap();
+        rm.load_for_workspace(dir.path());
+        assert_eq!(names(&rm.configs), ["Run current file"]);
+    }
+
+    #[test]
+    fn invalid_launch_json_falls_back_to_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        write_launch_json(dir.path(), "{ broken");
+        let mut rm = RunManager::new();
+        rm.load_for_workspace(dir.path());
+        assert_eq!(names(&rm.configs), ["Run current file"]);
+    }
+
+    #[test]
+    fn imported_debug_settings_survive_save_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        write_launch_json(dir.path(), LAUNCH_JSON);
+        let mut rm = RunManager::new();
+        rm.load_for_workspace(dir.path());
+        let before = rm.configs[0].debug.clone();
+        rm.save();
+
+        // launch.toml now exists and wins; the debug settings round-trip.
+        std::fs::remove_file(dir.path().join(".vscode/launch.json")).unwrap();
+        let mut rm2 = RunManager::new();
+        rm2.load_for_workspace(dir.path());
+        assert_eq!(rm2.configs[0].name, "Debug app");
+        assert_eq!(rm2.configs[0].debug, before);
+        // Plain configs keep no `debug` table.
+        let toml =
+            std::fs::read_to_string(dir.path().join(".coding-unicorns/launch.toml")).unwrap();
+        assert_eq!(toml.matches("[configurations.debug]").count(), 1);
+    }
+
+    #[test]
+    fn resolve_supports_vscode_variable_aliases() {
+        let file = PathBuf::from("ws").join("src").join("app.py");
+        let c = cfg(
+            "x",
+            "${workspaceFolder}|${fileDirname}|${fileBasenameNoExtension}",
+            "",
+        );
+        let r = c.resolve(Some(Path::new("ws")), Some(&file));
+        let dir_s = file.parent().unwrap().to_string_lossy();
+        assert_eq!(r.command, format!("ws|{dir_s}|app"));
     }
 
     #[test]

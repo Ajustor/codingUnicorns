@@ -2,7 +2,13 @@ use ropey::Rope;
 
 pub struct Buffer {
     rope: Rope,
+    /// Undo snapshots (capped at 200 by `checkpoint`). These are `Rope` clones,
+    /// not `String` copies: ropey ropes are persistent B-trees with `Arc`-shared
+    /// nodes, so a clone is O(1) and only the chunks touched by later edits are
+    /// copied (copy-on-write). Snapshot memory therefore grows with the size of
+    /// the edits, not with `file size × steps`.
     history: Vec<Rope>,
+    /// Redo snapshots; same structural sharing as `history`.
     future: Vec<Rope>,
 }
 

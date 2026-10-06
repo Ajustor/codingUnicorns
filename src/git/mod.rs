@@ -2,11 +2,14 @@ pub mod blame;
 pub mod branches;
 pub mod commit;
 pub mod merge;
+pub mod remote;
 pub mod staging;
+pub mod stash;
 pub mod status;
 
 pub use blame::{blame_file, BlameEntry};
 pub use branches::{BranchGraphEntry, BranchInfo};
+pub use stash::StashEntry;
 
 use std::path::{Path, PathBuf};
 
@@ -50,6 +53,8 @@ pub struct GitStatus {
     pub ahead: usize,
     pub behind: usize,
     pub last_error: Option<String>,
+    /// Stash stack, most recent first.
+    pub stashes: Vec<StashEntry>,
 }
 
 impl GitStatus {
@@ -63,6 +68,7 @@ impl GitStatus {
             ahead: 0,
             behind: 0,
             last_error: None,
+            stashes: vec![],
         }
     }
 
@@ -78,7 +84,8 @@ impl GitStatus {
     pub fn load(&mut self, path: PathBuf) {
         self.repo_path = Some(path.clone());
         self.last_error = None;
-        if let Ok(repo) = git2::Repository::discover(&path) {
+        self.stashes.clear();
+        if let Ok(mut repo) = git2::Repository::discover(&path) {
             match repo.head() {
                 Ok(head) => {
                     if let Some(name) = head.shorthand() {
@@ -121,7 +128,11 @@ impl GitStatus {
                             FileChangeKind::None
                         };
 
-                        let wt_status = if st.contains(git2::Status::WT_MODIFIED) {
+                        // Unmerged paths only carry CONFLICTED: list them as
+                        // worktree changes so they can be resolved and staged.
+                        let wt_status = if st.contains(git2::Status::WT_MODIFIED)
+                            || st.contains(git2::Status::CONFLICTED)
+                        {
                             FileChangeKind::Modified
                         } else if st.contains(git2::Status::WT_NEW) {
                             FileChangeKind::Untracked
@@ -146,6 +157,7 @@ impl GitStatus {
                     })
                     .collect();
             }
+            self.stashes = stash::list_stashes(&mut repo).unwrap_or_default();
         }
         self.load_branches();
     }

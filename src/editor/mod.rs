@@ -8,6 +8,7 @@ pub mod folding;
 pub mod highlight;
 pub mod hover;
 pub mod indent;
+pub mod text_format;
 pub mod utils;
 
 mod input;
@@ -15,6 +16,7 @@ mod line_diff;
 mod multi_cursor;
 mod search;
 mod word_analysis;
+mod wrap;
 
 use autocomplete::Autocomplete;
 use bracket_match::find_matching_bracket;
@@ -46,8 +48,10 @@ pub struct Editor {
     pub char_width: f32,
     pub show_find: bool,
     pub find_query: String,
-    find_matches: Vec<usize>,
+    find_matches: Vec<search::FindMatch>,
     find_current: usize,
+    /// Focus (and select) the find field on the next frame.
+    find_focus_pending: bool,
     pub show_goto_line: bool,
     pub goto_line_input: String,
     /// Set to true to scroll the viewport so the cursor is visible on the next frame.
@@ -126,6 +130,13 @@ pub struct Editor {
     pub detected_indent_spaces: bool,
     /// Detected indent unit size (e.g. 2 or 4).
     pub detected_indent_size: usize,
+    // ── On-disk format ──────────────────────────────────────────────────────
+    /// Line ending and BOM of the open file, re-applied on save (the buffer itself
+    /// is always LF-only without a BOM).
+    pub text_format: text_format::TextFormat,
+    /// The file was not valid UTF-8 and was decoded lossily: saving it would
+    /// replace the invalid bytes with U+FFFD.
+    pub decoded_lossy: bool,
     // ── Find & Replace ───────────────────────────────────────────────────────
     pub show_replace: bool,
     pub replace_query: String,
@@ -139,8 +150,9 @@ pub struct Editor {
     // ── LSP formatting ─────────────────────────────────────────────────────
     pub format_request_pending: bool,
     // ── Word wrap ───────────────────────────────────────────────────────────
-    /// Cached word-wrap column (0 = no wrap).  Set from config each frame.
-    pub wrap_col: usize,
+    /// Visual-row layout for soft wrap; inactive (0 cols) unless
+    /// `config.editor.word_wrap` is on. Updated each frame from the view width.
+    wrap: wrap::WrapLayout,
     // ── Bracket matching ────────────────────────────────────────────────────
     /// (open_row, open_col, close_row, close_col) of the matching bracket pair.
     bracket_match: Option<(usize, usize, usize, usize)>,
@@ -202,6 +214,7 @@ impl Editor {
             find_query: String::new(),
             find_matches: vec![],
             find_current: 0,
+            find_focus_pending: false,
             show_goto_line: false,
             goto_line_input: String::new(),
             scroll_to_cursor: false,
@@ -240,6 +253,8 @@ impl Editor {
             hover_leave_instant: None,
             detected_indent_spaces: true,
             detected_indent_size: 4,
+            text_format: text_format::TextFormat::default(),
+            decoded_lossy: false,
             show_replace: false,
             replace_query: String::new(),
             find_case_sensitive: false,
@@ -252,7 +267,7 @@ impl Editor {
             line_diff: Vec::new(),
             line_diff_path: None,
             format_request_pending: false,
-            wrap_col: 0,
+            wrap: wrap::WrapLayout::default(),
             cursor_blink_epoch: std::time::Instant::now(),
             word_occurrences: vec![],
             word_occurrences_version: -1,
@@ -268,6 +283,12 @@ impl Editor {
                 .and_then(|n| n.to_str())
                 .map(|n| n.to_string())
         });
+        // Keep the buffer LF-only without a BOM; remember the on-disk format so
+        // `save` can restore it. Callers that decode lossily set `decoded_lossy`
+        // after this call.
+        let (content, format) = text_format::normalize(content);
+        self.text_format = format;
+        self.decoded_lossy = false;
         self.buffer = Buffer::from_str(&content);
         self.cursor = Cursor::new();
         self.extra_cursors.clear();
@@ -302,6 +323,8 @@ impl Editor {
         self.minimap_lines_version = -1;
         self.typing_burst = None;
         self.max_line_chars_version = -1;
+        // content_version restarts at 0, so the wrap layout key could collide.
+        self.wrap.invalidate();
         // Detect indentation style from file content
         let (spaces, size) = detect_indent(&content);
         self.detected_indent_spaces = spaces;
@@ -330,7 +353,8 @@ impl Editor {
 
     pub fn save(&mut self) -> anyhow::Result<()> {
         if let Some(path) = &self.current_path {
-            std::fs::write(path, self.buffer.to_string())?;
+            let bytes = text_format::encode(&self.buffer.to_string(), self.text_format);
+            std::fs::write(path, bytes)?;
             self.is_modified = false;
             self.invalidate_line_diff();
         }
@@ -403,17 +427,30 @@ impl Editor {
                                 .hint_text("Find…")
                                 .desired_width(160.0),
                         );
+                        if std::mem::take(&mut self.find_focus_pending) {
+                            resp.request_focus();
+                            // Select the whole query so typing replaces it.
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+                                let all = egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(self.find_query.chars().count()),
+                                );
+                                state.cursor.set_char_range(Some(all));
+                                state.store(ui.ctx(), resp.id);
+                            }
+                        }
                         if resp.changed() {
                             query_changed = true;
                         }
-                        if resp.lost_focus() {
-                            if ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
-                                do_find_next = true;
-                            } else if ui
-                                .input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.shift)
-                            {
+                        // A single-line TextEdit gives up focus on Enter: step to the
+                        // next/previous match and take focus back so Enter can repeat.
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if ui.input(|i| i.modifiers.shift) {
                                 do_find_prev = true;
+                            } else {
+                                do_find_next = true;
                             }
+                            resp.request_focus();
                         }
                         // Case-sensitive toggle (Aa)
                         let cs_color = if self.find_case_sensitive {
@@ -565,7 +602,7 @@ impl Editor {
                     self.cursor.set_position(row, 0);
                     self.extra_cursors.clear();
                     // Scroll to the line
-                    let target_y = row as f32 * self.line_height;
+                    let target_y = self.visual_pos(row, 0).0 as f32 * self.line_height;
                     self.scroll_offset.y = target_y;
                 }
                 close_goto = true;
@@ -628,6 +665,27 @@ impl Editor {
                 let (rect, response) =
                     ui.allocate_exact_size(available, egui::Sense::click_and_drag());
 
+                // Soft wrap: rows hold as many chars as fit between the gutter and
+                // the vertical scrollbar / minimap overlay.
+                let wrap_cols = if config.editor.word_wrap {
+                    let minimap_w = if config.editor.show_minimap {
+                        crate::ui::minimap::MINIMAP_WIDTH
+                    } else {
+                        0.0
+                    };
+                    let text_w = rect.width() - gutter_width - minimap_w - 12.0;
+                    ((text_w / char_width) as usize).max(1)
+                } else {
+                    0
+                };
+                if wrap_cols > 0 {
+                    self.wrap
+                        .update(&self.buffer, wrap_cols, self.content_version);
+                    self.scroll_offset.x = 0.0;
+                } else if self.wrap.active() {
+                    self.wrap.disable();
+                }
+
                 // Show text cursor when hovering over the editor area; switch to pointer when Ctrl is held.
                 if response.hovered() {
                     if ui.input(|i| i.modifiers.ctrl) {
@@ -635,11 +693,8 @@ impl Editor {
                         // Compute the word bounds under the mouse for the underline.
                         if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
                             let local = hover_pos - rect.min;
-                            let row = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                            let row = row.min(self.buffer.num_lines().saturating_sub(1));
-                            let x_in_text =
-                                (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-                            let col = (x_in_text / char_width).round() as usize;
+                            let (row, col) =
+                                self.hit_test(local, gutter_width, line_height, char_width);
                             let col = col.min(self.buffer.line_len(row));
 
                             let line_chars: Vec<char> = self.buffer.line(row).chars().collect();
@@ -670,10 +725,8 @@ impl Editor {
                 if response.hovered() && !ui.input(|i| i.modifiers.ctrl) {
                     if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
                         let local = mouse_pos - rect.min;
-                        let row = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                        let row = row.min(self.buffer.num_lines().saturating_sub(1));
-                        let x_in_text = (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-                        let col = (x_in_text / char_width).round() as usize;
+                        let (row, col) =
+                            self.hit_test(local, gutter_width, line_height, char_width);
                         let col = col.min(self.buffer.line_len(row));
 
                         let word_now = get_word_at(&self.buffer, row, col);
@@ -755,10 +808,8 @@ impl Editor {
                 if response.hovered() && !ui.input(|i| i.modifiers.ctrl) {
                     if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
                         let local = mouse_pos - rect.min;
-                        let row = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                        let row = row.min(self.buffer.num_lines().saturating_sub(1));
-                        let x_in_text = (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-                        let col = (x_in_text / char_width).round() as usize;
+                        let (row, col) =
+                            self.hit_test(local, gutter_width, line_height, char_width);
                         let mut found_diag = false;
                         for diag in &self.diagnostics {
                             if diag.line as usize == row {
@@ -800,18 +851,15 @@ impl Editor {
                             // Use mouse hover position, not text cursor position.
                             self.hover_lsp_request_pending = true;
                             let local = self.hover_pos - rect.min;
-                            let h_row = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                            let h_row = h_row.min(self.buffer.num_lines().saturating_sub(1));
-                            let x_in_text =
-                                (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-                            let h_col = (x_in_text / char_width).round() as usize;
+                            let (h_row, h_col) =
+                                self.hit_test(local, gutter_width, line_height, char_width);
                             self.hover_row = h_row as u32;
                             self.hover_col = h_col.min(self.buffer.line_len(h_row)) as u32;
                             // Anchor the tooltip below the hovered word — fixed for this hover session.
-                            let anchor_x =
-                                rect.min.x + gutter_width + self.hover_col as f32 * char_width
-                                    - self.scroll_offset.x;
-                            let anchor_y = rect.min.y + (h_row + 1) as f32 * line_height
+                            let (v_row, v_col) = self.visual_pos(h_row, self.hover_col as usize);
+                            let anchor_x = rect.min.x + gutter_width + v_col as f32 * char_width
+                                - self.scroll_offset.x;
+                            let anchor_y = rect.min.y + (v_row + 1) as f32 * line_height
                                 - self.scroll_offset.y
                                 + 4.0;
                             self.hover_tooltip_anchor = Some(egui::pos2(anchor_x, anchor_y));
@@ -950,12 +998,17 @@ impl Editor {
                                         self.is_modified = true;
                                         self.content_version = self.content_version.wrapping_add(1);
                                     } else {
-                                        // Default: paste full text at each cursor
+                                        // Default: paste full text at each cursor. The
+                                        // buffer is LF-only (CRLF is re-applied on save),
+                                        // and pasted text keeps its own indentation.
                                         for ch in text.chars() {
+                                            if ch == '\r' {
+                                                continue;
+                                            }
                                             if ch == '\n' {
-                                                self.insert_newline();
+                                                self.insert_newline_plain();
                                             } else {
-                                                self.insert_char(ch, false);
+                                                self.insert_pasted_char(ch);
                                             }
                                         }
                                     }
@@ -1182,15 +1235,47 @@ impl Editor {
                                             }
                                         }
                                         egui::Key::ArrowUp if modifiers.shift => {
-                                            self.cursor.move_up_select(&self.buffer);
-                                            for ec in &mut self.extra_cursors {
-                                                ec.move_up_select(&self.buffer);
+                                            if self.wrap.active() {
+                                                // Soft wrap: move by visual row.
+                                                let cols = self.wrap.cols;
+                                                let b = &self.buffer;
+                                                wrap::move_visual(
+                                                    &mut self.cursor,
+                                                    b,
+                                                    cols,
+                                                    false,
+                                                    true,
+                                                );
+                                                for ec in &mut self.extra_cursors {
+                                                    wrap::move_visual(ec, b, cols, false, true);
+                                                }
+                                            } else {
+                                                self.cursor.move_up_select(&self.buffer);
+                                                for ec in &mut self.extra_cursors {
+                                                    ec.move_up_select(&self.buffer);
+                                                }
                                             }
                                         }
                                         egui::Key::ArrowDown if modifiers.shift => {
-                                            self.cursor.move_down_select(&self.buffer);
-                                            for ec in &mut self.extra_cursors {
-                                                ec.move_down_select(&self.buffer);
+                                            if self.wrap.active() {
+                                                // Soft wrap: move by visual row.
+                                                let cols = self.wrap.cols;
+                                                let b = &self.buffer;
+                                                wrap::move_visual(
+                                                    &mut self.cursor,
+                                                    b,
+                                                    cols,
+                                                    true,
+                                                    true,
+                                                );
+                                                for ec in &mut self.extra_cursors {
+                                                    wrap::move_visual(ec, b, cols, true, true);
+                                                }
+                                            } else {
+                                                self.cursor.move_down_select(&self.buffer);
+                                                for ec in &mut self.extra_cursors {
+                                                    ec.move_down_select(&self.buffer);
+                                                }
                                             }
                                         }
 
@@ -1211,17 +1296,49 @@ impl Editor {
                                             ac_dismiss = true;
                                         }
                                         egui::Key::ArrowUp => {
-                                            self.cursor.move_up(&self.buffer);
-                                            for ec in &mut self.extra_cursors {
-                                                ec.move_up(&self.buffer);
+                                            if self.wrap.active() {
+                                                // Soft wrap: move by visual row.
+                                                let cols = self.wrap.cols;
+                                                let b = &self.buffer;
+                                                wrap::move_visual(
+                                                    &mut self.cursor,
+                                                    b,
+                                                    cols,
+                                                    false,
+                                                    false,
+                                                );
+                                                for ec in &mut self.extra_cursors {
+                                                    wrap::move_visual(ec, b, cols, false, false);
+                                                }
+                                            } else {
+                                                self.cursor.move_up(&self.buffer);
+                                                for ec in &mut self.extra_cursors {
+                                                    ec.move_up(&self.buffer);
+                                                }
                                             }
                                             self.dedup_cursors();
                                             ac_dismiss = true;
                                         }
                                         egui::Key::ArrowDown => {
-                                            self.cursor.move_down(&self.buffer);
-                                            for ec in &mut self.extra_cursors {
-                                                ec.move_down(&self.buffer);
+                                            if self.wrap.active() {
+                                                // Soft wrap: move by visual row.
+                                                let cols = self.wrap.cols;
+                                                let b = &self.buffer;
+                                                wrap::move_visual(
+                                                    &mut self.cursor,
+                                                    b,
+                                                    cols,
+                                                    true,
+                                                    false,
+                                                );
+                                                for ec in &mut self.extra_cursors {
+                                                    wrap::move_visual(ec, b, cols, true, false);
+                                                }
+                                            } else {
+                                                self.cursor.move_down(&self.buffer);
+                                                for ec in &mut self.extra_cursors {
+                                                    ec.move_down(&self.buffer);
+                                                }
                                             }
                                             self.dedup_cursors();
                                             ac_dismiss = true;
@@ -1516,13 +1633,12 @@ impl Editor {
 
                                         // Find
                                         egui::Key::F if modifiers.ctrl => {
-                                            self.show_find = true;
+                                            self.open_find(false);
                                         }
 
                                         // Find & Replace (Ctrl+H)
                                         egui::Key::H if modifiers.ctrl => {
-                                            self.show_find = true;
-                                            self.show_replace = true;
+                                            self.open_find(true);
                                         }
 
                                         // Go to line (Ctrl+G)
@@ -1782,6 +1898,18 @@ impl Editor {
                     }
                 }
 
+                // Keyboard edits above may have changed line lengths: refresh the
+                // wrap layout before mapping pointer positions and painting.
+                if wrap_cols > 0 {
+                    self.wrap
+                        .update(&self.buffer, wrap_cols, self.content_version);
+                }
+                let total_height = if self.wrap.active() {
+                    self.wrap.total_rows() as f32 * line_height + line_height
+                } else {
+                    total_height
+                };
+
                 let mut double_click_handled = false;
 
                 if response.double_clicked() {
@@ -1789,13 +1917,9 @@ impl Editor {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let (row, col) = {
                             let local = pos - rect.min;
-                            let r = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                            let r = r.min(self.buffer.num_lines().saturating_sub(1));
-                            let x_in_text =
-                                (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-                            let c = (x_in_text / char_width).round() as usize;
-                            let c = c.min(self.buffer.line_len(r));
-                            (r, c)
+                            let (r, c) =
+                                self.hit_test(local, gutter_width, line_height, char_width);
+                            (r, c.min(self.buffer.line_len(r)))
                         };
                         let line_chars: Vec<char> = self.buffer.line(row).chars().collect();
                         let c = col.min(line_chars.len());
@@ -1822,8 +1946,7 @@ impl Editor {
                     self.extra_cursors.clear();
                     if let Some(pos) = response.interact_pointer_pos() {
                         let local = pos - rect.min;
-                        let r = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                        let r = r.min(self.buffer.num_lines().saturating_sub(1));
+                        let (r, _) = self.hit_test(local, gutter_width, line_height, char_width);
                         self.cursor.sel_anchor = Some((r, 0));
                         if r + 1 < self.buffer.num_lines() {
                             self.cursor.set_position(r + 1, 0);
@@ -1838,13 +1961,9 @@ impl Editor {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let (row, col) = {
                             let local = pos - rect.min;
-                            let r = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                            let r = r.min(self.buffer.num_lines().saturating_sub(1));
-                            let x_in_text =
-                                (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-                            let c = (x_in_text / char_width).round() as usize;
-                            let c = c.min(self.buffer.line_len(r));
-                            (r, c)
+                            let (r, c) =
+                                self.hit_test(local, gutter_width, line_height, char_width);
+                            (r, c.min(self.buffer.line_len(r)))
                         };
                         if ui.input(|i| i.modifiers.ctrl) {
                             let mut extra = Cursor::new();
@@ -1869,13 +1988,9 @@ impl Editor {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let (row, col) = {
                             let local = pos - rect.min;
-                            let r = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                            let r = r.min(self.buffer.num_lines().saturating_sub(1));
-                            let x_in_text =
-                                (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-                            let c = (x_in_text / char_width).round() as usize;
-                            let c = c.min(self.buffer.line_len(r));
-                            (r, c)
+                            let (r, c) =
+                                self.hit_test(local, gutter_width, line_height, char_width);
+                            (r, c.min(self.buffer.line_len(r)))
                         };
                         self.cursor.set_position(row, col);
                         if self.cursor.sel_anchor.is_none() {
@@ -1905,13 +2020,9 @@ impl Editor {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let (row, col) = {
                             let local = pos - rect.min;
-                            let r = ((local.y + self.scroll_offset.y) / line_height) as usize;
-                            let r = r.min(self.buffer.num_lines().saturating_sub(1));
-                            let x_in_text =
-                                (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-                            let c = (x_in_text / char_width).round() as usize;
-                            let c = c.min(self.buffer.line_len(r));
-                            (r, c)
+                            let (r, c) =
+                                self.hit_test(local, gutter_width, line_height, char_width);
+                            (r, c.min(self.buffer.line_len(r)))
                         };
                         if ui.input(|i| i.modifiers.ctrl) {
                             // Ctrl+click: navigate to definition of the word under the pointer.
@@ -1936,7 +2047,9 @@ impl Editor {
 
                 if response.hovered() {
                     // Horizontal scroll bound = longest line width minus the viewport.
-                    let max_x = {
+                    let max_x = if self.wrap.active() {
+                        0.0
+                    } else {
                         let content_w =
                             self.cached_max_line_chars() as f32 * char_width + gutter_width + 40.0;
                         (content_w - rect.width()).max(0.0)
@@ -2007,7 +2120,7 @@ impl Editor {
                     }
 
                     if ui.button("Find    Ctrl+F").clicked() {
-                        self.show_find = true;
+                        self.open_find(false);
                         ui.close_menu();
                     }
                 });
@@ -2017,8 +2130,8 @@ impl Editor {
 
                 // Scroll viewport to make the cursor visible when requested.
                 if self.scroll_to_cursor {
-                    let (cur_row, _) = self.cursor.position();
-                    let target_y = cur_row as f32 * line_height;
+                    let (cur_row, cur_col) = self.cursor.position();
+                    let target_y = self.visual_pos(cur_row, cur_col).0 as f32 * line_height;
                     if target_y < self.scroll_offset.y {
                         self.scroll_offset.y = target_y;
                     } else if target_y + line_height > self.scroll_offset.y + rect.height() {
@@ -2027,7 +2140,16 @@ impl Editor {
                     self.scroll_to_cursor = false;
                 }
 
-                let first_visible = (self.scroll_offset.y / line_height) as usize;
+                // With wrap, scroll_offset.y counts visual rows: first_visible is the
+                // logical line owning the top row (visible_count, in rows, then
+                // over-estimates the visible lines, which is harmless).
+                let first_visible = if self.wrap.active() {
+                    self.wrap
+                        .line_at_row((self.scroll_offset.y / line_height) as usize)
+                        .0
+                } else {
+                    (self.scroll_offset.y / line_height) as usize
+                };
                 let visible_count = (rect.height() / line_height) as usize + 2;
 
                 // Bracket match: recompute every frame based on cursor position
@@ -2123,7 +2245,12 @@ impl Editor {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let local = pos - rect.min;
                         if local.x < gutter_width && local.x > gutter_width - 14.0 {
-                            let row = ((local.y + self.scroll_offset.y) / line_height) as usize;
+                            let row = if self.wrap.active() {
+                                self.hit_test(local, gutter_width, line_height, char_width)
+                                    .0
+                            } else {
+                                ((local.y + self.scroll_offset.y) / line_height) as usize
+                            };
                             if self.folded_lines.contains(&row) {
                                 self.folded_lines.remove(&row);
                             } else if self.fold_regions.iter().any(|(s, _)| *s == row) {
@@ -2157,7 +2284,12 @@ impl Editor {
                 while line_idx < total_lines
                     && line_idx < first_visible + visible_count + fold_map.len()
                 {
-                    let y = rect.min.y + line_idx as f32 * line_height - self.scroll_offset.y;
+                    let y = if self.wrap.active() {
+                        rect.min.y + self.wrap.line_top(line_idx) as f32 * line_height
+                            - self.scroll_offset.y
+                    } else {
+                        rect.min.y + line_idx as f32 * line_height - self.scroll_offset.y
+                    };
                     // Stop drawing if off-screen bottom
                     if y > rect.max.y + line_height {
                         break;
@@ -2240,10 +2372,15 @@ impl Editor {
                         && line_idx == hl_row
                         && !selection_active
                     {
+                        let rows = if self.wrap.active() {
+                            self.wrap.rows(line_idx)
+                        } else {
+                            1
+                        };
                         painter.rect_filled(
                             egui::Rect::from_min_max(
                                 egui::pos2(rect.min.x, y),
-                                egui::pos2(rect.max.x, y + line_height),
+                                egui::pos2(rect.max.x, y + rows as f32 * line_height),
                             ),
                             0.0,
                             palette.line_highlight,
@@ -2363,45 +2500,74 @@ impl Editor {
                     let line = self.buffer.line(line_idx);
                     let x_start = rect.min.x + gutter_width;
 
-                    // Find bar match highlight — precise character-level boxes.
-                    // Uses the same matcher as find/replace, on the original line,
-                    // so offsets are always valid char boundaries.
-                    if self.find_matches.contains(&line_idx) {
-                        if let Some(re) = self.find_regex() {
-                            let haystack = self.buffer.line(line_idx);
-                            let is_active =
-                                self.find_matches.get(self.find_current) == Some(&line_idx);
-                            let color = if is_active {
-                                find_highlight_active
-                            } else {
-                                find_highlight
-                            };
-                            for m in re.find_iter(&haystack).filter(|m| !m.is_empty()) {
-                                let measure = |text: &str| {
-                                    ui.fonts(|f| {
-                                        f.layout_no_wrap(
-                                            text.to_owned(),
-                                            font_id.clone(),
-                                            egui::Color32::WHITE,
-                                        )
-                                        .size()
-                                        .x
-                                    })
-                                };
-                                let pre_w = measure(&haystack[..m.start()]);
-                                let span_w = measure(m.as_str());
-                                let hx = x_start + pre_w - self.scroll_offset.x;
-                                if hx < rect.max.x && hx + span_w > x_start {
-                                    painter.rect_filled(
-                                        egui::Rect::from_min_size(
-                                            egui::pos2(hx, y + 1.0),
-                                            egui::vec2(span_w.max(4.0), line_height - 2.0),
-                                        ),
-                                        2.0,
-                                        color,
-                                    );
-                                }
-                            }
+                    if self.wrap.active() {
+                        let wp = wrap::WrapPaint {
+                            painter: &painter,
+                            plugin_manager,
+                            font_id: font_id.clone(),
+                            line_height,
+                            char_width,
+                            rect,
+                            x_start,
+                            fg_color,
+                            cursor_color,
+                            accent_color,
+                            find_highlight,
+                            find_highlight_active,
+                            palette,
+                            sel_range,
+                            active_block,
+                        };
+                        self.paint_wrapped_line(ui, &wp, line_idx, &line, y);
+                        if self.fold_regions.iter().any(|(s, _)| *s == line_idx) {
+                            painter.text(
+                                egui::pos2(rect.min.x + gutter_width - 12.0, y + line_height * 0.5),
+                                egui::Align2::RIGHT_CENTER,
+                                "⌄",
+                                egui::FontId::monospace(10.0),
+                                egui::Color32::from_gray(100),
+                            );
+                        }
+                        line_idx += 1;
+                        continue;
+                    }
+
+                    // Find bar match highlight — precise character-level boxes, from the
+                    // char columns stored by `update_find_matches`.
+                    // Matches are sorted by row, so this line's are one contiguous slice.
+                    let first = self.find_matches.partition_point(|m| m.row < line_idx);
+                    let line_matches = self.find_matches[first..]
+                        .iter()
+                        .take_while(|m| m.row == line_idx);
+                    for (i, m) in line_matches.enumerate() {
+                        let color = if first + i == self.find_current {
+                            find_highlight_active
+                        } else {
+                            find_highlight
+                        };
+                        let measure = |cols: usize| {
+                            ui.fonts(|f| {
+                                f.layout_no_wrap(
+                                    line.chars().take(cols).collect(),
+                                    font_id.clone(),
+                                    egui::Color32::WHITE,
+                                )
+                                .size()
+                                .x
+                            })
+                        };
+                        let pre_w = measure(m.start);
+                        let span_w = measure(m.end) - pre_w;
+                        let hx = x_start + pre_w - self.scroll_offset.x;
+                        if hx < rect.max.x && hx + span_w > x_start {
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(hx, y + 1.0),
+                                    egui::vec2(span_w.max(4.0), line_height - 2.0),
+                                ),
+                                2.0,
+                                color,
+                            );
                         }
                     }
 
@@ -2763,7 +2929,8 @@ impl Editor {
                     let max_line_chars = self.cached_max_line_chars();
                     let content_w = max_line_chars as f32 * char_width + gutter_width + 40.0;
                     let view_w = rect.width();
-                    if content_w > view_w {
+                    // Wrapped text never overflows horizontally.
+                    if content_w > view_w && !self.wrap.active() {
                         let track_x = rect.min.x + gutter_width;
                         let track_w = view_w - gutter_width;
                         let track_y = rect.max.y - scrollbar_h;
@@ -2816,7 +2983,11 @@ impl Editor {
                 // ── Vertical scrollbar ────────────────────────────────────────
                 {
                     let scrollbar_w = 8.0_f32;
-                    let num_lines = self.buffer.num_lines() as f32;
+                    let num_lines = if self.wrap.active() {
+                        self.wrap.total_rows() as f32
+                    } else {
+                        self.buffer.num_lines() as f32
+                    };
                     let content_h = num_lines * line_height;
                     let view_h = rect.height();
 
@@ -2913,7 +3084,7 @@ impl Editor {
                         visible_count,
                         diagnostics: &self.diagnostics,
                         line_diff: &self.line_diff,
-                        find_matches: &self.find_matches,
+                        find_matches: &self.find_match_rows(),
                         cursor_row: self.cursor.row,
                         extra_cursor_rows: self.extra_cursors.iter().map(|c| c.row).collect(),
                         line_height,
@@ -2929,7 +3100,15 @@ impl Editor {
                     if let Some(new_scroll_y) =
                         crate::ui::minimap::render(ui, &painter, rect, &minimap_data)
                     {
-                        self.scroll_offset.y = new_scroll_y;
+                        // The minimap works in logical lines: map its target line
+                        // to that line's visual row when wrapping.
+                        self.scroll_offset.y = if self.wrap.active() {
+                            let line = (new_scroll_y / line_height).round() as usize;
+                            let max = (total_height - rect.height()).max(0.0);
+                            (self.wrap.line_top(line) as f32 * line_height).min(max)
+                        } else {
+                            new_scroll_y
+                        };
                     }
                 }
 
@@ -3206,6 +3385,7 @@ impl Editor {
                 if let Some(ref sig_text) = self.signature_help_text.clone() {
                     if !sig_text.is_empty() {
                         let (cur_row, cur_col) = self.cursor.position();
+                        let (cur_row, cur_col) = self.visual_pos(cur_row, cur_col);
                         let cursor_x = rect.min.x + gutter_width + cur_col as f32 * char_width;
                         let cursor_y =
                             rect.min.y + (cur_row + 1) as f32 * line_height - self.scroll_offset.y;
@@ -3440,6 +3620,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xfn main() {}\n");
         assert!(!ed.is_modified);
         assert!(ed.line_diff_path.is_none(), "line diff invalidated");
+    }
+
+    #[test]
+    fn crlf_and_bom_are_stripped_on_load_and_restored_on_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("win.txt");
+        let mut ed = editor_with("");
+        ed.set_content("\u{FEFF}a\r\nb\r\n".to_string(), Some(path.clone()));
+        assert_eq!(ed.buffer.to_string(), "a\nb\n");
+        assert_eq!(ed.buffer.line(0), "a");
+        assert_eq!(ed.text_format.line_ending, text_format::LineEnding::Crlf);
+        assert!(ed.text_format.bom);
+        ed.cursor.set_position(1, 1);
+        ed.insert_newline();
+        ed.insert_char('c', false);
+        ed.save().unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"\xEF\xBB\xBFa\r\nb\r\nc\r\n"
+        );
+
+        // Loading another file resets the format; new/LF files save as LF.
+        ed.set_content("x\ny".to_string(), Some(path.clone()));
+        assert_eq!(ed.text_format, text_format::TextFormat::default());
+        ed.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"x\ny");
+    }
+
+    #[test]
+    fn set_content_clears_lossy_flag() {
+        let mut ed = editor_with("");
+        ed.decoded_lossy = true;
+        ed.set_content("ok".to_string(), None);
+        assert!(!ed.decoded_lossy);
     }
 
     #[test]
@@ -3832,6 +4046,36 @@ mod tests {
         // Paste never auto-closes brackets.
         assert_eq!(text(&ed), "[a\nb(]");
         assert_eq!(ed.cursor.position(), (1, 2));
+    }
+
+    #[test]
+    fn enter_auto_indents_and_closer_dedents() {
+        let (mut h, mut ed) = setup("fn a() {\n    x;\n}");
+        ed.cursor.set_position(0, 8);
+        h.press(&mut ed, Key::Enter, NONE);
+        assert_eq!(ed.buffer.line(1), "    ");
+        h.type_text(&mut ed, "if y {");
+        h.press(&mut ed, Key::Enter, NONE);
+        // Auto-close made `{}`, so Enter splits the pair over three lines.
+        assert_eq!(ed.buffer.line(2), "        ");
+        assert_eq!(ed.buffer.line(3), "    }");
+        assert_eq!(ed.cursor.position(), (2, 8));
+        h.press(&mut ed, Key::ArrowDown, NONE);
+        h.press(&mut ed, Key::End, NONE);
+        h.press(&mut ed, Key::Enter, NONE);
+        h.type_text(&mut ed, "}");
+        assert_eq!(ed.buffer.line(4), "}");
+    }
+
+    #[test]
+    fn paste_keeps_its_indentation_and_drops_carriage_returns() {
+        let (mut h, mut ed) = setup("");
+        h.frame(
+            &mut ed,
+            vec![Event::Paste("if x {\r\n    y\r\n}".into())],
+            NONE,
+        );
+        assert_eq!(text(&ed), "if x {\n    y\n}");
     }
 
     #[test]
@@ -4371,7 +4615,7 @@ mod tests {
         ed.show_find = true;
         ed.find_query = "FOO".into();
         ed.update_find_matches();
-        assert_eq!(ed.find_matches, vec![0, 1]);
+        assert_eq!(ed.find_match_rows(), vec![0, 1]);
         h.idle(&mut ed);
         ed.find_use_regex = true;
         ed.find_query = "f.o|^".into(); // empty matches must be skipped, not loop
@@ -4380,12 +4624,58 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_f_focuses_find_field_and_enter_repeats_find_next() {
+        let (mut h, mut ed) = setup(
+            "foo
+foo
+foo
+bar",
+        );
+        h.idle(&mut ed); // editor takes focus
+        h.press(&mut ed, Key::F, CTRL);
+        assert!(ed.show_find);
+        h.idle(&mut ed); // find bar drawn, field focus requested
+        h.idle(&mut ed);
+
+        // Typing goes to the find field, not the buffer.
+        h.type_text(&mut ed, "foo");
+        assert_eq!(ed.find_query, "foo");
+        assert_eq!(
+            text(&ed),
+            "foo
+foo
+foo
+bar"
+        );
+        assert_eq!(ed.find_current, 0);
+
+        // Enter steps forward and keeps the field focused, so it can repeat.
+        h.press(&mut ed, Key::Enter, NONE);
+        h.idle(&mut ed);
+        assert_eq!(ed.find_current, 1);
+        h.press(&mut ed, Key::Enter, NONE);
+        h.idle(&mut ed);
+        assert_eq!(ed.find_current, 2);
+        h.press(&mut ed, Key::Enter, SHIFT);
+        h.idle(&mut ed);
+        assert_eq!(ed.find_current, 1, "Shift+Enter goes back");
+        assert_eq!(
+            text(&ed),
+            "foo
+foo
+foo
+bar",
+            "Enter never reaches the buffer"
+        );
+    }
+
+    #[test]
     fn find_bar_renders_matches_and_escape_closes_it() {
         let (mut h, mut ed) = setup("Foo bar\nfoo foo\nnone");
         ed.show_find = true;
         ed.find_query = "foo".into();
         ed.update_find_matches();
-        assert_eq!(ed.find_matches, vec![0, 1]);
+        assert_eq!(ed.find_match_rows(), vec![0, 1]);
         h.idle(&mut ed);
         ed.find_use_regex = true;
         ed.find_query = "f.o".into();
@@ -4393,7 +4683,7 @@ mod tests {
         h.idle(&mut ed);
         ed.find_case_sensitive = true;
         ed.update_find_matches();
-        assert_eq!(ed.find_matches, vec![1]);
+        assert_eq!(ed.find_match_rows(), vec![1]);
         h.idle(&mut ed);
         ed.find_query = "zzz".into();
         ed.update_find_matches();
@@ -4762,6 +5052,250 @@ mod tests {
         ed.scroll_to_cursor = true;
         h.idle(&mut ed);
         assert_eq!(ed.scroll_offset.y, 10.0 * ed.line_height);
+    }
+
+    // ── Word wrap ───────────────────────────────────────────────────────────
+
+    fn setup_wrapped(content: &str) -> (Harness, Editor) {
+        let mut h = Harness::new();
+        h.config.editor.word_wrap = true;
+        let mut ed = Editor::new();
+        ed.set_content(content.to_string(), None);
+        h.idle(&mut ed);
+        (h, ed)
+    }
+
+    /// Screen position of visual row `vrow`, column `vcol` within that row.
+    fn wrap_pos(ed: &Editor, vrow: usize, vcol: usize) -> egui::Pos2 {
+        egui::pos2(
+            50.0 + vcol as f32 * ed.char_width + ed.char_width * 0.2,
+            vrow as f32 * ed.line_height + ed.line_height * 0.5,
+        )
+    }
+
+    fn wrap_starts_of(ed: &Editor, row: usize) -> Vec<usize> {
+        let chars: Vec<char> = ed.buffer.line(row).chars().collect();
+        wrap::wrap_starts(&chars, ed.wrap.cols)
+    }
+
+    fn painted_texts(out: &egui::FullOutput) -> Vec<String> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for c in &out.shapes {
+            walk(&c.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn word_wrap_splits_long_lines_into_visual_rows() {
+        let long = "word ".repeat(60);
+        let (mut h, mut ed) = setup_wrapped(&format!("{long}\nnext"));
+        assert!(ed.wrap.active());
+        let cols = ed.wrap.cols;
+        assert!(cols > 10 && cols < 300, "{cols}");
+        let starts = wrap_starts_of(&ed, 0);
+        assert!(starts.len() > 2, "{starts:?}");
+        assert_eq!(ed.wrap.rows(0), starts.len());
+        assert_eq!(ed.wrap.line_top(1), starts.len());
+        assert_eq!(ed.visual_pos(0, starts[1] + 2), (1, 2));
+        assert_eq!(ed.visual_pos(1, 3), (starts.len(), 3));
+
+        // Typing re-wraps; turning wrap off restores one row per line.
+        ed.cursor.set_position(1, 4);
+        h.type_text(&mut ed, &" more".repeat(40));
+        assert!(ed.wrap.rows(1) > 1);
+        h.config.editor.word_wrap = false;
+        h.idle(&mut ed);
+        assert!(!ed.wrap.active());
+        assert_eq!(ed.visual_pos(1, 2), (1, 2));
+    }
+
+    #[test]
+    fn word_wrap_paints_each_row_and_one_line_number_per_line() {
+        let long = "word ".repeat(60);
+        let (mut h, mut ed) = setup_wrapped(&format!("{long}\nnext"));
+        let out = h.idle(&mut ed);
+        let texts = painted_texts(&out);
+        let rows = ed.wrap.rows(0);
+        // One galley per visual row of line 0, each holding that row's text.
+        let starts = wrap_starts_of(&ed, 0);
+        let chars: Vec<char> = long.chars().collect();
+        for (i, &s) in starts.iter().enumerate() {
+            let e = starts.get(i + 1).copied().unwrap_or(chars.len());
+            let row: String = chars[s..e].iter().collect();
+            assert!(texts.contains(&row), "row {i} {row:?} missing");
+        }
+        assert!(rows > 1);
+        assert_eq!(texts.iter().filter(|t| *t == "1").count(), 1, "{texts:?}");
+        assert_eq!(texts.iter().filter(|t| *t == "2").count(), 1, "{texts:?}");
+        assert!(texts.contains(&"next".to_string()));
+    }
+
+    #[test]
+    fn word_wrap_click_and_drag_map_visual_rows_to_buffer_positions() {
+        let long = "word ".repeat(60);
+        let (mut h, mut ed) = setup_wrapped(&format!("{long}\nnext line"));
+        let starts = wrap_starts_of(&ed, 0);
+
+        let p = wrap_pos(&ed, 1, 3);
+        h.click_at(&mut ed, p, NONE);
+        assert_eq!(ed.cursor.position(), (0, starts[1] + 3));
+
+        // Past the end of a wrapped row the caret stays on that row.
+        let p = wrap_pos(&ed, 1, ed.wrap.cols + 1);
+        h.click_at(&mut ed, p, NONE);
+        assert_eq!(ed.cursor.position(), (0, starts[2] - 1));
+
+        // The row after the wrapped line belongs to the next logical line.
+        let p = wrap_pos(&ed, starts.len(), 2);
+        h.click_at(&mut ed, p, NONE);
+        assert_eq!(ed.cursor.position(), (1, 2));
+
+        // Below the document: last line.
+        let p = wrap_pos(&ed, starts.len() + 10, 1);
+        h.click_at(&mut ed, p, NONE);
+        assert_eq!(ed.cursor.position(), (1, 1));
+
+        // Dragging across visual rows selects the text between them.
+        let p1 = wrap_pos(&ed, 0, 2);
+        let mid = p1 + egui::vec2(0.0, 8.0);
+        let p2 = wrap_pos(&ed, 2, 1);
+        h.time += 1.0;
+        h.frame(
+            &mut ed,
+            vec![Event::PointerMoved(p1), Harness::button(p1, true, NONE)],
+            NONE,
+        );
+        h.frame(&mut ed, vec![Event::PointerMoved(mid)], NONE);
+        h.frame(&mut ed, vec![Event::PointerMoved(p2)], NONE);
+        h.frame(&mut ed, vec![Harness::button(p2, false, NONE)], NONE);
+        assert_eq!(
+            ed.cursor.selection_range(),
+            Some(((0, 2), (0, starts[2] + 1)))
+        );
+    }
+
+    #[test]
+    fn word_wrap_arrow_up_down_move_by_visual_row() {
+        let long = "word ".repeat(60);
+        let (mut h, mut ed) = setup_wrapped(&format!("{long}\nnext line"));
+        let starts = wrap_starts_of(&ed, 0);
+        ed.cursor.set_position(0, 3);
+        ed.extra_cursors.push(extra(1, 1));
+        h.press(&mut ed, Key::ArrowDown, NONE);
+        assert_eq!(ed.cursor.position(), (0, starts[1] + 3));
+        assert_eq!(ed.extra_cursors[0].position(), (1, 1), "no row below");
+        h.press(&mut ed, Key::ArrowDown, SHIFT);
+        assert_eq!(ed.cursor.position(), (0, starts[2] + 3));
+        assert_eq!(ed.cursor.sel_anchor, Some((0, starts[1] + 3)));
+        h.press(&mut ed, Key::ArrowUp, SHIFT);
+        h.press(&mut ed, Key::ArrowUp, NONE);
+        assert_eq!(ed.cursor.position(), (0, 3));
+        assert!(!ed.cursor.has_selection());
+
+        // Without wrap, Up/Down still move by logical line.
+        h.config.editor.word_wrap = false;
+        h.idle(&mut ed);
+        ed.extra_cursors.clear();
+        h.press(&mut ed, Key::ArrowDown, NONE);
+        assert_eq!(ed.cursor.position(), (1, 3));
+    }
+
+    #[test]
+    fn word_wrap_scrolls_by_visual_rows_and_never_horizontally() {
+        let long = "word ".repeat(60);
+        let content = vec![long.as_str(); 100].join("\n");
+        let (mut h, mut ed) = setup_wrapped(&content);
+        let rows = ed.wrap.rows(0);
+        assert!(rows > 1);
+        assert_eq!(ed.wrap.total_rows(), rows * 100);
+
+        ed.cursor.set_position(50, 0);
+        ed.scroll_to_cursor = true;
+        h.idle(&mut ed);
+        let lh = ed.line_height;
+        assert_eq!(ed.scroll_offset.y, (50 * rows + 1) as f32 * lh - 600.0);
+
+        // A cursor on a later visual row of the line scrolls further.
+        let starts = wrap_starts_of(&ed, 60);
+        ed.cursor.set_position(60, starts[rows - 1]);
+        ed.scroll_to_cursor = true;
+        h.idle(&mut ed);
+        assert_eq!(ed.scroll_offset.y, (61 * rows) as f32 * lh - 600.0);
+
+        // Shift+wheel is a no-op horizontally.
+        let p = egui::pos2(300.0, 300.0);
+        let wheel = Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -200.0),
+            modifiers: SHIFT,
+        };
+        h.frame(&mut ed, vec![Event::PointerMoved(p), wheel], SHIFT);
+        for _ in 0..30 {
+            h.frame(&mut ed, vec![Event::PointerMoved(p)], SHIFT);
+        }
+        assert_eq!(ed.scroll_offset.x, 0.0);
+
+        // Scrolling to the bottom reaches the last visual row (rows > lines).
+        ed.scroll_offset.y = 1.0e9;
+        h.hover(&mut ed, p, NONE);
+        h.frame(
+            &mut ed,
+            vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -1.0),
+                modifiers: NONE,
+            }],
+            NONE,
+        );
+        assert!(ed.scroll_offset.y > 100.0 * lh, "{}", ed.scroll_offset.y);
+    }
+
+    #[test]
+    fn word_wrap_renders_decorations_folds_and_minimap_without_panicking() {
+        let long = "let value = call(alpha, beta) + other_function(gamma); ".repeat(6);
+        let content = format!("fn main() {{\n    {long}\n    x\n}}\n{long}");
+        let (mut h, mut ed) = setup_path(&content, Some(PathBuf::from("main.rs")));
+        h.config.editor.word_wrap = true;
+        ed.cursor.set_position(1, 120);
+        ed.cursor.sel_anchor = Some((1, 30));
+        ed.extra_cursors.push(extra(4, 200));
+        ed.diagnostics.push(crate::lsp::client::Diagnostic {
+            message: "m".into(),
+            line: 1,
+            col: 50,
+            end_col: 150,
+            severity: crate::lsp::client::DiagSeverity::Error,
+        });
+        ed.ctrl_hover_word_bounds = Some((1, 60, 70));
+        ed.signature_help_text = Some("fn call(a, b)".into());
+        h.idle(&mut ed);
+        ed.find_query = "beta".into();
+        ed.update_find_matches();
+        ed.cursor.clear_selection();
+        ed.cursor.set_position(1, 21); // inside `call(`
+        h.idle(&mut ed);
+        assert!(!ed.find_matches.is_empty());
+        assert!(ed.bracket_match.is_some());
+        // Folding the block keeps the layout and painting consistent.
+        ed.folded_lines.insert(0);
+        h.idle(&mut ed);
+        let p = wrap_pos(&ed, ed.wrap.line_top(4) + 1, 0);
+        h.click_at(&mut ed, p, NONE);
+        assert_eq!(ed.cursor.row, 4);
+        // Without minimap / line numbers the rows widen and still lay out.
+        let cols = ed.wrap.cols;
+        h.config.editor.show_minimap = false;
+        h.config.editor.line_numbers = false;
+        h.idle(&mut ed);
+        assert!(ed.wrap.cols > cols);
     }
 
     #[test]

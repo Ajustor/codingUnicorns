@@ -19,15 +19,19 @@ impl StatusBar {
         Self {}
     }
 
+    /// Render the bar. `problems` is the workspace `(errors, warnings)` count,
+    /// shown when `Some`. Returns true when that indicator was clicked.
     pub fn show(
         &self,
         ui: &mut egui::Ui,
         editor: &Editor,
         git: &GitStatus,
         lsp_status: LspStatus,
+        problems: Option<(usize, usize)>,
         palette: crate::ui::theme::Palette,
-    ) {
+    ) -> bool {
         let bg = palette.accent;
+        let mut problems_clicked = false;
         egui::Frame::new().fill(bg).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -36,6 +40,23 @@ impl StatusBar {
                         .small(),
                 );
                 ui.separator();
+
+                if let Some((errors, warnings)) = problems {
+                    let btn = egui::Button::new(
+                        egui::RichText::new(format!("⊗ {errors}  ⚠ {warnings}"))
+                            .color(palette.on_accent)
+                            .small(),
+                    )
+                    .frame(false);
+                    if ui
+                        .add(btn)
+                        .on_hover_text("Problems (Ctrl+Shift+M)")
+                        .clicked()
+                    {
+                        problems_clicked = true;
+                    }
+                    ui.separator();
+                }
 
                 if let Some(path) = &editor.current_path {
                     let name = path
@@ -69,6 +90,34 @@ impl StatusBar {
                             .color(palette.on_accent)
                             .small(),
                     );
+                    ui.separator();
+
+                    // On-disk line ending / encoding (re-applied on save)
+                    let format = editor.text_format;
+                    let encoding = if format.bom { "UTF-8 BOM" } else { "UTF-8" };
+                    ui.label(
+                        egui::RichText::new(format.line_ending.label())
+                            .color(palette.on_accent)
+                            .small(),
+                    );
+                    ui.separator();
+                    if editor.decoded_lossy {
+                        ui.label(
+                            egui::RichText::new("⚠ Invalid UTF-8")
+                                .color(palette.on_accent)
+                                .small(),
+                        )
+                        .on_hover_text(
+                            "The file was not valid UTF-8: invalid bytes are shown as \u{FFFD} \
+                             and saving will replace them.",
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(encoding)
+                                .color(palette.on_accent)
+                                .small(),
+                        );
+                    }
                     ui.separator();
                 }
 
@@ -110,6 +159,7 @@ impl StatusBar {
                 });
             });
         });
+        problems_clicked
     }
 }
 
@@ -134,6 +184,15 @@ mod tests {
 
     /// Render the status bar headlessly and return every text run painted.
     fn rendered(editor: &Editor, branch: &str, lsp: LspStatus) -> Vec<String> {
+        rendered_with(editor, branch, lsp, None)
+    }
+
+    fn rendered_with(
+        editor: &Editor,
+        branch: &str,
+        lsp: LspStatus,
+        problems: Option<(usize, usize)>,
+    ) -> Vec<String> {
         let mut git = GitStatus::new();
         git.branch = branch.into();
         let palette =
@@ -142,7 +201,7 @@ mod tests {
         let bar = StatusBar::default();
         let out = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                bar.show(ui, editor, &git, lsp.clone(), palette);
+                bar.show(ui, editor, &git, lsp.clone(), problems, palette);
             });
         });
         let mut texts = Vec::new();
@@ -178,8 +237,24 @@ mod tests {
         assert!(has(&t, "main.rs"), "{t:?}");
         assert!(has(&t, "RS"));
         assert!(has(&t, "Spaces: 2"));
+        assert!(has(&t, "LF"));
+        assert!(has(&t, "UTF-8"));
         assert!(has(&t, "Ln 10, Col 5"));
         assert!(!t.iter().any(|s| s.contains("LSP")));
+    }
+
+    #[test]
+    fn line_ending_bom_and_lossy_decoding_indicators() {
+        let mut editor = Editor::new();
+        editor.set_content("\u{FEFF}a\r\nb".to_string(), Some(PathBuf::from("win.txt")));
+        let t = rendered(&editor, "main", LspStatus::Inactive);
+        assert!(has(&t, "CRLF"), "{t:?}");
+        assert!(has(&t, "UTF-8 BOM"), "{t:?}");
+
+        editor.decoded_lossy = true;
+        let t = rendered(&editor, "main", LspStatus::Inactive);
+        assert!(has(&t, "⚠ Invalid UTF-8"), "{t:?}");
+        assert!(!has(&t, "UTF-8 BOM"));
     }
 
     #[test]
@@ -207,5 +282,63 @@ mod tests {
             assert!(has(&t, label), "{status:?}: {t:?}");
             assert_eq!(t.len(), 3, "{status:?}: {t:?}");
         }
+    }
+
+    #[test]
+    fn problem_counts_shown_when_provided() {
+        let editor = Editor::new();
+        let t = rendered_with(&editor, "main", LspStatus::Inactive, Some((2, 7)));
+        assert!(has(&t, "⊗ 2  ⚠ 7"), "{t:?}");
+        assert_eq!(t.len(), 3, "{t:?}");
+        let t = rendered(&editor, "main", LspStatus::Inactive);
+        assert!(!t.iter().any(|s| s.contains('⚠')));
+    }
+
+    #[test]
+    fn clicking_problem_counts_reports_it() {
+        let editor = Editor::new();
+        let git = GitStatus::new();
+        let palette =
+            crate::ui::theme::Palette::from_theme(&crate::config::Config::default().theme);
+        let ctx = egui::Context::default();
+        let bar = StatusBar::default();
+        let run = |events: Vec<egui::Event>| {
+            let mut clicked = false;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 100.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    clicked = bar.show(ui, &editor, &git, LspStatus::Ready, Some((1, 0)), palette);
+                });
+            });
+            clicked
+        };
+        assert!(!run(vec![]));
+        let btn = ctx.viewport(|vp| {
+            let w = &vp.prev_pass.widgets;
+            w.layer_ids()
+                .flat_map(|l| w.get_layer(l))
+                .filter(|r| {
+                    r.sense.senses_click() && r.sense.is_focusable() && !r.sense.senses_drag()
+                })
+                .map(|r| r.rect)
+                .next()
+                .unwrap()
+        });
+        let pos = btn.center();
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert!(!run(vec![egui::Event::PointerMoved(pos), press(true)]));
+        assert!(run(vec![press(false)]));
     }
 }

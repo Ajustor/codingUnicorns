@@ -15,6 +15,8 @@ pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
 
 impl CodingUnicorns {
     pub fn open_file(&mut self, path: PathBuf) {
+        // Keep the outgoing file's cursor/scroll so returning to it restores them.
+        self.remember_view_state();
         // Always clear any previous image state when opening a new file.
         self.pending_image = None;
         self.image_texture = None;
@@ -43,23 +45,31 @@ impl CodingUnicorns {
             return;
         }
 
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok((content, lossy)) = crate::editor::text_format::read_text_file(&path) {
             self.tab_manager.open(path.clone(), content.clone());
-            self.editor.set_content(content.clone(), Some(path.clone()));
+            self.editor.set_content(content, Some(path.clone()));
+            if lossy {
+                self.editor.decoded_lossy = true;
+                log::warn!("{} is not valid UTF-8; decoded lossily", path.display());
+                self.toast("File is not valid UTF-8: invalid bytes shown as \u{FFFD}");
+            }
             self.config.last_file = Some(path.to_string_lossy().to_string());
             self.config.save();
             self.ensure_lsp_for_file(&path);
-            // Notify LSP server that a file was opened.
+            // Notify LSP server that a file was opened — with the normalized
+            // (LF-only) buffer text, so later edits line up with it.
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 let lang_id = super::lsp_ops::language_id_for_ext(ext);
                 let uri = crate::lsp::client::path_to_uri(&path);
                 if let Some(client) = self.lsp.get_mut(ext) {
-                    client.did_open(&uri, lang_id, &content);
+                    client.did_open(&uri, lang_id, &self.editor.buffer.to_string());
                 }
             }
             self.last_lsp_content_version = 0;
             self.editor.refresh_line_diff();
             self.editor.focus_requested = true;
+            self.apply_view_state(&path);
+            self.record_file_stamp(&path);
         }
     }
 
@@ -71,23 +81,53 @@ impl CodingUnicorns {
     }
 
     pub fn open_file_in_pane2(&mut self, path: PathBuf) {
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok((content, lossy)) = crate::editor::text_format::read_text_file(&path) {
             if let Some(ref mut tm2) = self.tab_manager2 {
                 tm2.open(path.clone(), content.clone());
             }
             if let Some(ref mut e2) = self.editor2 {
                 e2.set_content(content, Some(path));
+                e2.decoded_lossy = lossy;
             }
         }
     }
 
     pub fn open_folder(&mut self, path: PathBuf) {
+        // Persist the outgoing workspace's tabs before switching.
+        let switching = self.workspace_path.as_ref() != Some(&path);
+        if switching {
+            self.save_session();
+        }
         self.workspace_path = Some(path.clone());
         self.file_tree.show_gitignored = self.config.editor.show_gitignored;
         self.file_tree.load(path.clone());
         self.git_status.load(path.clone());
         self.runner.load_for_workspace(&path);
-        self.config.last_workspace = Some(path.to_string_lossy().to_string());
+        let path_str = path.to_string_lossy().to_string();
+        self.config.push_recent_workspace(&path_str);
+        self.config.last_workspace = Some(path_str);
+        self.config.save();
+        if switching {
+            self.restore_session(&path);
+            self.start_file_watcher(&path);
+        }
+    }
+
+    /// Open a folder picked from the "Open Recent" list. A folder that no
+    /// longer exists is dropped from the list instead.
+    pub fn open_recent_workspace(&mut self, path: PathBuf) {
+        if path.is_dir() {
+            self.open_folder(path);
+        } else {
+            self.config.remove_recent_workspace(&path.to_string_lossy());
+            self.config.save();
+            self.toast(format!("Folder not found: {}", path.display()));
+        }
+    }
+
+    /// Clear the "Open Recent" list.
+    pub fn clear_recent_workspaces(&mut self) {
+        self.config.recent_workspaces.clear();
         self.config.save();
     }
 
