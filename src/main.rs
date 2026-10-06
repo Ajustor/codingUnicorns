@@ -86,40 +86,12 @@ fn install_panic_logger() {
 
 fn load_icon() -> Option<egui::IconData> {
     let bytes = include_bytes!("../assets/icon.png");
-    // Decode PNG manually (raw RGBA from our handcrafted PNG)
-    let mut pos = 8usize; // skip PNG signature
-    let mut width = 0u32;
-    let mut height = 0u32;
-    let mut idat = Vec::new();
-    while pos + 8 <= bytes.len() {
-        let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
-        let tag = &bytes[pos + 4..pos + 8];
-        let data = &bytes[pos + 8..pos + 8 + len];
-        match tag {
-            b"IHDR" => {
-                width = u32::from_be_bytes(data[0..4].try_into().ok()?);
-                height = u32::from_be_bytes(data[4..8].try_into().ok()?);
-            }
-            b"IDAT" => idat.extend_from_slice(data),
-            b"IEND" => break,
-            _ => {}
-        }
-        pos += 12 + len;
-    }
-
-    let raw = miniz_oxide::inflate::decompress_to_vec_zlib(&idat).ok()?;
-    let stride = width as usize * 4 + 1;
-    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-    for row in 0..height as usize {
-        let start = row * stride;
-        // filter byte at start (we always used 0=None in our generator)
-        for px in 0..width as usize {
-            let o = start + 1 + px * 4;
-            rgba.extend_from_slice(&raw[o..o + 4]);
-        }
-    }
+    let rgba = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+        .ok()?
+        .into_rgba8();
+    let (width, height) = rgba.dimensions();
     Some(egui::IconData {
-        rgba,
+        rgba: rgba.into_raw(),
         width,
         height,
     })
@@ -197,4 +169,18 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(CodingUnicorns::new(cc, initial_path)))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn app_icon_decodes_to_square_rgba() {
+        let icon = super::load_icon().expect("assets/icon.png must decode");
+        assert_eq!(icon.width, icon.height);
+        assert!(
+            icon.width >= 256,
+            "the MSI's ICO export needs a 256 px source"
+        );
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+    }
 }
