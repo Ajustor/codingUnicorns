@@ -12,9 +12,12 @@ pub struct ExtensionSource {
     /// Cargo workspace member name (only for `Workspace` kind).
     #[serde(default)]
     pub member: Option<String>,
-    /// Git remote URL (only for `Git` kind).
+    /// Git remote URL (`Git` kind) or registry index URL (`Registry` kind).
     #[serde(default)]
     pub url: Option<String>,
+    /// Module id in the remote registry index (only for `Registry` kind).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,6 +27,8 @@ pub enum SourceKind {
     Folder,
     Git,
     Zip,
+    /// Downloaded from the remote module registry (`url` = index, `id` = module).
+    Registry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,12 +257,14 @@ description = "d"
             (SourceKind::Folder, "folder"),
             (SourceKind::Git, "git"),
             (SourceKind::Zip, "zip"),
+            (SourceKind::Registry, "registry"),
         ] {
             let src = ExtensionSource {
                 kind: kind.clone(),
                 path: None,
                 member: None,
                 url: None,
+                id: None,
             };
             let out = toml::to_string(&src).unwrap();
             assert!(out.contains(&format!("kind = \"{s}\"")), "{out}");
@@ -273,5 +280,31 @@ description = "d"
         assert_eq!(s.url.as_deref(), Some("u"));
         assert!(s.path.is_none() && s.member.is_none());
         assert!(toml::from_str::<ExtensionSource>("kind = \"svn\"").is_err());
+    }
+
+    #[test]
+    fn registry_source_roundtrips_and_old_files_still_parse() {
+        let src = ExtensionSource {
+            kind: SourceKind::Registry,
+            path: None,
+            member: None,
+            url: Some("https://example.invalid/registry.json".into()),
+            id: Some("unicorns.rust-lang".into()),
+        };
+        let out = toml::to_string(&src).unwrap();
+        assert!(out.contains("kind = \"registry\""), "{out}");
+        let back: ExtensionSource = toml::from_str(&out).unwrap();
+        assert_eq!(back.kind, SourceKind::Registry);
+        assert_eq!(back.url, src.url);
+        assert_eq!(back.id.as_deref(), Some("unicorns.rust-lang"));
+
+        // source.toml written before `id` existed.
+        let old: ExtensionSource =
+            toml::from_str("kind = \"zip\"\npath = \"/a.zip\"\nmember = \"m\"\n").unwrap();
+        assert_eq!(old.kind, SourceKind::Zip);
+        assert!(old.id.is_none());
+        // `id` is omitted when unset.
+        let s = toml::to_string(&old).unwrap();
+        assert!(!s.contains("id ="), "{s}");
     }
 }

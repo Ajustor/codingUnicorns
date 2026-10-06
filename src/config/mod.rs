@@ -249,6 +249,28 @@ pub struct Config {
     /// at most [`MAX_RECENT_WORKSPACES`]).
     #[serde(default)]
     pub recent_workspaces: Vec<String>,
+    #[serde(default)]
+    pub extensions: ExtensionsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionsConfig {
+    /// URL of the remote module registry index (`registry.json`).
+    /// Empty disables the "Browse registry" section.
+    #[serde(default = "default_registry_url")]
+    pub registry_url: String,
+}
+
+impl Default for ExtensionsConfig {
+    fn default() -> Self {
+        Self {
+            registry_url: default_registry_url(),
+        }
+    }
+}
+
+fn default_registry_url() -> String {
+    crate::extension::remote_registry::DEFAULT_REGISTRY_URL.to_string()
 }
 
 /// Maximum number of entries kept in [`Config::recent_workspaces`].
@@ -345,6 +367,7 @@ impl Default for Config {
             check_updates: true,
             skipped_update_version: None,
             recent_workspaces: Vec::new(),
+            extensions: ExtensionsConfig::default(),
         }
     }
 }
@@ -687,6 +710,10 @@ mod tests {
             family = "Consolas"
         "#;
         let c: Config = toml::from_str(old).unwrap();
+        assert_eq!(
+            c.extensions.registry_url,
+            crate::extension::remote_registry::DEFAULT_REGISTRY_URL
+        );
         // Explicit values are kept.
         assert_eq!(c.theme.name, "custom");
         assert_eq!(c.editor.tab_size, 8);
@@ -788,6 +815,22 @@ mod tests {
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.recent_workspaces, vec!["C:\\x\\y"]);
         assert!(Config::default().recent_workspaces.is_empty());
+    }
+
+    #[test]
+    fn registry_url_round_trips_and_empty_disables() {
+        let mut c = Config::default();
+        assert!(c.extensions.registry_url.starts_with("https://"));
+        c.extensions.registry_url = "http://mirror.invalid/registry.json".into();
+        let back: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(
+            back.extensions.registry_url,
+            "http://mirror.invalid/registry.json"
+        );
+        // An explicitly cleared URL stays empty (registry disabled).
+        c.extensions.registry_url.clear();
+        let back: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert!(back.extensions.registry_url.is_empty());
     }
 
     #[test]

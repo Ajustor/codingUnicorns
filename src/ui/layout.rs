@@ -688,7 +688,11 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         }
                     }
                     SidebarTab::Extensions => {
-                        app.extensions_panel.show(ui, &mut app.extension_registry);
+                        app.extensions_panel.show(
+                            ui,
+                            &mut app.extension_registry,
+                            &app.config.extensions.registry_url,
+                        );
                     }
                     SidebarTab::Run => {
                         let is_running = app.runner.is_running;

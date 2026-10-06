@@ -261,6 +261,41 @@ impl SettingsPanel {
             }
 
             // ═══════════════════════════════════════════════════════════════
+            // EXTENSIONS
+            // ═══════════════════════════════════════════════════════════════
+            if setting_matches(&q, &["extension", "module", "registry", "plugin"]) {
+                section_heading(ui, "Extensions");
+                ui.label("Module registry URL");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    let w = (ui.available_width() - 70.0).max(80.0);
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut config.extensions.registry_url)
+                                .hint_text("(disabled)")
+                                .desired_width(w),
+                        )
+                        .changed();
+                    let default = crate::extension::remote_registry::DEFAULT_REGISTRY_URL;
+                    if ui
+                        .add_enabled(
+                            config.extensions.registry_url != default,
+                            egui::Button::new("Reset").small(),
+                        )
+                        .clicked()
+                    {
+                        config.extensions.registry_url = default.to_string();
+                        changed = true;
+                    }
+                });
+                hint(
+                    ui,
+                    "Index (registry.json) browsed in the Extensions panel. Leave empty to disable the registry.",
+                );
+                ui.add_space(16.0);
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // THEME
             // ═══════════════════════════════════════════════════════════════
             if setting_matches(
