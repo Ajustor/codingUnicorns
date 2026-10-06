@@ -13,6 +13,7 @@ mod lsp;
 mod nav_history;
 pub mod plugin;
 pub mod runner;
+mod single_instance;
 mod tabs;
 mod terminal;
 mod ui;
@@ -123,8 +124,18 @@ fn main() -> eframe::Result<()> {
         SetErrorMode(0x0001 | 0x0002 | 0x8000);
     }
 
-    let args: Vec<String> = std::env::args().collect();
-    let initial_path = args.get(1).map(std::path::PathBuf::from);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let new_window = args.iter().any(|a| a == single_instance::NEW_WINDOW_FLAG);
+    let initial_path = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(std::path::PathBuf::from);
+    // Opening a file/folder while the IDE already runs: hand it over and quit.
+    if let Some(path) = initial_path.as_deref() {
+        if !new_window && single_instance::forward(path) {
+            return Ok(());
+        }
+    }
 
     let icon = load_icon();
     let mut viewport = egui::ViewportBuilder::default()

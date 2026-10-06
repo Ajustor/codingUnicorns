@@ -14,6 +14,29 @@ pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
 }
 
 impl CodingUnicorns {
+    /// Open paths handed over by another launch (see `single_instance`) and bring the
+    /// window to the front.
+    pub(super) fn open_forwarded_paths(&mut self, ctx: &egui::Context) {
+        let Some(server) = &self.single_instance else {
+            return;
+        };
+        let paths: Vec<PathBuf> = server.rx.try_iter().collect();
+        if paths.is_empty() {
+            return;
+        }
+        for path in paths {
+            if path.is_dir() {
+                self.open_folder(path);
+            } else if path.is_file() {
+                self.open_file(path);
+            } else {
+                log::warn!("forwarded path does not exist: {}", path.display());
+            }
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
     pub fn open_file(&mut self, path: PathBuf) {
         // Keep the outgoing file's cursor/scroll so returning to it restores them.
         self.remember_view_state();
