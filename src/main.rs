@@ -155,27 +155,7 @@ fn main() -> eframe::Result<()> {
         "Coding Unicorns",
         options,
         Box::new(|cc| {
-            // Load Phosphor icon font so sidebar icons render correctly
-            let mut fonts = egui::FontDefinitions::default();
-            egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-
-            // Add Symbola as a fallback so emoji and symbols (🦄, ●, ⚙, etc.) render correctly
-            fonts.font_data.insert(
-                "Symbola".to_owned(),
-                egui::FontData::from_static(include_bytes!("../assets/Symbola.ttf")).into(),
-            );
-            fonts
-                .families
-                .get_mut(&egui::FontFamily::Proportional)
-                .unwrap()
-                .push("Symbola".to_owned());
-            fonts
-                .families
-                .get_mut(&egui::FontFamily::Monospace)
-                .unwrap()
-                .push("Symbola".to_owned());
-
-            cc.egui_ctx.set_fonts(fonts);
+            cc.egui_ctx.set_fonts(ui::theme::app_fonts());
 
             Ok(Box::new(CodingUnicorns::new(cc, initial_path)))
         }),

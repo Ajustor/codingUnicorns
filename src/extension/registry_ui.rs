@@ -220,17 +220,21 @@ impl RegistryBrowser {
 
         let loading = self.state == IndexState::Loading;
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Search modules…")
-                    .desired_width((ui.available_width() - 80.0).max(40.0)),
-            );
-            if ui
-                .add_enabled(!loading, egui::Button::new("⟳ Refresh"))
-                .clicked()
-            {
-                self.refresh(url.trim(), ui.ctx());
-            }
+            // Button first, right to left, so the field fills exactly what is
+            // left: a row wider than the sidebar widens it every frame.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(!loading, egui::Button::new("⟳ Refresh"))
+                    .clicked()
+                {
+                    self.refresh(url.trim(), ui.ctx());
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text("Search modules…")
+                        .desired_width(f32::INFINITY),
+                );
+            });
         });
 
         let index = registry.remote_index.as_ref();
