@@ -1490,3 +1490,206 @@ fn find_free_path(parent: &std::path::Path, base: &str, _is_dir: bool) -> std::p
     }
     parent.join(base) // fallback
 }
+
+#[cfg(test)]
+mod tests {
+    use egui::{Event, Pos2, Rect};
+
+    /// The sidebar of [`super::render`], drawn headlessly with the app's fonts
+    /// and theme.
+    ///
+    /// egui gives a side panel the width of its content and starts the next
+    /// frame from it: a row sized from `available_width()` that overflows the
+    /// panel widens it a little more every frame, until it fills the window.
+    struct Sidebar {
+        ctx: egui::Context,
+        config: crate::config::Config,
+        texts: Vec<(String, Rect)>,
+    }
+
+    impl Sidebar {
+        /// Default of `CodingUnicorns::sidebar_width`.
+        const WIDTH: f32 = 220.0;
+
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::ui::theme::app_fonts());
+            Self {
+                ctx,
+                config: crate::config::Config::default(),
+                texts: vec![],
+            }
+        }
+
+        /// Runs one frame and returns the sidebar's width.
+        fn frame(&mut self, events: Vec<Event>, content: &mut dyn FnMut(&mut egui::Ui)) -> f32 {
+            let raw = egui::RawInput {
+                // Tall enough to keep every Extensions section on screen.
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1280.0, 2400.0))),
+                events,
+                ..Default::default()
+            };
+            let config = &self.config;
+            let mut width = 0.0;
+            let out = self.ctx.run(raw, |ctx| {
+                crate::ui::theme::apply_theme(ctx, config);
+                // Same panels as `render`.
+                egui::SidePanel::left("activity_bar")
+                    .exact_width(48.0)
+                    .resizable(false)
+                    .show(ctx, |_| {});
+                width = egui::SidePanel::left("sidebar")
+                    .resizable(true)
+                    .min_width(150.0)
+                    .default_width(Self::WIDTH)
+                    .show(ctx, |ui| content(ui))
+                    .response
+                    .rect
+                    .width();
+                egui::CentralPanel::default().show(ctx, |_| {});
+            });
+            self.texts.clear();
+            for clipped in &out.shapes {
+                collect_texts(&clipped.shape, &mut self.texts);
+            }
+            width
+        }
+
+        /// Clicks the rendered text `label`, e.g. to open a collapsing section.
+        fn click(&mut self, label: &str, content: &mut dyn FnMut(&mut egui::Ui)) {
+            self.frame(vec![], content);
+            let pos = self
+                .texts
+                .iter()
+                .find(|(t, _)| t == label)
+                .map(|(_, r)| r.center())
+                .unwrap_or_else(|| panic!("{label:?} not rendered"));
+            let button = |pressed| Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![Event::PointerMoved(pos), button(true)], content);
+            self.frame(vec![button(false)], content);
+            self.frame(vec![Event::PointerGone], content);
+        }
+
+        /// Shows `content` for a few frames: the sidebar must keep its width.
+        fn assert_fits(&mut self, tab: &str, content: &mut dyn FnMut(&mut egui::Ui)) {
+            let widths: Vec<f32> = (0..10).map(|_| self.frame(vec![], content)).collect();
+            assert!(
+                widths.iter().all(|&w| w <= Self::WIDTH),
+                "{tab} widens the sidebar: {widths:?}"
+            );
+        }
+    }
+
+    fn collect_texts(shape: &egui::Shape, out: &mut Vec<(String, Rect)>) {
+        match shape {
+            egui::Shape::Text(t) => {
+                out.push((t.galley.text().to_string(), t.visual_bounding_rect()));
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn sidebar_tabs_do_not_widen_the_sidebar() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "").unwrap();
+        let mut tree = crate::filetree::FileTree::new();
+        tree.load(root.clone());
+        Sidebar::new().assert_fits("Explorer", &mut |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| tree.show(ui));
+        });
+
+        let mut search = crate::ui::search::WorkspaceSearch::new();
+        search.show_replace = true;
+        Sidebar::new().assert_fits("Search", &mut |ui| {
+            search.show(ui, Some(&root));
+        });
+
+        let mut git_panel = crate::ui::git_panel::GitPanel::new();
+        let mut git = crate::git::GitStatus::new();
+        git.files.push(crate::git::FileStatus {
+            path: "src/main.rs".into(),
+            wt_status: crate::git::FileChangeKind::Modified,
+            ..Default::default()
+        });
+        Sidebar::new().assert_fits("Git", &mut |ui| {
+            git_panel.show(ui, &mut git);
+        });
+
+        let mut run_panel = crate::ui::run_panel::RunPanel::new();
+        let mut runner = crate::runner::RunManager::new();
+        runner.configs.push(crate::runner::RunConfig {
+            name: "cargo run".into(),
+            command: "cargo run".into(),
+            cwd: "${workspaceRoot}".into(),
+            env: vec![],
+            args: vec![],
+            debug: None,
+        });
+        Sidebar::new().assert_fits("Run", &mut |ui| {
+            run_panel.show(ui, &mut runner, None, None, false);
+        });
+
+        let mut debugger = crate::ui::debugger::DebuggerPanel::new();
+        let mut dap = crate::dap::manager::DapManager::new();
+        dap.add_watch("x");
+        Sidebar::new().assert_fits("Debug", &mut |ui| {
+            debugger.show(ui, &mut dap, None);
+        });
+
+        // Extensions with every section open. The registry URL is left empty
+        // so nothing is fetched: its browser is checked on its own below.
+        let ext_dir = root.join("extensions");
+        std::fs::create_dir_all(ext_dir.join("acme.python")).unwrap();
+        std::fs::write(
+            ext_dir.join("acme.python/manifest.toml"),
+            "[extension]\nid = \"acme.python\"\nname = \"Python\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let mut registry = crate::extension::registry::ExtensionRegistry::new_in(ext_dir);
+        registry.load_installed();
+        let mut extensions = crate::extension::ui::ExtensionsPanel::new();
+        extensions.install_url = "https://github.com/user/extension".into();
+        extensions.workspace_path = "/path/to/modules".into();
+        extensions.workspace_log = vec!["⚙ Building workspace…".into()];
+        extensions.git_group_url = "https://github.com/user/modules".into();
+        extensions.git_group_log = vec!["✓ Done — 1/1 modules installed".into()];
+        let mut sidebar = Sidebar::new();
+        let mut show = |ui: &mut egui::Ui| extensions.show(ui, &mut registry, "");
+        for section in [
+            "INSTALLED",
+            "INSTALL FROM GIT",
+            "📁 Load from local folder",
+            "📦 INSTALL FROM ZIP",
+            "⚙ BUILD FROM SOURCES",
+            "📦 INSTALL GROUP FROM GIT",
+            "CREATE EXTENSION",
+        ] {
+            sidebar.click(section, &mut show);
+        }
+        sidebar.assert_fits("Extensions", &mut show);
+
+        registry.remote_index = Some(
+            crate::extension::remote_registry::parse_index(&format!(
+                r#"{{"schema":1,"modules":[{{"id":"acme.rust","dir":"rust","name":"Rust",
+                    "version":"1.0.0","description":"Rust support","languages":["rs"],
+                    "assets":{{"{}":{{"url":"https://example.invalid/rust.zip"}}}}}}]}}"#,
+                crate::extension::remote_registry::platform_key()
+            ))
+            .unwrap(),
+        );
+        let mut browser = crate::extension::registry_ui::RegistryBrowser::new();
+        Sidebar::new().assert_fits("Extensions registry", &mut |ui| {
+            browser.show(ui, &registry, "https://example.invalid/registry.json");
+        });
+    }
+}
