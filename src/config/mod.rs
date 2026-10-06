@@ -257,7 +257,10 @@ pub struct Config {
 pub struct ExtensionsConfig {
     /// URL of the remote module registry index (`registry.json`).
     /// Empty disables the "Browse registry" section.
-    #[serde(default = "default_registry_url")]
+    #[serde(
+        default = "default_registry_url",
+        deserialize_with = "deserialize_registry_url"
+    )]
     pub registry_url: String,
 }
 
@@ -271,6 +274,17 @@ impl Default for ExtensionsConfig {
 
 fn default_registry_url() -> String {
     crate::extension::remote_registry::DEFAULT_REGISTRY_URL.to_string()
+}
+
+/// Maps the pre-rename default URL to the current one; any other value is kept.
+fn deserialize_registry_url<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    use crate::extension::remote_registry::{DEFAULT_REGISTRY_URL, LEGACY_REGISTRY_URL};
+    let url = String::deserialize(d)?;
+    Ok(if url.trim_end_matches('/') == LEGACY_REGISTRY_URL {
+        DEFAULT_REGISTRY_URL.to_string()
+    } else {
+        url
+    })
 }
 
 /// Maximum number of entries kept in [`Config::recent_workspaces`].
@@ -815,6 +829,21 @@ mod tests {
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.recent_workspaces, vec!["C:\\x\\y"]);
         assert!(Config::default().recent_workspaces.is_empty());
+    }
+
+    #[test]
+    fn legacy_registry_url_is_migrated_after_the_repo_rename() {
+        use crate::extension::remote_registry::{DEFAULT_REGISTRY_URL, LEGACY_REGISTRY_URL};
+        let saved = toml::to_string_pretty(&Config::default()).unwrap();
+        let with = |url: &str| -> Config {
+            toml::from_str(&saved.replace(DEFAULT_REGISTRY_URL, url)).unwrap()
+        };
+        assert_eq!(
+            with(LEGACY_REGISTRY_URL).extensions.registry_url,
+            DEFAULT_REGISTRY_URL
+        );
+        let mirror = "https://mirror.example/r.json";
+        assert_eq!(with(mirror).extensions.registry_url, mirror);
     }
 
     #[test]

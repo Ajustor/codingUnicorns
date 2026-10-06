@@ -20,8 +20,12 @@ use sha2::{Digest, Sha256};
 use super::installer::{WorkspaceStatus, ZipInstallOptions};
 use super::manifest::{Dependencies, ExtensionSource, SourceKind};
 
-/// Index published by the `writing-unicorns-modules` repository.
+/// Index published by the `coding-unicorns-modules` repository.
 pub const DEFAULT_REGISTRY_URL: &str =
+    "https://ajustor.github.io/coding-unicorns-modules/registry.json";
+/// Default before the modules repository was renamed. GitHub doesn't redirect Pages
+/// after a rename, so a config still holding it is moved to [`DEFAULT_REGISTRY_URL`].
+pub const LEGACY_REGISTRY_URL: &str =
     "https://ajustor.github.io/writing-unicorns-modules/registry.json";
 /// Highest index `schema` this build understands.
 pub const SUPPORTED_SCHEMA: u32 = 1;
