@@ -65,6 +65,8 @@ pub struct ExtensionsPanel {
     picker_source_path: String,
     /// Whether the picker was opened for a ZIP (vs workspace).
     picker_is_zip: bool,
+    // Remote module registry browser
+    pub registry_browser: super::registry_ui::RegistryBrowser,
 }
 
 impl ExtensionsPanel {
@@ -105,6 +107,7 @@ impl ExtensionsPanel {
             picker_entries: Vec::new(),
             picker_source_path: String::new(),
             picker_is_zip: false,
+            registry_browser: super::registry_ui::RegistryBrowser::new(),
         }
     }
 
@@ -208,7 +211,18 @@ impl ExtensionsPanel {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, registry: &mut ExtensionRegistry) {
+    /// `registry_url` is `config.extensions.registry_url` (empty = disabled).
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        registry: &mut ExtensionRegistry,
+        registry_url: &str,
+    ) {
+        // Poll the remote registry (index fetch + install/update jobs)
+        if self.registry_browser.poll(registry, registry_url, ui.ctx()) {
+            self.plugins_changed = true;
+        }
+
         // Poll update jobs
         let finished_ids: Vec<String> = self
             .update_jobs
@@ -346,6 +360,16 @@ impl ExtensionsPanel {
                 );
             });
             ui.add_space(6.0);
+
+            // ── BROWSE REGISTRY ──────────────────────────────────────────────
+            egui::CollapsingHeader::new("🌐 BROWSE REGISTRY")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.set_max_width(ui.available_width());
+                    self.registry_browser.show(ui, registry, registry_url);
+                });
+
+            ui.add_space(8.0);
 
             // ── INSTALLED ────────────────────────────────────────────────────
             ui.collapsing("INSTALLED", |ui| {
@@ -498,7 +522,17 @@ impl ExtensionsPanel {
                                         .color(egui::Color32::from_rgb(255, 200, 60)),
                                     );
                                     let ext_id = ext.manifest.extension.id.clone();
-                                    let is_updating = self.update_jobs.contains_key(&ext_id);
+                                    // Registry-sourced: reinstall the module from the index.
+                                    let registry_module = ext
+                                        .source
+                                        .as_ref()
+                                        .filter(|s| s.kind == SourceKind::Registry)
+                                        .and_then(|s| {
+                                            let id = s.id.as_deref().unwrap_or(&ext_id);
+                                            registry.remote_index.as_ref()?.module(id).cloned()
+                                        });
+                                    let is_updating = self.update_jobs.contains_key(&ext_id)
+                                        || self.registry_browser.is_busy(&ext_id);
                                     let btn = ui.add_enabled(
                                         !is_updating,
                                         egui::Button::new(
@@ -512,14 +546,23 @@ impl ExtensionsPanel {
                                         ui.spinner();
                                     }
                                     if btn.clicked() {
-                                        if let Some(rx) = start_update_job(&ext.source, &registry.extensions_dir) {
+                                        if let Some(module) = registry_module {
+                                            self.registry_browser.request_install(
+                                                module,
+                                                ext.manifest.capabilities.languages.clone(),
+                                            );
+                                        } else if let Some(rx) = start_update_job(&ext.source, &registry.extensions_dir) {
                                             self.update_jobs.insert(ext_id.clone(), rx);
                                             self.update_statuses.insert(ext_id, InstallStatus::Building);
                                         }
                                     }
                                 });
                                 // Show update status if in progress
-                                if let Some(status) = self.update_statuses.get(&ext.manifest.extension.id) {
+                                if let Some((txt, color)) =
+                                    self.registry_browser.status_text(&ext.manifest.extension.id)
+                                {
+                                    ui.label(egui::RichText::new(txt).small().color(color));
+                                } else if let Some(status) = self.update_statuses.get(&ext.manifest.extension.id) {
                                     let (txt, color) = match status {
                                         InstallStatus::Cloning => ("Cloning…", egui::Color32::from_gray(180)),
                                         InstallStatus::Building => ("Building…", egui::Color32::from_gray(180)),
@@ -1205,7 +1248,9 @@ fn start_update_job(
             let url = source.url.as_deref()?.to_string();
             Some(super::installer::InstallJob::start(url, ext_dir))
         }
-        SourceKind::Zip => None, // ZIP-installed extensions cannot be auto-updated
+        // ZIP-installed extensions cannot be auto-updated; registry updates go
+        // through `RegistryBrowser` (the plugin must be unloaded first).
+        SourceKind::Zip | SourceKind::Registry => None,
     }
 }
 
