@@ -8,6 +8,19 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.10.2] - 2026-10-08
+
+### Nouveautés
+
+- Un clic dans la marge, à gauche des marqueurs de pliage, ajoute ou retire un point d'arrêt (un point pâle le prévisualise au survol) ; aussi dans le panneau de droite en mode split.
+- La branche courante, ses compteurs ahead/behind et les fichiers modifiés se mettent à jour d'eux-mêmes après un `git checkout`, `commit`, `pull`… fait hors de l'IDE. Léger : seuls quelques fichiers du dossier git sont comparés, au plus toutes les 2 secondes.
+
+### Corrections
+
+- Les serveurs de langage, adaptateurs de debug, installations d'extensions et la CLI Claude n'ouvrent plus de fenêtre de console sous Windows (par exemple avec l'extension C#).
+- « Restart now » après une mise à jour MSI ouvre toujours une nouvelle fenêtre, sur le bon dossier.
+- Un workspace relatif enregistré par une ancienne version (`cu .`) est ignoré au lieu d'ouvrir le mauvais dossier (comme le dossier d'installation, avec `cu.cmd`).
+
 ## [0.10.1] - 2026-10-08
 
 ### Corrections

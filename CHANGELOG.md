@@ -8,6 +8,19 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.10.2] - 2026-10-08
+
+### Added
+
+- Click in the gutter, left of the fold markers, to add or remove a breakpoint (a faint dot previews it on hover); also in the right pane of a split editor.
+- The current branch, its ahead/behind counts and the changed files refresh by themselves after a `git checkout`, `commit`, `pull`… made outside the IDE. Cheap: only a few files of the git dir are compared, at most every 2 seconds.
+
+### Fixed
+
+- Language servers, debug adapters, extension installs and the Claude CLI no longer open a console window on Windows (e.g. with the C# extension).
+- "Restart now" after an MSI update always opens a new window, and reopens the right folder.
+- A relative workspace saved by an older version (`cu .`) is ignored instead of opening the wrong folder (such as the install folder, with `cu.cmd`).
+
 ## [0.10.1] - 2026-10-08
 
 ### Fixed
