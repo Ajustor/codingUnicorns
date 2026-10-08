@@ -55,16 +55,19 @@ pub struct FsChanges {
     pub paths: HashSet<PathBuf>,
     /// A file or folder was created, removed or renamed (file tree is stale).
     pub structure_changed: bool,
+    /// Something changed in the workspace's `.git` dir (branch, index, refs…).
+    pub git_changed: bool,
 }
 
 impl FsChanges {
     fn is_empty(&self) -> bool {
-        self.paths.is_empty() && !self.structure_changed
+        self.paths.is_empty() && !self.structure_changed && !self.git_changed
     }
 
     fn merge(&mut self, other: FsChanges) {
         self.paths.extend(other.paths);
         self.structure_changed |= other.structure_changed;
+        self.git_changed |= other.git_changed;
     }
 
     /// Fold one raw `notify` event in, dropping ignored paths.
@@ -77,6 +80,8 @@ impl FsChanges {
             if !is_ignored(&p, root) {
                 self.paths.insert(p);
                 any = true;
+            } else if is_git_state(&p, root) {
+                self.git_changed = true;
             }
         }
         if any && structural {
@@ -93,6 +98,13 @@ pub fn is_ignored(path: &Path, root: &Path) -> bool {
         Component::Normal(name) => IGNORED_DIRS.iter().any(|d| name == *d),
         _ => false,
     })
+}
+
+/// Whether `path` is repository state in `root/.git` (not the object store,
+/// which every commit writes to without changing anything shown).
+fn is_git_state(path: &Path, root: &Path) -> bool {
+    path.strip_prefix(root.join(".git"))
+        .is_ok_and(|rel| !rel.starts_with("objects"))
 }
 
 /// `None` for events that never change content (access); otherwise whether
@@ -349,10 +361,16 @@ impl CodingUnicorns {
         let mut check = false;
         if let Some(w) = &self.file_watch.watcher {
             if let Some(changes) = w.drain() {
+                if changes.git_changed {
+                    self.git_status.note_git_dir_change();
+                }
                 if changes.structure_changed {
                     self.file_tree.reload_children();
                 }
-                check = true;
+                if changes.structure_changed || !changes.paths.is_empty() {
+                    self.git_status.note_worktree_change();
+                    check = true;
+                }
             }
         } else if !self.tab_manager.tabs.is_empty() {
             if self.file_watch.last_poll.elapsed() >= POLL_INTERVAL {
@@ -680,7 +698,19 @@ mod tests {
             notify::Event::new(EventKind::Create(CreateKind::File)).add_path("/ws/.git/x".into()),
             root,
         );
-        assert!(c.is_empty(), "ignored create must not mark the tree stale");
+        assert!(
+            c.paths.is_empty() && !c.structure_changed,
+            "file tree untouched"
+        );
+        assert!(c.git_changed, "but the repository state may have changed");
+        let mut c = FsChanges::default();
+        for p in ["/ws/.git/objects/ab/cdef", "/ws/target/debug/x"] {
+            c.add_event(
+                notify::Event::new(EventKind::Create(CreateKind::File)).add_path(p.into()),
+                root,
+            );
+        }
+        assert!(c.is_empty(), "object store and build output are ignored");
         c.add_event(
             notify::Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Any)))
                 .add_path("/ws/a.rs".into()),

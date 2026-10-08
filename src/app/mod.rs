@@ -355,9 +355,12 @@ impl CodingUnicorns {
             // file when the workspace has no saved tabs) from config.
             let mut restored = false;
             if let Some(ws_str) = app.config.last_workspace.clone() {
-                // Older versions could save a relative path (`cu .`).
-                let ws_path = file_ops::absolute_path(PathBuf::from(&ws_str));
-                if ws_path.is_dir() {
+                let ws_path = PathBuf::from(&ws_str);
+                // Versions before 0.10.1 could save a relative path (`cu .`). Its
+                // folder can't be recovered: resolving it against today's working
+                // directory (the install folder for the Start menu shortcut)
+                // would open the wrong one.
+                if ws_path.is_absolute() && ws_path.is_dir() {
                     app.workspace_path = Some(ws_path.clone());
                     app.file_tree.show_gitignored = app.config.editor.show_gitignored;
                     app.file_tree.load(ws_path.clone());
@@ -370,7 +373,7 @@ impl CodingUnicorns {
             }
             if let Some(file_str) = app.config.last_file.clone().filter(|_| !restored) {
                 let file_path = PathBuf::from(&file_str);
-                if file_path.is_file() {
+                if file_path.is_absolute() && file_path.is_file() {
                     // Read directly to avoid a redundant config save on startup.
                     if let Ok((content, lossy)) =
                         crate::editor::text_format::read_text_file(&file_path)
@@ -1061,7 +1064,15 @@ impl eframe::App for CodingUnicorns {
         }
 
         self.tick_file_watch(ctx);
+        // Branch / ahead-behind / changed files, kept current without a
+        // manual refresh (cheap when nothing changed: see `git::watch`).
+        let now = std::time::Instant::now();
+        self.git_status.refresh_if_changed(now);
+        if let Some(delay) = self.git_status.refresh_pending_in(now) {
+            ctx.request_repaint_after(delay);
+        }
         crate::ui::layout::render(self, ctx);
+        self.apply_gutter_breakpoint_clicks();
         self.tick_session();
 
         // Handle pending extension uninstall: unload plugin DLL first, then delete files.
