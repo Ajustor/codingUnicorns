@@ -4,12 +4,27 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::client::DapClient;
+use super::launcher::{LaunchEvent, LaunchPlan, Preparing};
+use super::transport::DapTransport;
 use super::types::{DapConfig, DebugSessionState, Scope, StackFrame, Variable, WatchResult};
 
 /// Manages the active debug session and breakpoint storage.
 #[derive(Default)]
 pub struct DapManager {
+    /// The session started by the user (the adapter's main connection).
     pub session: Option<DapClient>,
+    /// Sessions the adapter asked for with `startDebugging` (js-debug runs
+    /// the program in one). The latest live one is the one shown.
+    child_sessions: Vec<DapClient>,
+    /// Workspace of the running session (child sessions use it too).
+    session_workspace: PathBuf,
+    /// Adapter download / `preLaunchTask` running before the session starts.
+    preparing: Option<Preparing>,
+    /// Workspace and file (`${file}`) of the session being prepared.
+    preparing_for: (PathBuf, Option<PathBuf>),
+    /// Messages shown before a session exists (task output, launch errors).
+    /// Handed over to the session log once it starts.
+    log: Vec<String>,
     /// Breakpoints per file: file path → set of 1-based line numbers.
     pub breakpoints: HashMap<PathBuf, HashSet<usize>>,
     /// Set when a pause just happened — caller may want to navigate to the top frame.
@@ -57,7 +72,7 @@ impl DapManager {
 
     /// Latest evaluation of a watch, `None` when no session is active.
     pub fn watch_result(&self, expr: &str) -> Option<&WatchResult> {
-        self.session.as_ref()?.watch_results.get(expr)
+        self.active()?.watch_results.get(expr)
     }
 
     /// Add a watch expression (trimmed; empty or duplicate ones are ignored).
@@ -80,9 +95,50 @@ impl DapManager {
     }
 
     fn sync_watches(&mut self) {
-        if let Some(sess) = &mut self.session {
-            sess.set_watches(&self.watches);
+        let watches = self.watches.clone();
+        for sess in self.all_sessions_mut() {
+            sess.set_watches(&watches);
         }
+    }
+
+    /// The session shown and driven by the UI: the latest live child
+    /// session, else the main one.
+    fn active(&self) -> Option<&DapClient> {
+        self.child_sessions
+            .iter()
+            .rev()
+            .find(|c| c.state != DebugSessionState::Terminated)
+            .or(self.session.as_ref())
+    }
+
+    /// Mutable [`Self::active`], for stepping and continuing.
+    pub fn active_mut(&mut self) -> Option<&mut DapClient> {
+        match self
+            .child_sessions
+            .iter()
+            .rposition(|c| c.state != DebugSessionState::Terminated)
+        {
+            Some(i) => self.child_sessions.get_mut(i),
+            None => self.session.as_mut(),
+        }
+    }
+
+    fn all_sessions_mut(&mut self) -> impl Iterator<Item = &mut DapClient> {
+        self.session
+            .iter_mut()
+            .chain(self.child_sessions.iter_mut())
+    }
+
+    /// Stored breakpoints, sorted per file.
+    fn sorted_breakpoints(&self) -> Vec<(PathBuf, Vec<usize>)> {
+        self.breakpoints
+            .iter()
+            .map(|(f, ls)| {
+                let mut lines: Vec<usize> = ls.iter().cloned().collect();
+                lines.sort_unstable();
+                (f.clone(), lines)
+            })
+            .collect()
     }
 
     fn save_watches(&self) {
@@ -114,8 +170,8 @@ impl DapManager {
         }
         let mut lines: Vec<usize> = set.iter().cloned().collect();
         lines.sort_unstable();
-        // Sync with active session if any.
-        if let Some(sess) = &mut self.session {
+        // Sync with the running sessions, if any.
+        for sess in self.all_sessions_mut() {
             sess.set_breakpoints(file, &lines);
         }
         lines
@@ -126,129 +182,253 @@ impl DapManager {
         self.breakpoints.get(file).cloned().unwrap_or_default()
     }
 
-    /// Start a new debug session.
+    /// Prepare (adapter download, `preLaunchTask`) then start a session.
+    pub fn launch(&mut self, plan: LaunchPlan, current_file: Option<&Path>) {
+        self.stop_session();
+        self.log.clear();
+        self.preparing_for = (plan.workspace.clone(), current_file.map(Path::to_path_buf));
+        self.preparing = Some(super::launcher::prepare(plan));
+    }
+
+    /// Show why a session could not be launched (replaces the old session).
+    pub fn launch_failed(&mut self, message: impl Into<String>) {
+        self.stop_session();
+        self.log.clear();
+        push_log(&mut self.log, message.into());
+    }
+
+    /// Whether a new session can be started: none is running or preparing
+    /// (a terminated one is replaced).
+    pub fn can_start(&self) -> bool {
+        !self.is_preparing()
+            && self
+                .session
+                .as_ref()
+                .is_none_or(|s| s.state == DebugSessionState::Terminated)
+    }
+
+    /// Start a new debug session (blocks while a TCP adapter starts).
     pub fn start_session(
         &mut self,
         cfg: &DapConfig,
         workspace: &Path,
         current_file: Option<&Path>,
     ) -> anyhow::Result<()> {
-        let mut client = DapClient::start(cfg, workspace)?;
-        // If a current file is set, substitute ${file} in the launch config.
-        if let Some(file) = current_file {
-            client.set_file_variable(file);
-        }
-        // Queue all stored breakpoints.
-        let bps: Vec<(PathBuf, Vec<usize>)> = self
-            .breakpoints
-            .iter()
-            .map(|(f, ls)| {
-                let mut lines: Vec<usize> = ls.iter().cloned().collect();
-                lines.sort_unstable();
-                (f.clone(), lines)
-            })
-            .collect();
-        for (file, lines) in &bps {
+        let transport = DapTransport::open(cfg, workspace)?;
+        self.attach_session(cfg, transport, workspace, current_file);
+        Ok(())
+    }
+
+    /// Start a session over a connected adapter.
+    fn attach_session(
+        &mut self,
+        cfg: &DapConfig,
+        transport: DapTransport,
+        workspace: &Path,
+        current_file: Option<&Path>,
+    ) {
+        // Expand every VS Code variable of the launch arguments up front.
+        let mut cfg = cfg.clone();
+        super::client::map_strings(&mut cfg.launch_config, &|s| {
+            crate::runner::expand_variables(s, Some(workspace), current_file)
+        });
+        let mut client = DapClient::from_transport(transport, &cfg, workspace);
+        for (file, lines) in &self.sorted_breakpoints() {
             client.set_breakpoints(file, lines);
         }
         client.set_watches(&self.watches);
+        // Keep the preparation output (build log) above the session's.
+        client.output_log = std::mem::take(&mut self.log);
         self.session = Some(client);
-        Ok(())
+        self.child_sessions.clear();
+        self.session_workspace = workspace.to_path_buf();
     }
 
     /// Stop the active debug session.
     pub fn stop_session(&mut self) {
+        if let Some(p) = self.preparing.take() {
+            p.cancel();
+            push_log(&mut self.log, "Launch cancelled".into());
+        }
+        for child in self.child_sessions.iter_mut().rev() {
+            child.disconnect();
+        }
+        self.child_sessions.clear();
         if let Some(sess) = &mut self.session {
             sess.disconnect();
         }
         self.session = None;
     }
 
-    /// Poll the active session. Call every frame.
+    /// End every session and wait (briefly) for the adapters to exit, so
+    /// none outlives the IDE. Call when quitting.
+    pub fn shutdown(&mut self) {
+        if let Some(p) = self.preparing.take() {
+            p.cancel();
+        }
+        for sess in self
+            .child_sessions
+            .iter_mut()
+            .rev()
+            .chain(self.session.iter_mut())
+        {
+            sess.disconnect();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        for sess in self
+            .child_sessions
+            .iter_mut()
+            .chain(self.session.iter_mut())
+        {
+            sess.close(deadline);
+        }
+        self.child_sessions.clear();
+        self.session = None;
+    }
+
+    /// Poll the sessions. Call every frame.
     pub fn poll(&mut self) {
         self.just_paused = false;
-        if let Some(sess) = &mut self.session {
-            let paused = sess.poll();
-            if paused {
-                self.just_paused = true;
-            }
-            // Clean up terminated sessions automatically.
-            if sess.state == DebugSessionState::Terminated && !sess.is_alive() {
-                // Keep the session alive a bit so the UI can show the final state;
-                // layout.rs is responsible for calling stop_session() on user action.
+        self.poll_preparing();
+        let mut paused = false;
+        for sess in self.all_sessions_mut() {
+            paused |= sess.poll();
+        }
+        self.just_paused = paused;
+        self.open_child_sessions();
+        // Program output arrives on child sessions: show it in one log.
+        if let Some(root) = &mut self.session {
+            for child in &mut self.child_sessions {
+                root.output_log.append(&mut child.output_log);
             }
         }
     }
 
+    /// Open the child sessions the adapter asked for (`startDebugging`).
+    fn open_child_sessions(&mut self) {
+        let mut requests = Vec::new();
+        for sess in self.all_sessions_mut() {
+            if let Some(port) = sess.port() {
+                requests.extend(sess.take_child_requests().into_iter().map(|r| (port, r)));
+            }
+        }
+        for (port, args) in requests {
+            match DapClient::start_child(port, args, &self.session_workspace) {
+                Ok(mut child) => {
+                    for (file, lines) in &self.sorted_breakpoints() {
+                        child.set_breakpoints(file, lines);
+                    }
+                    child.set_watches(&self.watches);
+                    self.child_sessions.push(child);
+                }
+                Err(e) => {
+                    if let Some(root) = &mut self.session {
+                        root.output_log
+                            .push(format!("[dap] could not open a child session: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply the progress of a preparation; start the session when ready.
+    fn poll_preparing(&mut self) {
+        let Some(p) = &self.preparing else {
+            return;
+        };
+        let events: Vec<LaunchEvent> = p.events.try_iter().collect();
+        let mut ready = None;
+        let mut ended = false;
+        for ev in events {
+            match ev {
+                LaunchEvent::Log(line) => push_log(&mut self.log, line),
+                LaunchEvent::Ready(r) => ready = Some(r),
+                LaunchEvent::Failed(e) => {
+                    push_log(&mut self.log, format!("Debug launch failed: {e}"));
+                    ended = true;
+                }
+            }
+        }
+        if ready.is_none() && !ended {
+            return;
+        }
+        self.preparing = None;
+        let (workspace, file) = std::mem::take(&mut self.preparing_for);
+        if let Some(ready) = ready {
+            let (cfg, transport) = *ready;
+            self.attach_session(&cfg, transport, &workspace, file.as_deref());
+        }
+    }
+
+    /// Whether a preparation (download, build task) is running.
+    pub fn is_preparing(&self) -> bool {
+        self.preparing.is_some()
+    }
+
     pub fn is_running(&self) -> bool {
-        matches!(
-            self.session.as_ref().map(|s| &s.state),
-            Some(DebugSessionState::Running) | Some(DebugSessionState::Launching)
-        )
+        self.is_preparing()
+            || matches!(
+                self.active().map(|s| &s.state),
+                Some(DebugSessionState::Running) | Some(DebugSessionState::Launching)
+            )
     }
 
     pub fn is_paused(&self) -> bool {
         matches!(
-            self.session.as_ref().map(|s| &s.state),
+            self.active().map(|s| &s.state),
             Some(DebugSessionState::Paused { .. })
         )
     }
 
     pub fn is_active(&self) -> bool {
-        self.session.is_some()
+        self.session.is_some() || self.is_preparing()
     }
 
     pub fn paused_thread_id(&self) -> Option<i64> {
-        match self.session.as_ref()?.state {
+        match self.active()?.state {
             DebugSessionState::Paused { thread_id } => Some(thread_id),
             _ => None,
         }
     }
 
     pub fn call_stack(&self) -> &[StackFrame] {
-        self.session
-            .as_ref()
+        self.active()
             .map(|s| s.call_stack.as_slice())
             .unwrap_or(&[])
     }
 
     /// Index of the call-stack frame whose scopes are shown.
     pub fn selected_frame(&self) -> usize {
-        self.session.as_ref().map(|s| s.selected_frame).unwrap_or(0)
+        self.active().map(|s| s.selected_frame).unwrap_or(0)
     }
 
     pub fn select_frame(&mut self, idx: usize) {
-        if let Some(sess) = &mut self.session {
+        if let Some(sess) = self.active_mut() {
             sess.select_frame(idx);
         }
     }
 
     /// Scopes (Locals, Globals…) of the selected frame.
     pub fn scopes(&self) -> &[Scope] {
-        self.session
-            .as_ref()
-            .map(|s| s.scopes.as_slice())
-            .unwrap_or(&[])
+        self.active().map(|s| s.scopes.as_slice()).unwrap_or(&[])
     }
 
     /// Fetched children of a scope or structured variable, `None` if not loaded.
     pub fn children(&self, variables_reference: i64) -> Option<&[Variable]> {
-        self.session
-            .as_ref()?
+        self.active()?
             .children
             .get(&variables_reference)
             .map(|v| v.as_slice())
     }
 
     pub fn is_loading(&self, variables_reference: i64) -> bool {
-        self.session
-            .as_ref()
+        self.active()
             .is_some_and(|s| s.is_loading(variables_reference))
     }
 
     /// Lazily fetch the children of a scope or structured variable.
     pub fn request_variables(&mut self, variables_reference: i64) {
-        if let Some(sess) = &mut self.session {
+        if let Some(sess) = self.active_mut() {
             sess.request_variables(variables_reference);
         }
     }
@@ -257,15 +437,27 @@ impl DapManager {
         self.session
             .as_ref()
             .map(|s| s.output_log.as_slice())
-            .unwrap_or(&[])
+            .unwrap_or(&self.log)
     }
 
     pub fn session_state(&self) -> DebugSessionState {
-        self.session
-            .as_ref()
+        if self.is_preparing() {
+            return DebugSessionState::Preparing;
+        }
+        self.active()
             .map(|s| s.state.clone())
             .unwrap_or(DebugSessionState::Idle)
     }
+}
+
+/// Lines kept in the pre-session log.
+const MAX_LOG_LINES: usize = 1000;
+
+fn push_log(log: &mut Vec<String>, line: String) {
+    if log.len() >= MAX_LOG_LINES {
+        log.drain(..MAX_LOG_LINES / 10);
+    }
+    log.push(line);
 }
 
 #[cfg(test)]
@@ -300,6 +492,7 @@ mod tests {
 
     fn cfg() -> DapConfig {
         DapConfig {
+            transport: Default::default(),
             adapter_cmd: "definitely-not-a-real-dap-adapter-xyz".into(),
             adapter_args: vec![],
             launch_config: json!({}),
@@ -483,6 +676,7 @@ mod tests {
         #[cfg(not(windows))]
         let (cmd, args) = ("sh", vec!["-c".to_string(), "exit 0".to_string()]);
         let c = DapConfig {
+            transport: Default::default(),
             adapter_cmd: cmd.into(),
             adapter_args: args,
             launch_config: json!({"program": "${file}"}),
@@ -494,6 +688,203 @@ mod tests {
         assert!(m.is_active());
         m.stop_session();
         assert!(!m.is_active());
+    }
+
+    fn exiting_adapter() -> DapConfig {
+        #[cfg(windows)]
+        let (cmd, args) = ("cmd", vec!["/C".to_string(), "exit 0".to_string()]);
+        #[cfg(not(windows))]
+        let (cmd, args) = ("sh", vec!["-c".to_string(), "exit 0".to_string()]);
+        DapConfig {
+            transport: Default::default(),
+            adapter_cmd: cmd.into(),
+            adapter_args: args,
+            launch_config: json!({"program": "${workspaceFolder}/${fileBasenameNoExtension}"}),
+        }
+    }
+
+    fn plan(dir: &Path, tasks: Vec<crate::runner::vscode_tasks::TaskStep>) -> LaunchPlan {
+        LaunchPlan {
+            config: exiting_adapter(),
+            adapter: None,
+            tasks,
+            workspace: dir.to_path_buf(),
+        }
+    }
+
+    fn task(line: &str) -> crate::runner::vscode_tasks::TaskStep {
+        crate::runner::vscode_tasks::TaskStep {
+            label: "build".into(),
+            command: crate::runner::vscode_tasks::TaskCommand::Shell(line.into()),
+            cwd: None,
+            env: vec![],
+        }
+    }
+
+    /// Poll until the preparation is over.
+    fn settle(m: &mut DapManager) {
+        let start = std::time::Instant::now();
+        while m.is_preparing() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(30));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            m.poll();
+        }
+    }
+
+    #[test]
+    fn launch_runs_tasks_then_starts_the_session_with_their_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = DapManager::new();
+        assert!(m.can_start());
+        m.launch(
+            plan(dir.path(), vec![task("echo built")]),
+            Some(Path::new("/ws/app.cs")),
+        );
+        assert!(m.is_active() && m.is_running() && !m.can_start());
+        assert_eq!(m.session_state(), DebugSessionState::Preparing);
+        settle(&mut m);
+        let sess = m.session.as_ref().expect("session started");
+        let program = sess_launch_program(sess);
+        assert!(program.ends_with("app"), "variables expanded: {program}");
+        assert!(!program.contains("${"), "{program}");
+        assert!(
+            m.output_log().iter().any(|l| l == "built"),
+            "{:?}",
+            m.output_log()
+        );
+    }
+
+    fn sess_launch_program(s: &DapClient) -> String {
+        s.launch_config_for_test()["program"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn failed_task_reports_and_allows_a_new_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = DapManager::new();
+        m.launch(plan(dir.path(), vec![task("exit 2")]), None);
+        settle(&mut m);
+        assert!(!m.is_active());
+        assert!(m.can_start());
+        assert!(
+            m.output_log()
+                .iter()
+                .any(|l| l.contains("task `build` failed")),
+            "{:?}",
+            m.output_log()
+        );
+    }
+
+    #[test]
+    fn stopping_a_preparation_cancels_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = DapManager::new();
+        let slow = if cfg!(windows) {
+            "ping -n 30 127.0.0.1"
+        } else {
+            "sleep 30"
+        };
+        m.launch(plan(dir.path(), vec![task(slow)]), None);
+        m.stop_session();
+        assert!(!m.is_active());
+        assert_eq!(m.output_log().last().unwrap(), "Launch cancelled");
+    }
+
+    #[test]
+    fn launch_failed_replaces_a_terminated_session() {
+        let mut m = DapManager::new();
+        let (_out, _tx, alive) = with_session(&mut m);
+        assert!(!m.can_start(), "running session");
+        alive.store(false, std::sync::atomic::Ordering::Relaxed);
+        m.poll();
+        assert!(m.can_start(), "terminated session can be replaced");
+        m.launch_failed("No debugger");
+        assert!(!m.is_active());
+        assert_eq!(m.output_log(), ["No debugger"]);
+    }
+
+    /// End to end with a module's real debugger (downloaded when the module
+    /// says so). `cargo test e2e_module_debugger -- --ignored` with:
+    /// - `CU_E2E_MANIFEST`: the module's manifest.toml
+    /// - `CU_E2E_FILE`: a source file whose line 2 runs and which prints
+    ///   `x=42` (the program's output must reach the debug log)
+    /// - `CU_E2E_LAUNCH` (optional): launch arguments as JSON, else the
+    ///   module's `default_launch`
+    /// - `CU_E2E_BUILD` (optional): shell command run first (build task)
+    #[test]
+    #[ignore]
+    fn e2e_module_debugger_stops_at_breakpoint() {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let file = PathBuf::from(var("CU_E2E_FILE").unwrap());
+        let project = file.parent().unwrap().to_path_buf();
+        let modules = tempfile::tempdir().unwrap();
+        let manifest = std::fs::read_to_string(var("CU_E2E_MANIFEST").unwrap()).unwrap();
+        let module = crate::extension::registry::InstalledExtension {
+            manifest: crate::extension::manifest::ExtensionManifest::parse(&manifest).unwrap(),
+            path: modules.path().join("module"),
+            lib_path: None,
+            enabled: true,
+            source: None,
+            update_available: None,
+        };
+        let ext = file.extension().unwrap().to_string_lossy().to_string();
+        let launch: Option<Value> = var("CU_E2E_LAUNCH").map(|j| serde_json::from_str(&j).unwrap());
+        let adapter_type = launch
+            .as_ref()
+            .and_then(|l| l["type"].as_str().map(String::from));
+        let adapter =
+            crate::dap::adapters::DebugAdapter::find([&module], adapter_type.as_deref(), &ext)
+                .expect("module debugger");
+        let launch = launch
+            .or_else(|| adapter.default_launch())
+            .expect("launch arguments");
+        let tasks = var("CU_E2E_BUILD")
+            .map(|b| vec![task(&b)])
+            .unwrap_or_default();
+        let mut m = DapManager::new();
+        m.toggle_breakpoint(&file, 2);
+        m.launch(
+            LaunchPlan {
+                config: adapter.config(PathBuf::new(), launch),
+                adapter: Some(adapter),
+                tasks,
+                workspace: project.clone(),
+            },
+            Some(&file),
+        );
+        let start = std::time::Instant::now();
+        let wait = |m: &mut DapManager, done: &dyn Fn(&DapManager) -> bool, what: &str| {
+            while !done(m) {
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(240),
+                    "{what}: {:?} {:?}",
+                    m.session_state(),
+                    m.output_log()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                m.poll();
+            }
+        };
+        wait(&mut m, &|m| m.is_paused(), "not paused");
+        wait(
+            &mut m,
+            &|m| !m.call_stack().is_empty() && !m.scopes().is_empty(),
+            "no stack",
+        );
+        assert_eq!(m.call_stack()[0].line, 2);
+        eprintln!("stack: {:?}", &m.call_stack()[..1]);
+        eprintln!("scopes: {:?}", m.scopes());
+        let tid = m.paused_thread_id().unwrap();
+        m.active_mut().unwrap().continue_execution(tid);
+        wait(
+            &mut m,
+            &|m| m.output_log().iter().any(|l| l.contains("x=42")),
+            "no program output",
+        );
+        m.shutdown();
     }
 
     #[test]

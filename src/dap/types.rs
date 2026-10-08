@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-/// Configuration for a Debug Adapter, returned by language plugins.
-#[derive(Debug, Clone)]
+/// How to start a debug adapter and what to launch with it.
+#[derive(Debug, Clone, Default)]
 pub struct DapConfig {
     /// The debug adapter binary (e.g. "codelldb", "python3", "node").
     pub adapter_cmd: String,
@@ -10,6 +10,8 @@ pub struct DapConfig {
     /// The `launch` request body sent after `configurationDone`.
     /// Use `${file}` and `${workspaceFolder}` as placeholders.
     pub launch_config: serde_json::Value,
+    /// stdio, or TCP (`${port}` in `adapter_args`).
+    pub transport: crate::extension::manifest::DebuggerTransport,
 }
 
 /// A source breakpoint (before or after DAP verification).
@@ -73,6 +75,8 @@ pub enum WatchResult {
 pub enum DebugSessionState {
     #[default]
     Idle,
+    /// Downloading the adapter or running the `preLaunchTask`.
+    Preparing,
     Launching,
     Running,
     Paused {
@@ -106,6 +110,7 @@ mod tests {
     #[test]
     fn types_are_cloneable_and_debuggable() {
         let cfg = DapConfig {
+            transport: Default::default(),
             adapter_cmd: "python3".into(),
             adapter_args: vec!["-m".into(), "debugpy.adapter".into()],
             launch_config: serde_json::json!({"program": "${file}"}),

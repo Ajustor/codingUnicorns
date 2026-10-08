@@ -8,6 +8,23 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.10.5] - 2026-10-08
+
+### Added
+
+- Language modules ship their debugger: a `[debugger]` section in `manifest.toml` names the adapter, the launch configuration types it serves, and optionally an archive to download it from. Adapters can talk over stdio or TCP, and the child sessions an adapter asks for (`startDebugging`) are opened automatically. The IDE itself contains no debugger.
+- Official modules updated, offered in the Extensions panel: **C#** debugs with netcoredbg, **TypeScript, JavaScript, React, Vue, Svelte and HTML** with vscode-js-debug (Node programs, or pages in Chrome/Edge), **PowerShell** with PowerShell Editor Services (all three downloaded on first use), **Python** with debugpy (installed with the module), **Go** with Delve (installed with the module) and **Rust** with lldb-dap (from LLVM).
+- Text a debugger prints outside the protocol shows in the debug output.
+
+### Fixed
+
+- **The debugger now starts.** F5 used to do nothing at all: no installed module provided a debug adapter, and the error was silent.
+- The `preLaunchTask` of a launch configuration (e.g. `build` from `.vscode/tasks.json`) runs before the program starts, with its output in the debug panel. A failed build stops the launch.
+- Launch problems (missing debugger, failed build, adapter error) are shown in the debug panel instead of being lost.
+- The debug panel updates on its own when a breakpoint is hit, without having to move the mouse.
+- A finished session can be restarted with F5 without pressing Stop first; Stop also cancels a running build.
+- Debug adapters, and the programs they run, are stopped when the IDE quits.
+
 ## [0.10.4] - 2026-10-08
 
 ### Changed

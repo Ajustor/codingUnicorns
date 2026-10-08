@@ -8,6 +8,23 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.10.5] - 2026-10-08
+
+### Nouveautés
+
+- Les modules de langage fournissent leur débogueur : une section `[debugger]` du `manifest.toml` indique l'adaptateur, les types de configuration qu'il sert et, au besoin, une archive d'où le télécharger. Les adaptateurs communiquent par stdio ou TCP, et les sessions enfants qu'un adaptateur demande (`startDebugging`) s'ouvrent automatiquement. L'IDE lui-même ne contient aucun débogueur.
+- Modules officiels mis à jour, proposés dans le panneau Extensions : **C#** débogue avec netcoredbg, **TypeScript, JavaScript, React, Vue, Svelte et HTML** avec vscode-js-debug (programmes Node, ou pages dans Chrome/Edge), **PowerShell** avec PowerShell Editor Services (tous trois téléchargés au premier lancement), **Python** avec debugpy (installé avec le module), **Go** avec Delve (installé avec le module) et **Rust** avec lldb-dap (fourni par LLVM).
+- Le texte qu'un débogueur affiche hors protocole apparaît dans la sortie Debug.
+
+### Corrections
+
+- **Le débogueur démarre enfin.** F5 ne faisait rien : aucun module installé ne fournissait d'adaptateur de debug, et l'erreur était silencieuse.
+- La `preLaunchTask` d'une configuration de lancement (par ex. `build` de `.vscode/tasks.json`) s'exécute avant le programme, avec sa sortie dans le panneau Debug. Un build en échec arrête le lancement.
+- Les problèmes de lancement (débogueur absent, build en échec, erreur de l'adaptateur) s'affichent dans le panneau Debug au lieu d'être perdus.
+- Le panneau Debug se met à jour tout seul quand un breakpoint est atteint, sans devoir bouger la souris.
+- Une session terminée se relance avec F5 sans passer par Stop ; Stop annule aussi un build en cours.
+- Les débogueurs, et les programmes qu'ils exécutent, s'arrêtent quand l'IDE se ferme.
+
 ## [0.10.4] - 2026-10-08
 
 ### Modifications

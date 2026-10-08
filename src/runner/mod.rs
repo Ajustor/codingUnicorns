@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub mod vscode_launch;
+pub mod vscode_tasks;
 
 /// A single run configuration (like VSCode's launch.json entry)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,30 +41,7 @@ impl RunConfig {
     /// `${fileDir}` / `${fileDirname}` → current file's directory
     /// `${fileName}` / `${fileBasenameNoExtension}` → current file name without extension
     pub fn resolve(&self, workspace: Option<&Path>, current_file: Option<&Path>) -> ResolvedRun {
-        let ws = workspace
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let file = current_file
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let file_dir = current_file
-            .and_then(|p| p.parent())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| ws.clone());
-        let file_name = current_file
-            .and_then(|p| p.file_stem())
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let resolve_str = |s: &str| -> String {
-            s.replace("${workspaceRoot}", &ws)
-                .replace("${workspaceFolder}", &ws)
-                .replace("${fileDirname}", &file_dir)
-                .replace("${fileBasenameNoExtension}", &file_name)
-                .replace("${file}", &file)
-                .replace("${fileDir}", &file_dir)
-                .replace("${fileName}", &file_name)
-        };
+        let resolve_str = |s: &str| expand_variables(s, workspace, current_file);
 
         let mut full_cmd = resolve_str(&self.command);
         for arg in &self.args {
@@ -77,6 +55,35 @@ impl RunConfig {
             env: self.env.clone(),
         }
     }
+}
+
+/// Expand the VS Code-style variables of run configurations, tasks and
+/// debug launch arguments (see [`RunConfig::resolve`] for the list).
+pub fn expand_variables(s: &str, workspace: Option<&Path>, current_file: Option<&Path>) -> String {
+    if !s.contains("${") {
+        return s.to_string();
+    }
+    let ws = workspace
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let file = current_file
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let file_dir = current_file
+        .and_then(|p| p.parent())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ws.clone());
+    let file_name = current_file
+        .and_then(|p| p.file_stem())
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    s.replace("${workspaceRoot}", &ws)
+        .replace("${workspaceFolder}", &ws)
+        .replace("${fileDirname}", &file_dir)
+        .replace("${fileBasenameNoExtension}", &file_name)
+        .replace("${file}", &file)
+        .replace("${fileDir}", &file_dir)
+        .replace("${fileName}", &file_name)
 }
 
 #[derive(Debug, Clone)]
