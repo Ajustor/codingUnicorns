@@ -879,6 +879,11 @@ impl Editor {
                             // Mark pending so the app sends an LSP hover request.
                             // Use mouse hover position, not text cursor position.
                             self.hover_lsp_request_pending = true;
+                            // One attempt per hover: when nothing answers, the
+                            // flags above clear again and this would re-run every
+                            // frame while the mouse rests on the word. Moving to
+                            // another word re-arms the timer.
+                            self.hover_start = None;
                             let local = self.hover_pos - rect.min;
                             let (h_row, h_col) =
                                 self.hit_test(local, gutter_width, line_height, char_width);
@@ -892,13 +897,14 @@ impl Editor {
                                 - self.scroll_offset.y
                                 + 4.0;
                             self.hover_tooltip_anchor = Some(egui::pos2(anchor_x, anchor_y));
-                            // Regex fallback: show something immediately while LSP responds.
+                            // Regex fallback: show something immediately while LSP
+                            // responds. The open buffer only: searching the workspace
+                            // reads files from disk, far too slow for the UI thread.
                             let lang = self.highlighter.language.clone();
                             let content = self.buffer.to_string();
                             let sig = plugin_manager
                                 .hover_info(&lang, &word, &content)
                                 .or_else(|| self.lookup_signature_in_buffer(&word))
-                                .or_else(|| self.lookup_signature_in_workspace(&word))
                                 .unwrap_or_default();
                             if !sig.is_empty() {
                                 self.hover_signature = Some(sig);
@@ -5003,6 +5009,26 @@ bar",
         assert_eq!(ed.ctrl_hover_word_bounds, None);
         h.hover(&mut ed, p, NONE);
         assert_eq!(ed.ctrl_hover_word_bounds, None);
+    }
+
+    /// An unresolved word (no LSP answer, nothing in the buffer) is looked up
+    /// once per hover, not again on every frame while the mouse rests on it.
+    #[test]
+    fn unresolved_hover_is_attempted_once() {
+        let (mut h, mut ed) = setup("let x = String::new();");
+        let p = Harness::pos(&ed, 0, 10);
+        h.hover(&mut ed, p, NONE);
+        ed.hover_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        h.hover(&mut ed, p, NONE);
+        assert!(ed.hover_lsp_request_pending, "first attempt fires");
+        assert!(ed.hover_signature.is_none());
+        // No LSP: the app clears the flag on the next frame.
+        ed.hover_lsp_request_pending = false;
+        h.hover(&mut ed, p, NONE);
+        assert!(
+            !ed.hover_lsp_request_pending,
+            "no second attempt for the same hover"
+        );
     }
 
     #[test]

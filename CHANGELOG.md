@@ -8,6 +8,16 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.10.3] - 2026-10-08
+
+### Fixed
+
+- Freezes every couple of seconds while editing or building in a large repository: the automatic git refresh added in 0.10.2 now runs in the background.
+- Freeze while the mouse rested on an unresolved word: the hover lookup no longer reads the workspace's files, and is attempted once per word instead of on every frame.
+- The terminal no longer redraws continuously while visible, and only draws the rows in view instead of its whole scrollback.
+- Plugins (status bar word count) only run when the text, file or cursor changes, instead of copying the whole file on every frame.
+- Workspace search no longer crashes on result lines with accented characters.
+
 ## [0.10.2] - 2026-10-08
 
 ### Added

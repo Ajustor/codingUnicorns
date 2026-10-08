@@ -413,10 +413,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 // Terminal content
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 if let Some(term) = app.terminals.get_mut(app.active_terminal) {
+                    // PTY output wakes the UI by itself (`terminal::set_output_waker`),
+                    // so it's drained promptly without redrawing every frame.
                     term.show_content(ui, &app.config);
-                    // Keep the UI repainting while the terminal is visible so PTY output is
-                    // drained promptly (and queries like ESC[6n are answered).
-                    ui.ctx().request_repaint();
                 }
             });
 
@@ -1109,9 +1108,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             app.file_tree.reload_children();
                         }
                     }
-                } else if app.editor.current_path.is_some()
-                    || !app.editor.buffer.to_string().is_empty()
-                {
+                } else if app.editor.current_path.is_some() || app.editor.buffer.rope_len() > 0 {
                     // Breadcrumbs
                     let breadcrumb_path = app.editor.current_path.clone();
                     let breadcrumb_workspace = app.workspace_path.clone();
@@ -1345,9 +1342,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             );
                         });
                     }
-                } else if app.editor.current_path.is_some()
-                    || !app.editor.buffer.to_string().is_empty()
-                {
+                } else if app.editor.current_path.is_some() || app.editor.buffer.rope_len() > 0 {
                     // ── Breadcrumbs bar ───────────────────────────────────────────
                     let breadcrumb_path = app.editor.current_path.clone();
                     let breadcrumb_workspace = app.workspace_path.clone();
