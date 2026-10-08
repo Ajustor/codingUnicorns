@@ -32,6 +32,17 @@ pub mod session;
 mod update_ops;
 mod workspace_search;
 
+/// Everything plugins receive in `update`, except the text itself (stood in
+/// for by its version): plugins only rerun when one of these changes.
+#[derive(PartialEq)]
+struct PluginInputKey {
+    content_version: i32,
+    path: Option<PathBuf>,
+    cursor: (usize, usize),
+    is_modified: bool,
+    hovered_word: Option<String>,
+}
+
 pub struct CodingUnicorns {
     pub config: Config,
     /// Central registry for app-command shortcuts. Owns ONLY the chords that
@@ -90,6 +101,8 @@ pub struct CodingUnicorns {
     pub file_pending: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
     pub plugin_manager: PluginManager,
     pub plugin_status: Option<String>,
+    /// What plugins were last updated with (see `PluginInputKey`).
+    last_plugin_input: Option<PluginInputKey>,
     pub extension_registry: crate::extension::registry::ExtensionRegistry,
     pub extensions_panel: crate::extension::ui::ExtensionsPanel,
     /// Whether the "unsaved files" quit dialog is showing.
@@ -294,6 +307,7 @@ impl CodingUnicorns {
             file_pending: None,
             plugin_manager,
             plugin_status: None,
+            last_plugin_input: None,
             extension_registry,
             extensions_panel: crate::extension::ui::ExtensionsPanel::new(),
             show_close_warning: false,
@@ -1153,22 +1167,34 @@ impl eframe::App for CodingUnicorns {
             self.handle_go_to_definition(&word);
         }
 
-        // Run plugins each frame and collect their status text.
-        let buffer_text = self.editor.buffer.to_string();
-        let filename = self.editor.current_path.as_ref().and_then(|p| p.to_str());
-        let plugin_ctx = PluginContext {
-            buffer_text: &buffer_text,
-            filename,
-            cursor_row: self.editor.cursor.row,
-            cursor_col: self.editor.cursor.col,
+        // Run plugins and collect their status text — only when what they see
+        // changed: the context holds a copy of the whole buffer, which plugins
+        // then scan (word count), far too costly to redo every frame.
+        let plugin_key = PluginInputKey {
+            content_version: self.editor.content_version,
+            path: self.editor.current_path.clone(),
+            cursor: (self.editor.cursor.row, self.editor.cursor.col),
             is_modified: self.editor.is_modified,
-            hovered_word: self.editor.hovered_word(),
+            hovered_word: self.editor.hovered_word().map(str::to_string),
         };
-        let responses = self.plugin_manager.update_all(&plugin_ctx);
-        self.plugin_status = responses
-            .into_iter()
-            .filter_map(|r| r.status_text)
-            .next_back();
+        if self.last_plugin_input.as_ref() != Some(&plugin_key) {
+            let buffer_text = self.editor.buffer.to_string();
+            let filename = self.editor.current_path.as_ref().and_then(|p| p.to_str());
+            let plugin_ctx = PluginContext {
+                buffer_text: &buffer_text,
+                filename,
+                cursor_row: self.editor.cursor.row,
+                cursor_col: self.editor.cursor.col,
+                is_modified: self.editor.is_modified,
+                hovered_word: self.editor.hovered_word(),
+            };
+            let responses = self.plugin_manager.update_all(&plugin_ctx);
+            self.plugin_status = responses
+                .into_iter()
+                .filter_map(|r| r.status_text)
+                .next_back();
+            self.last_plugin_input = Some(plugin_key);
+        }
 
         if self.command_palette.is_open() {
             let (opened_file, cmd) = self.command_palette.show(
@@ -1245,12 +1271,7 @@ impl eframe::App for CodingUnicorns {
             .show_picker_modal(ctx, &mut self.extension_registry);
 
         self.poll_claude(ctx);
-
-        // Request periodic repaint while terminal is visible (for live output).
-        // Using a short interval instead of immediate repaint avoids burning CPU
-        // at 60+ FPS when the terminal is idle.
-        if self.show_terminal {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        }
+        // No periodic repaint for the terminal: its reader thread wakes the UI
+        // when output arrives (`terminal::set_output_waker`).
     }
 }

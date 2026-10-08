@@ -8,6 +8,16 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.10.3] - 2026-10-08
+
+### Corrections
+
+- Gels toutes les deux secondes pendant l'édition ou un build dans un gros dépôt : le rafraîchissement git automatique ajouté en 0.10.2 se fait maintenant en arrière-plan.
+- Gel quand la souris restait sur un mot non résolu : la recherche de survol ne lit plus les fichiers du workspace et n'est tentée qu'une fois par mot au lieu de chaque image.
+- Le terminal ne se redessine plus en continu quand il est visible, et ne dessine que les lignes à l'écran au lieu de tout son historique.
+- Les plugins (compteur de mots de la barre d'état) ne tournent que si le texte, le fichier ou le curseur change, au lieu de copier tout le fichier à chaque image.
+- La recherche dans le workspace ne plante plus sur les lignes de résultat contenant des accents.
+
 ## [0.10.2] - 2026-10-08
 
 ### Nouveautés

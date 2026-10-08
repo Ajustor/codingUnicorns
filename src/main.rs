@@ -207,6 +207,8 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_fonts(ui::theme::app_fonts());
+            // Before the app creates its first terminal.
+            terminal::set_output_waker(cc.egui_ctx.clone());
 
             Ok(Box::new(CodingUnicorns::new(cc, initial_path)))
         }),

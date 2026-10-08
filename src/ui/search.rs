@@ -362,7 +362,12 @@ impl WorkspaceSearch {
                         |ui| {
                             for m in file_matches {
                                 let text = format!("{}: {}", m.line_number, m.line_text.trim());
-                                let truncated = if text.len() > 80 { &text[..80] } else { &text };
+                                // Cut on a char boundary: byte 80 can fall inside
+                                // an accented letter, and slicing there panics.
+                                let truncated = match text.char_indices().nth(80) {
+                                    Some((end, _)) => &text[..end],
+                                    None => text.as_str(),
+                                };
 
                                 let resp = ui.add(
                                     egui::Label::new(

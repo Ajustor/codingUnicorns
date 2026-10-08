@@ -79,6 +79,12 @@ impl RepoWatch {
         changed
     }
 
+    /// Keep the changes `old` noticed but hasn't handled yet.
+    pub fn carry_pending(&mut self, old: &RepoWatch) {
+        self.worktree_dirty |= old.worktree_dirty;
+        self.check_now |= old.check_now;
+    }
+
     /// When the next [`poll`](Self::poll) can do something, if work is pending.
     pub fn pending_in(&self, now: Instant) -> Option<Duration> {
         (self.worktree_dirty || self.check_now)
@@ -160,9 +166,37 @@ mod tests {
         assert_eq!(s.branch, "main");
         s.last_error = Some("push rejected".into());
         r.switch("dev");
-        assert!(s.refresh_if_changed(Instant::now() + CHECK_INTERVAL));
+        // The first call starts the background refresh, a later one applies it.
+        let later = Instant::now() + CHECK_INTERVAL;
+        assert!(!s.refresh_if_changed(later), "computed off the UI thread");
+        assert_eq!(s.branch, "main", "not applied yet");
+        assert!(s.refresh_pending_in(later).is_some(), "UI wakes up for it");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !s.refresh_if_changed(later) {
+            assert!(
+                Instant::now() < deadline,
+                "background refresh never finished"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert_eq!(s.branch, "dev");
         assert_eq!(s.last_error.as_deref(), Some("push rejected"));
         assert!(!s.refresh_if_changed(Instant::now() + CHECK_INTERVAL * 2));
+    }
+
+    /// A load made meanwhile (a git panel action) wins over an older
+    /// background refresh, whose result is dropped.
+    #[test]
+    fn a_direct_load_supersedes_a_background_refresh() {
+        let r = TestRepo::new();
+        r.write("a", "1");
+        r.commit_all("c1");
+        r.branch("dev");
+        let mut s = r.status();
+        r.switch("dev");
+        assert!(!s.refresh_if_changed(Instant::now() + CHECK_INTERVAL));
+        s.refresh();
+        assert!(s.refreshing.is_none());
+        assert_eq!(s.branch, "dev");
     }
 }

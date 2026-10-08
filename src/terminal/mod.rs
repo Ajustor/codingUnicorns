@@ -36,6 +36,15 @@ struct Pty {
     master: Box<dyn MasterPty + Send>,
 }
 
+/// Wakes the UI when a terminal receives output (set once by the app).
+static OUTPUT_WAKER: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
+/// Register the context to repaint when any terminal receives output, so a
+/// visible terminal doesn't have to be redrawn continuously to stay live.
+pub fn set_output_waker(ctx: egui::Context) {
+    let _ = OUTPUT_WAKER.set(ctx);
+}
+
 pub struct Terminal {
     pub shell_name: String,
     performer: AnsiPerformer,
@@ -202,6 +211,10 @@ Is it installed and on PATH?
                     Ok(n) => {
                         if tx.send(buf[..n].to_vec()).is_err() {
                             break;
+                        }
+                        // Output is drawn as it arrives, without polling.
+                        if let Some(ctx) = OUTPUT_WAKER.get() {
+                            ctx.request_repaint();
                         }
                     }
                 }
@@ -478,20 +491,26 @@ Is it installed and on PATH?
                         let sel_on = |line: usize, row: &[Cell]| {
                             selection.and_then(|s| s.cols_on_line(line, row.len()))
                         };
-                        for (i, row) in self.performer.buf.scrollback.iter().enumerate() {
-                            render_row(ui, row, &row_style, None, sel_on(i, row));
-                        }
-                        for (i, row) in self.performer.buf.rows[..last_screen_row]
-                            .iter()
-                            .enumerate()
-                        {
-                            let cur = if i == cursor_row {
-                                Some(cursor_col)
+                        // Only the rows in view are laid out; the others are
+                        // empty space of the same height, so line `n` stays at
+                        // `origin + n * line_height` (mouse selection relies on
+                        // it). The scrollback alone can hold 10 000 rows.
+                        let total = sb_len + last_screen_row;
+                        let lh = row_style.line_height;
+                        let (first, last) = visible_rows(origin.y, ui.clip_rect(), lh, total);
+                        ui.add_space(first as f32 * lh);
+                        for line in first..last {
+                            if line < sb_len {
+                                let row = &self.performer.buf.scrollback[line];
+                                render_row(ui, row, &row_style, None, sel_on(line, row));
                             } else {
-                                None
-                            };
-                            render_row(ui, row, &row_style, cur, sel_on(sb_len + i, row));
+                                let i = line - sb_len;
+                                let row = &self.performer.buf.rows[i];
+                                let cur = (i == cursor_row).then_some(cursor_col);
+                                render_row(ui, row, &row_style, cur, sel_on(line, row));
+                            }
                         }
+                        ui.add_space((total - last) as f32 * lh);
                         // Unlike `stick_to_bottom`, this also works after the user
                         // scrolled up into the scrollback with the mouse wheel.
                         if std::mem::take(&mut self.snap_to_bottom) {
@@ -685,6 +704,17 @@ struct RowStyle {
 }
 
 const SELECTION_COLOR: Color32 = Color32::from_rgba_premultiplied(40, 70, 130, 110);
+
+/// Rows `[first, last)` out of `total` that intersect `clip`, for rows of
+/// `line_height` laid out from `origin_y`; one extra row on each side.
+fn visible_rows(origin_y: f32, clip: egui::Rect, line_height: f32, total: usize) -> (usize, usize) {
+    if line_height <= 0.0 {
+        return (0, total);
+    }
+    let first = ((clip.min.y - origin_y) / line_height).floor().max(0.0) as usize;
+    let last = ((clip.max.y - origin_y) / line_height).ceil().max(0.0) as usize;
+    (first.saturating_sub(1).min(total), (last + 1).min(total))
+}
 
 fn render_row(
     ui: &mut egui::Ui,
@@ -1448,5 +1478,29 @@ mod tests {
         // Render again with the cursor at column 0 on a blank screen.
         t.performer.buf.erase_display(2);
         run_frame(&mut t, vec![]);
+    }
+
+    #[test]
+    fn visible_rows_cover_the_clip_rect_only() {
+        let clip = |top: f32, bottom: f32| {
+            egui::Rect::from_min_max(egui::pos2(0.0, top), egui::pos2(100.0, bottom))
+        };
+        // 10 000 rows of 10 px from y = 0, a 100 px window scrolled to row 500.
+        assert_eq!(
+            visible_rows(0.0, clip(5000.0, 5100.0), 10.0, 10_000),
+            (499, 511)
+        );
+        // Top and bottom are clamped.
+        assert_eq!(visible_rows(0.0, clip(0.0, 100.0), 10.0, 10_000), (0, 11));
+        assert_eq!(
+            visible_rows(0.0, clip(99_950.0, 100_050.0), 10.0, 10_000),
+            (9994, 10_000)
+        );
+        // Content shorter than the window, and the scroll origin moving up.
+        assert_eq!(visible_rows(0.0, clip(0.0, 500.0), 10.0, 3), (0, 3));
+        assert_eq!(
+            visible_rows(-5000.0, clip(0.0, 100.0), 10.0, 10_000),
+            (499, 511)
+        );
     }
 }

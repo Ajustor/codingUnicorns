@@ -59,6 +59,8 @@ pub struct GitStatus {
     pub stashes: Vec<StashEntry>,
     /// Detects changes made outside the panel; reset by every (re)load.
     watch: Option<watch::RepoWatch>,
+    /// Background refresh in flight (see [`Self::refresh_if_changed`]).
+    refreshing: Option<std::sync::mpsc::Receiver<GitStatus>>,
 }
 
 impl GitStatus {
@@ -74,6 +76,7 @@ impl GitStatus {
             last_error: None,
             stashes: vec![],
             watch: None,
+            refreshing: None,
         }
     }
 
@@ -91,6 +94,8 @@ impl GitStatus {
         self.last_error = None;
         self.stashes.clear();
         self.watch = None;
+        // A background refresh started before this load would be older: drop it.
+        self.refreshing = None;
         if let Ok(mut repo) = git2::Repository::discover(&path) {
             // Snapshot taken now: changes made by this load don't count.
             self.watch = Some(watch::RepoWatch::new(&repo));
@@ -183,17 +188,60 @@ impl GitStatus {
     }
 
     /// Refresh if the repository changed since the last load (see [`watch`]).
-    /// Cheap enough to call every frame. Returns true when it refreshed.
+    /// Cheap enough to call every frame: the status itself is computed on a
+    /// background thread (it walks the whole working tree, hundreds of ms on a
+    /// big repository) and applied by a later call. Returns true when a fresh
+    /// status was applied.
     pub fn refresh_if_changed(&mut self, now: Instant) -> bool {
-        let changed = self.watch.as_mut().is_some_and(|w| w.poll(now));
-        if changed {
-            // An error shown in the panel (e.g. a rejected push) stays until the
-            // next user action, not until the next background refresh.
-            let error = self.last_error.take();
-            self.refresh();
-            self.last_error = error;
+        if let Some(rx) = &self.refreshing {
+            match rx.try_recv() {
+                Ok(fresh) => {
+                    self.refreshing = None;
+                    return self.adopt(fresh);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.refreshing = None,
+            }
         }
-        changed
+        let changed = self.watch.as_mut().is_some_and(|w| w.poll(now));
+        if let (true, Some(path)) = (changed, self.repo_path.clone()) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("git-refresh".into())
+                .spawn(move || {
+                    let mut fresh = GitStatus::new();
+                    fresh.load(path);
+                    let _ = tx.send(fresh);
+                });
+            if spawned.is_ok() {
+                self.refreshing = Some(rx);
+            }
+        }
+        false
+    }
+
+    /// Take the result of a background refresh. Returns false when it no
+    /// longer applies (another folder was opened meanwhile).
+    fn adopt(&mut self, fresh: GitStatus) -> bool {
+        if fresh.repo_path != self.repo_path {
+            return false;
+        }
+        // Changes noticed while it ran still need a refresh of their own.
+        let mut watch = fresh.watch;
+        if let (Some(new), Some(old)) = (&mut watch, &self.watch) {
+            new.carry_pending(old);
+        }
+        self.branch = fresh.branch;
+        self.files = fresh.files;
+        self.branches = fresh.branches;
+        self.graph_entries = fresh.graph_entries;
+        self.ahead = fresh.ahead;
+        self.behind = fresh.behind;
+        self.stashes = fresh.stashes;
+        self.watch = watch;
+        // An error shown in the panel (e.g. a rejected push) stays until the
+        // next user action, not until the next background refresh.
+        true
     }
 
     /// A working-tree file changed: the file list may be stale.
@@ -210,8 +258,12 @@ impl GitStatus {
         }
     }
 
-    /// Delay before a pending refresh can run, so the UI can wake up for it.
+    /// Delay before a pending refresh can run (or its result be applied), so
+    /// the UI can wake up for it.
     pub fn refresh_pending_in(&self, now: Instant) -> Option<Duration> {
+        if self.refreshing.is_some() {
+            return Some(Duration::from_millis(50));
+        }
         self.watch.as_ref().and_then(|w| w.pending_in(now))
     }
 }
