@@ -8,6 +8,13 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.10.4] - 2026-10-08
+
+### Changed
+
+- `Ctrl+Shift+F` searches the workspace for the selected text (single line, matched literally in regex mode) and focuses the search field.
+- **Format document is now `Shift+Alt+F`**, as in VSCode: `Ctrl+Shift+F` used to format the file *and* open the workspace search at the same time.
+
 ## [0.10.3] - 2026-10-08
 
 ### Fixed

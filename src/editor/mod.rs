@@ -1661,8 +1661,13 @@ impl Editor {
                                             // Signal to app; app handles the dialog
                                         }
 
-                                        // Format document (Ctrl+Shift+F → LSP)
-                                        egui::Key::F if modifiers.ctrl && modifiers.shift => {
+                                        // Ctrl+Shift+F: workspace search, handled by the
+                                        // app. Matched here so it doesn't fall through to
+                                        // Ctrl+F (find bar).
+                                        egui::Key::F if modifiers.ctrl && modifiers.shift => {}
+
+                                        // Format document (Shift+Alt+F → LSP), as in VSCode
+                                        egui::Key::F if modifiers.shift && modifiers.alt => {
                                             self.format_request_pending = true;
                                         }
 
@@ -4584,7 +4589,7 @@ mod tests {
             (ed.completion_trigger_row, ed.completion_trigger_col),
             (0, 2)
         );
-        h.press(&mut ed, Key::F, mods(&[CTRL, SHIFT]));
+        h.press(&mut ed, Key::F, mods(&[SHIFT, ALT]));
         assert!(ed.format_request_pending);
         assert!(!ed.show_find);
         h.press(&mut ed, Key::F2, NONE);
@@ -5009,6 +5014,19 @@ bar",
         assert_eq!(ed.ctrl_hover_word_bounds, None);
         h.hover(&mut ed, p, NONE);
         assert_eq!(ed.ctrl_hover_word_bounds, None);
+    }
+
+    /// Ctrl+Shift+F belongs to the workspace search (handled by the app): the
+    /// editor neither formats nor opens its find bar. Shift+Alt+F formats.
+    #[test]
+    fn ctrl_shift_f_is_search_and_shift_alt_f_formats() {
+        let (mut h, mut ed) = setup("x");
+        h.idle(&mut ed);
+        h.press(&mut ed, Key::F, mods(&[CTRL, SHIFT]));
+        assert!(!ed.format_request_pending, "no format on Ctrl+Shift+F");
+        assert!(!ed.show_find, "no find bar on Ctrl+Shift+F");
+        h.press(&mut ed, Key::F, mods(&[SHIFT, ALT]));
+        assert!(ed.format_request_pending);
     }
 
     /// An unresolved word (no LSP answer, nothing in the buffer) is looked up

@@ -50,7 +50,11 @@ impl ShortcutsHelp {
                         &keybindings.command_palette.display(),
                         "Command palette (file search)",
                     );
-                    row(ui, "Ctrl+Shift+F", "Search in workspace");
+                    row(
+                        ui,
+                        &keybindings.format_document.display(),
+                        "Search in workspace (selection)",
+                    );
                     row(ui, &keybindings.toggle_sidebar.display(), "Toggle sidebar");
                     row(
                         ui,
@@ -71,6 +75,7 @@ impl ShortcutsHelp {
                     row(ui, "Tab", "Indent (insert 4 spaces)");
                     row(ui, "Shift + Tab", "Un-indent (remove leading spaces)");
                     row(ui, "Ctrl+/", "Toggle line comment");
+                    row(ui, "Shift+Alt+F", "Format document (LSP)");
                     row(ui, "Ctrl+Shift+K", "Delete current line");
                     row(ui, "Ctrl+Shift+↑", "Move line up");
                     row(ui, "Ctrl+Shift+↓", "Move line down");

@@ -25,7 +25,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 - 🏷️ Breadcrumbs avec symbole courant
 - 🧭 Go to Definition (F12) + navigation back/forward (Alt+←/→)
 - 📍 Go to Line (Ctrl+G)
-- 🔎 Recherche workspace (Ctrl+Shift+F)
+- 🔎 Recherche workspace (Ctrl+Shift+F, pré-remplie avec la sélection)
 - 🔎 Find & Replace dans le fichier (Ctrl+F / Ctrl+H) avec regex
 
 ### Git
@@ -200,7 +200,7 @@ L'installateur MSI ajoute `cu` au `PATH` sous Windows ; ailleurs, lancez `script
 |-----------|--------|
 | `F2` | Renommer le symbole |
 | `Ctrl+.` | Actions de code |
-| `Ctrl+Shift+F` | Formater le document |
+| `Shift+Alt+F` | Formater le document |
 | `Ctrl+Alt+B` | Toggle git blame |
 
 #### Debug

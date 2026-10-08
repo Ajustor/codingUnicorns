@@ -529,7 +529,9 @@ impl SettingsPanel {
                         ("Find References", &mut kb.find_references),
                         ("Rename Symbol", &mut kb.rename_symbol),
                         ("Code Actions", &mut kb.code_actions),
-                        ("Format Document", &mut kb.format_document),
+                        // Despite its (kept for saved configs) name, this binding
+                        // opens the workspace search; formatting is Shift+Alt+F.
+                        ("Search in Workspace", &mut kb.format_document),
                         ("Toggle Blame", &mut kb.toggle_blame),
                     ],
                     rebinding,
