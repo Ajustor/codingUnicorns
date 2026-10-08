@@ -128,6 +128,28 @@ impl ExtensionRegistry {
         }
     }
 
+    /// LSP `languageId` of a file extension: the one an enabled module
+    /// declares (`language_ids`), else the extension itself.
+    pub fn lsp_language_id(&self, ext: &str) -> String {
+        self.installed
+            .iter()
+            .filter(|e| e.enabled)
+            .find_map(|e| e.manifest.capabilities.language_ids.get(ext))
+            .cloned()
+            .unwrap_or_else(|| ext.to_string())
+    }
+
+    /// `initializationOptions` for the LSP server of a file extension, from
+    /// the enabled module handling that extension.
+    pub fn lsp_init_options(&self, ext: &str) -> Option<serde_json::Value> {
+        self.installed
+            .iter()
+            .filter(|e| e.enabled)
+            .find(|e| e.manifest.capabilities.languages.iter().any(|l| l == ext))
+            .and_then(|e| e.manifest.capabilities.lsp_init_options.as_ref())
+            .and_then(|t| serde_json::to_value(t).ok())
+    }
+
     pub fn is_installed(&self, id: &str) -> bool {
         self.installed.iter().any(|e| e.manifest.extension.id == id)
     }
@@ -185,6 +207,32 @@ pub(crate) fn find_platform_lib(dir: &std::path::Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn lsp_language_id_comes_from_enabled_modules() {
+        let mut r = ExtensionRegistry::new_in(PathBuf::from("unused"));
+        assert_eq!(r.lsp_language_id("cs"), "cs", "no module: the extension");
+        let mut cs = crate::dap::adapters::tests::module(Path::new("x"), "cs", r#"["cs"]"#, "");
+        cs.manifest
+            .capabilities
+            .language_ids
+            .insert("cs".into(), "csharp".into());
+        r.installed.push(cs);
+        assert_eq!(r.lsp_language_id("cs"), "csharp");
+        assert_eq!(r.lsp_language_id("rs"), "rs");
+        assert!(r.lsp_init_options("cs").is_none());
+        let mut opts = toml::Table::new();
+        opts.insert("provideFormatter".into(), toml::Value::Boolean(true));
+        r.installed[0].manifest.capabilities.lsp_init_options = Some(opts);
+        assert_eq!(
+            r.lsp_init_options("cs"),
+            Some(serde_json::json!({"provideFormatter": true}))
+        );
+        assert!(r.lsp_init_options("rs").is_none());
+        r.installed[0].enabled = false;
+        assert_eq!(r.lsp_language_id("cs"), "cs");
+        assert!(r.lsp_init_options("cs").is_none());
+    }
 
     fn manifest(id: &str, version: &str) -> String {
         format!(

@@ -87,25 +87,35 @@ impl LspManager {
     }
 
     /// Ensure an LSP server is running using an explicit command from the plugin system.
+    /// `init_options` are the server's `initializationOptions`.
     pub fn ensure_started_with_cmd(
         &mut self,
         ext: &str,
         cmd: &str,
         args: &[String],
         workspace: &Path,
+        init_options: Option<serde_json::Value>,
     ) {
         if self.clients.contains_key(ext) {
             return;
         }
         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        self.start_client(ext, cmd, &args_ref, workspace);
+        self.start_client(ext, cmd, &args_ref, workspace, init_options);
     }
 
-    fn start_client(&mut self, ext: &str, cmd: &str, args: &[&str], workspace: &Path) {
+    fn start_client(
+        &mut self,
+        ext: &str,
+        cmd: &str,
+        args: &[&str],
+        workspace: &Path,
+        init_options: Option<serde_json::Value>,
+    ) {
         if self.clients.contains_key(ext) {
             return;
         }
         let mut client = LspClient::new();
+        client.set_init_options(init_options);
         if client.start(cmd, args, workspace).is_ok() {
             self.clients.insert(ext.to_string(), client);
         }
@@ -199,6 +209,7 @@ mod tests {
             "definitely-not-a-real-lsp-binary-xyz",
             &["--stdio".to_string()],
             dir.path(),
+            None,
         );
         assert!(m.get("rs").is_some());
         assert!(!m.get("rs").unwrap().is_connected);
@@ -212,9 +223,9 @@ mod tests {
                 kind: "Text".into(),
                 insert_text: None,
             });
-        m.ensure_started_with_cmd("rs", "other", &[], dir.path());
+        m.ensure_started_with_cmd("rs", "other", &[], dir.path(), None);
         assert_eq!(m.get("rs").unwrap().completions.len(), 1);
-        m.start_client("rs", "other", &[], dir.path());
+        m.start_client("rs", "other", &[], dir.path(), None);
         assert_eq!(m.get("rs").unwrap().completions.len(), 1);
 
         m.restart_all();

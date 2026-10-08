@@ -259,6 +259,9 @@ pub struct LspClient {
     /// Number of in-flight server work-done progresses (solution load, indexing…).
     /// > 0 means the server is busy and not yet ready to answer fully.
     work_done_active: u32,
+    /// `initializationOptions` of the `initialize` request (from the
+    /// module's manifest), kept for restarts.
+    init_options: Option<Value>,
 }
 
 impl LspClient {
@@ -274,7 +277,13 @@ impl LspClient {
             restart_attempts: 0,
             reconnect_rx: None,
             work_done_active: 0,
+            init_options: None,
         }
+    }
+
+    /// Set the `initializationOptions` sent by the next (re)start.
+    pub fn set_init_options(&mut self, options: Option<Value>) {
+        self.init_options = options;
     }
 
     /// True while the server has at least one active work-done progress
@@ -330,7 +339,12 @@ impl LspClient {
         let workspace = workspace.to_path_buf();
         // Save restart info for auto-reconnect.
         self.restart_cmd = Some((cmd.clone(), args_vec.clone(), workspace.clone()));
-        self.reconnect_rx = Some(Self::spawn_handshake(cmd, args_vec, workspace));
+        self.reconnect_rx = Some(Self::spawn_handshake(
+            cmd,
+            args_vec,
+            workspace,
+            self.init_options.clone(),
+        ));
         Ok(())
     }
 
@@ -341,6 +355,7 @@ impl LspClient {
         cmd: String,
         args: Vec<String>,
         workspace: PathBuf,
+        init_options: Option<Value>,
     ) -> mpsc::Receiver<LspClientInner> {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -350,25 +365,29 @@ impl LspClient {
                 return;
             };
             let id = 1u64;
+            let mut params = json!({
+                "processId": std::process::id(),
+                "rootUri": path_to_uri(&workspace),
+                "capabilities": {
+                    "textDocument": {
+                        "hover": { "contentFormat": ["plaintext", "markdown"] },
+                        "completion": { "completionItem": { "snippetSupport": false } },
+                        "publishDiagnostics": {}
+                    },
+                    "workspace": {
+                        "symbol": {}
+                    }
+                }
+            });
+            if let Some(options) = init_options {
+                params["initializationOptions"] = options;
+            }
             if transport
                 .send(&json!({
                     "jsonrpc": "2.0",
                     "id": id,
                     "method": "initialize",
-                    "params": {
-                        "processId": std::process::id(),
-                        "rootUri": path_to_uri(&workspace),
-                        "capabilities": {
-                            "textDocument": {
-                                "hover": { "contentFormat": ["plaintext", "markdown"] },
-                                "completion": { "completionItem": { "snippetSupport": false } },
-                                "publishDiagnostics": {}
-                            },
-                            "workspace": {
-                                "symbol": {}
-                            }
-                        }
-                    }
+                    "params": params
                 }))
                 .is_err()
             {
@@ -575,7 +594,12 @@ impl LspClient {
         };
 
         self.restart_attempts += 1;
-        self.reconnect_rx = Some(Self::spawn_handshake(cmd, args, workspace));
+        self.reconnect_rx = Some(Self::spawn_handshake(
+            cmd,
+            args,
+            workspace,
+            self.init_options.clone(),
+        ));
 
         false
     }
