@@ -29,15 +29,20 @@ jobs:
             exit 1
           fi
 
-      # Users can't read the (private) repository: CHANGELOG.md is what tells them
-      # what changed, on the download page and in the update dialog.
-      - name: Check CHANGELOG.md entry
+      # Users can't read the (private) repository: the changelogs (English and
+      # French) are what tell them what changed, on the download page and in
+      # the update dialog.
+      - name: Check changelog entries
         if: ${{ !contains(github.ref_name, '-') }}
         run: |
-          if ! python3 scripts/changelog.py CHANGELOG.md "$GITHUB_REF_NAME" > /dev/null; then
-            echo "::error::CHANGELOG.md has no '## [${GITHUB_REF_NAME#v}]' section"
-            exit 1
-          fi
+          status=0
+          for file in CHANGELOG.md CHANGELOG.fr.md; do
+            if ! python3 scripts/changelog.py "$file" "$GITHUB_REF_NAME" > /dev/null; then
+              echo "::error::$file has no '## [${GITHUB_REF_NAME#v}]' section"
+              status=1
+            fi
+          done
+          exit $status
 
   build:
     name: Build ${{ matrix.artifact }}
