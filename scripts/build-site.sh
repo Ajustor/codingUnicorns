@@ -5,8 +5,9 @@
 #
 # Copies the release files found (recursively) in <artifacts-dir>, writes the
 # `latest.json` manifest read by the in-app updater (src/updater/mod.rs) and
-# renders the download page from pages/index.html. Needs GH_TOKEN and
-# GITHUB_REPOSITORY to read the release notes.
+# renders the download page from pages/index.html. Release notes come from
+# CHANGELOG.md; GH_TOKEN and GITHUB_REPOSITORY are only needed when the version
+# has no section there (the GitHub release text is used instead).
 #
 # Used by .github/workflows/release.yml (fresh build artifacts) and
 # .github/workflows/pages.yml (assets downloaded from the latest release).
@@ -20,7 +21,12 @@ dir="site/download/$TAG"
 mkdir -p "$dir"
 find "$ARTIFACTS" -type f ! -name '*.ico' -exec cp {} "$dir/" \;
 
-notes=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+# Release notes come from CHANGELOG.md (the repository is private: users can't
+# read it, so its sections are what the page and the update dialog show).
+# Fall back to the GitHub release text for a version missing from it.
+if ! notes=$(python3 scripts/changelog.py CHANGELOG.md "$TAG"); then
+  notes=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+fi
 
 assets='[]'
 for f in "$dir"/*; do
@@ -37,6 +43,6 @@ jq -n --arg version "${TAG#v}" --arg notes "$notes" --arg page "$BASE_URL/" \
   > site/latest.json
 
 cp assets/icon.png site/icon.png
-python3 scripts/build-pages.py pages/index.html site/latest.json "$dir" site/index.html
+python3 scripts/build-pages.py pages/index.html site/latest.json "$dir" site/index.html CHANGELOG.md
 
 cat site/latest.json

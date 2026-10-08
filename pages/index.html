@@ -524,6 +524,28 @@
     .prose li + li { margin-top: 0.25rem; }
     .prose a { color: var(--marque-forte); text-underline-offset: 0.15em; }
 
+    .prose h4 { margin-top: 1rem; font-size: 0.9375rem; }
+
+    .historique { display: grid; gap: 0.5rem; margin-top: 1rem; }
+    .historique:not(:has(details)) { display: none; }
+    .historique .surtitre { margin-bottom: 0.25rem; }
+    .version {
+      padding: 0.625rem 1rem;
+      background: var(--fond-doux);
+      border: 1px solid var(--bordure);
+      border-radius: var(--rayon);
+    }
+    .version[open] { padding-bottom: 1rem; }
+    .version summary {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      cursor: pointer;
+    }
+    .version summary:hover b { color: var(--marque-forte); }
+    .version .date { font-size: 0.8125rem; color: var(--texte-doux); font-variant-numeric: tabular-nums; }
+    .version .prose { margin-top: 0.75rem; font-size: 0.9375rem; }
+
     /* --- Pied ------------------------------------------------------------- */
 
     footer.borne {
@@ -703,12 +725,16 @@
       <div class="prose">
 {{notes}}
       </div>
+      <div class="historique">
+        <h3 class="surtitre">Historique des versions</h3>
+{{history}}
+      </div>
     </section>
   </main>
 
   <footer class="borne">
     <p>🦄 Coding Unicorns v{{version}} · Licence MIT · Construit en Rust avec egui</p>
-    <span><a href="https://ajustor.github.io/coding-unicorns-modules/">Extensions</a> · <a href="./latest.json">latest.json</a></span>
+    <span><a href="#nouveautes">Nouveautés</a> · <a href="https://ajustor.github.io/coding-unicorns-modules/">Extensions</a> · <a href="./latest.json">latest.json</a></span>
   </footer>
 </div>
 

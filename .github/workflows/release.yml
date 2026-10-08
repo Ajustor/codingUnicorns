@@ -29,6 +29,16 @@ jobs:
             exit 1
           fi
 
+      # Users can't read the (private) repository: CHANGELOG.md is what tells them
+      # what changed, on the download page and in the update dialog.
+      - name: Check CHANGELOG.md entry
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          if ! python3 scripts/changelog.py CHANGELOG.md "$GITHUB_REF_NAME" > /dev/null; then
+            echo "::error::CHANGELOG.md has no '## [${GITHUB_REF_NAME#v}]' section"
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.artifact }}
     needs: verify-version
@@ -223,15 +233,28 @@ jobs:
         with:
           path: artifacts/
 
+      # The release text is the version's CHANGELOG.md section; pre-releases
+      # without one fall back to GitHub's generated notes.
+      - name: Release notes
+        id: notes
+        run: |
+          if python3 scripts/changelog.py CHANGELOG.md "$GITHUB_REF_NAME" > release-notes.md; then
+            echo "generate=false" >> "$GITHUB_OUTPUT"
+          else
+            : > release-notes.md
+            echo "generate=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           name: Coding Unicorns ${{ github.ref_name }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: release-notes.md
           files: |
             artifacts/**/*
-          generate_release_notes: true
+          generate_release_notes: ${{ steps.notes.outputs.generate }}
 
   # The repository is private, so clients can't read releases through the GitHub API.
   # Publish the binaries plus a `latest.json` manifest to GitHub Pages (public), which is
