@@ -29,12 +29,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  pages:
-    name: Publish to GitHub Pages
+  # Pages identifies a deployment by its commit: a second deploy of the same
+  # commit is a no-op. A version bump pushed to master before its tag would be
+  # deployed here around the *previous* release, and the release's own deploy
+  # of that commit (release.yml) would then be ignored. So while Cargo.toml
+  # announces a version that isn't released yet, leave the deploy to the release.
+  check:
+    name: Find the release to publish
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      deploy: ${{ steps.release.outputs.deploy }}
     steps:
       - uses: actions/checkout@v5
 
@@ -50,13 +55,31 @@ jobs:
             echo "::error::No stable release to publish"
             exit 1
           fi
-          echo "Latest stable release: $tag"
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "Latest stable release: $tag, Cargo.toml: $cargo_version"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "v$cargo_version" != "$tag" ] && [[ "$cargo_version" != *-* ]]; then
+            echo "::notice::v$cargo_version is not released yet: its release will publish the site"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  pages:
+    name: Publish to GitHub Pages
+    needs: check
+    if: ${{ needs.check.outputs.deploy == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
 
       - name: Download release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ needs.check.outputs.tag }}
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir artifacts
 
       - name: Configure Pages
@@ -66,7 +89,7 @@ jobs:
       - name: Build site
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ needs.check.outputs.tag }}
           BASE_URL: ${{ steps.pages.outputs.base_url }}
         run: bash scripts/build-site.sh "$TAG" "$BASE_URL" artifacts
 
