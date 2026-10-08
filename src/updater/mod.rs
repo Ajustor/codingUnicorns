@@ -299,17 +299,14 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
         // the upgraded executable (MajorUpgrade keeps the install location).
         ExitAction::RunMsiThenRelaunch(msi) => std::env::current_exe().and_then(|exe| {
             let script = msi_relaunch_script(msi, &exe, workspace);
-            let mut cmd = std::process::Command::new("powershell.exe");
-            cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
+            use crate::process_ext::CommandExt as _;
+            std::process::Command::new("powershell.exe")
+                .no_window()
+                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
                 .arg("-EncodedCommand")
-                .arg(encode_powershell_command(&script));
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                cmd.creation_flags(CREATE_NO_WINDOW);
-            }
-            cmd.spawn().map(|_| ())
+                .arg(encode_powershell_command(&script))
+                .spawn()
+                .map(|_| ())
         }),
     };
     if let Err(e) = result {
@@ -330,9 +327,12 @@ fn msi_relaunch_script(
     // (Windows paths can't contain `"`).
     let arg =
         |p: &std::path::Path| format!("'\"{}\"'", p.display().to_string().replace('\'', "''"));
+    // Like `ExitAction::Relaunch`: open a window of our own, even if another
+    // instance is running and listening for paths.
+    let new_window = crate::single_instance::NEW_WINDOW_FLAG;
     let relaunch_args = match workspace {
-        Some(ws) => format!(" -ArgumentList {}", arg(ws)),
-        None => String::new(),
+        Some(ws) => format!(" -ArgumentList '{new_window}',{}", arg(ws)),
+        None => format!(" -ArgumentList '{new_window}'"),
     };
     format!(
         "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i',{msi},'/passive' -Wait -PassThru\n\
@@ -970,8 +970,12 @@ mod tests {
             s.contains(r"-FilePath 'C:\Program Files\Coding Unicorns\cu.exe' -ArgumentList"),
             "{s}"
         );
-        // Single quotes are doubled inside the PowerShell literal.
-        assert!(s.contains(r#"-ArgumentList '"C:\dev\it''s mine"'"#), "{s}");
+        // A new window, never handed to another running instance; single quotes
+        // are doubled inside the PowerShell literal.
+        assert!(
+            s.contains(r#"-ArgumentList '--new-window','"C:\dev\it''s mine"'"#),
+            "{s}"
+        );
         assert!(s.contains("-eq 3010"));
 
         let s = msi_relaunch_script(
@@ -979,7 +983,10 @@ mod tests {
             std::path::Path::new("cu.exe"),
             None,
         );
-        assert!(s.contains("Start-Process -FilePath 'cu.exe' }"), "{s}");
+        assert!(
+            s.contains("Start-Process -FilePath 'cu.exe' -ArgumentList '--new-window' }"),
+            "{s}"
+        );
     }
 
     #[test]

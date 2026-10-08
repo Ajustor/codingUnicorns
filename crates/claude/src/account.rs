@@ -6,7 +6,7 @@
 /// `"user@example.com · team"`, `"not logged in"`, or `None` if the CLI could
 /// not be run / parsed. Blocking — call from a background thread.
 pub fn fetch_account(binary: &str) -> Option<String> {
-    let output = std::process::Command::new(binary)
+    let output = crate::no_window(&mut std::process::Command::new(binary))
         .args(["auth", "status", "--json"])
         .output()
         .ok()?;

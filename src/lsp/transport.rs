@@ -3,6 +3,7 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::process_ext::CommandExt as _;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use serde_json::Value;
 
@@ -17,6 +18,7 @@ pub struct LspTransport {
 impl LspTransport {
     pub fn spawn(command: &str, args: &[&str], workspace: &str) -> anyhow::Result<Self> {
         let mut child = Command::new(command)
+            .no_window()
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

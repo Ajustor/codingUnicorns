@@ -5,6 +5,8 @@ use fuzzy_matcher::FuzzyMatcher;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::process_ext::CommandExt as _;
+
 /// Quiet time after the last keystroke before `workspace/symbol` is sent.
 pub const WORKSPACE_SYMBOL_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -663,6 +665,7 @@ fn symbol_label(entry: &PaletteEntry, workspace: Option<&Path>) -> String {
 /// Falls back to a simple recursive walk if git is not available.
 fn collect_workspace_files(workspace: &std::path::Path) -> Vec<PathBuf> {
     let output = std::process::Command::new("git")
+        .no_window()
         .args(["ls-files", "--cached", "--others", "--exclude-standard"])
         .current_dir(workspace)
         .output();

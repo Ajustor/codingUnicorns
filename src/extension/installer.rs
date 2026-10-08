@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 use super::manifest::{ExtensionSource, SourceKind};
+use crate::process_ext::CommandExt as _;
 
 /// Destination directory for an extension. Re-validates the id (manifests are
 /// already validated by `ExtensionManifest::parse`, but the fields are public)
@@ -208,6 +209,7 @@ fn workspace_install_inner(
     // 3. Build the whole workspace once
     let _ = tx.send(WorkspaceStatus::Building);
     let build_out = std::process::Command::new("cargo")
+        .no_window()
         .args(["build", "--release"])
         .current_dir(&workspace_path)
         .output();
@@ -372,6 +374,7 @@ fn single_git_install_inner(
     };
 
     let build_result = std::process::Command::new("cargo")
+        .no_window()
         .args(["build", "--release"])
         .current_dir(dir)
         .output();
@@ -544,6 +547,7 @@ impl InstallJob {
             // 3. Build
             let _ = tx.send(InstallStatus::Building);
             let build_result = std::process::Command::new("cargo")
+                .no_window()
                 .args(["build", "--release"])
                 .current_dir(&tmp_dir)
                 .output();
@@ -668,6 +672,7 @@ pub fn install_from_folder(
             // 3. Build with cargo
             let _ = tx.send(InstallStatus::Building);
             match std::process::Command::new("cargo")
+                .no_window()
                 .args(["build", "--release"])
                 .current_dir(&folder)
                 .output()
@@ -770,7 +775,7 @@ fn tempdir_for_clone(repo_url: &str) -> anyhow::Result<PathBuf> {
 fn shell_command(program: &str) -> std::process::Command {
     if cfg!(target_os = "windows") {
         let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", program]);
+        cmd.args(["/C", program]).no_window();
         cmd
     } else {
         std::process::Command::new(program)

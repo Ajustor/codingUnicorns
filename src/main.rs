@@ -12,6 +12,7 @@ mod keybinds;
 mod lsp;
 mod nav_history;
 pub mod plugin;
+mod process_ext;
 pub mod runner;
 mod single_instance;
 mod tabs;
