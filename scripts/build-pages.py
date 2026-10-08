@@ -148,11 +148,16 @@ def markdown(md, heading_base=3):
     return "\n".join(out)
 
 
+def version_key(version):
+    return tuple(int(n) for n in re.findall(r"\d+", version.split("-")[0])[:3])
+
+
 def history(sections, current):
-    """Every released version but the current one, newest first, folded."""
+    """Versions older than the current one, newest first, folded. A section for
+    the next version (written before its release) is not shown yet."""
     items = []
     for version, date, body in sections:
-        if version == current:
+        if version_key(version) >= version_key(current):
             continue
         when = f' <span class="date">{html.escape(date)}</span>' if date else ""
         items.append(
