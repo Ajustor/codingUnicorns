@@ -20,6 +20,7 @@ impl Chord {
             key,
         }
     }
+
     /// Common helpers.
     pub fn ctrl(key: egui::Key) -> Self {
         Self::new(true, false, false, key)
