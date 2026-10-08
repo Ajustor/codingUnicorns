@@ -13,6 +13,13 @@ pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
     )
 }
 
+/// Paths opened as a workspace or file are kept absolute: `cu .` passes a
+/// relative one, which would end up as `${workspaceFolder}` / `${file}` in run
+/// and debug configurations and as the saved last workspace.
+pub(crate) fn absolute_path(path: PathBuf) -> PathBuf {
+    std::path::absolute(&path).unwrap_or(path)
+}
+
 impl CodingUnicorns {
     /// Open paths handed over by another launch (see `single_instance`) and bring the
     /// window to the front.
@@ -38,6 +45,7 @@ impl CodingUnicorns {
     }
 
     pub fn open_file(&mut self, path: PathBuf) {
+        let path = absolute_path(path);
         // Keep the outgoing file's cursor/scroll so returning to it restores them.
         self.remember_view_state();
         // Always clear any previous image state when opening a new file.
@@ -116,6 +124,7 @@ impl CodingUnicorns {
     }
 
     pub fn open_folder(&mut self, path: PathBuf) {
+        let path = absolute_path(path);
         // Persist the outgoing workspace's tabs before switching.
         let switching = self.workspace_path.as_ref() != Some(&path);
         if switching {
@@ -212,5 +221,42 @@ impl CodingUnicorns {
             }
             self.runner.is_running = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::absolute_path;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn relative_paths_are_made_absolute_from_the_current_dir() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(absolute_path(PathBuf::from(".")), cwd);
+        assert_eq!(absolute_path(PathBuf::from("sub")), cwd.join("sub"));
+    }
+
+    #[test]
+    fn absolute_paths_are_kept() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(absolute_path(cwd.clone()), cwd);
+    }
+
+    /// `cu .` then a run configuration: `${workspaceFolder}` is the full path.
+    #[test]
+    fn workspace_folder_variable_is_absolute_for_a_relative_launch() {
+        let ws = absolute_path(PathBuf::from("."));
+        let cfg = crate::runner::RunConfig {
+            name: "x".into(),
+            command: "echo ${workspaceFolder}".into(),
+            cwd: "${workspaceRoot}".into(),
+            env: vec![],
+            args: vec![],
+            debug: None,
+        };
+        let r = cfg.resolve(Some(&ws), None);
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(r.command, format!("echo {}", cwd.display()));
+        assert!(Path::new(&r.cwd).is_absolute(), "cwd {:?}", r.cwd);
     }
 }

@@ -355,14 +355,15 @@ impl CodingUnicorns {
             // file when the workspace has no saved tabs) from config.
             let mut restored = false;
             if let Some(ws_str) = app.config.last_workspace.clone() {
-                let ws_path = PathBuf::from(&ws_str);
+                // Older versions could save a relative path (`cu .`).
+                let ws_path = file_ops::absolute_path(PathBuf::from(&ws_str));
                 if ws_path.is_dir() {
                     app.workspace_path = Some(ws_path.clone());
                     app.file_tree.show_gitignored = app.config.editor.show_gitignored;
                     app.file_tree.load(ws_path.clone());
                     app.git_status.load(ws_path.clone());
                     app.runner.load_for_workspace(&ws_path);
-                    app.config.push_recent_workspace(&ws_str);
+                    app.config.push_recent_workspace(&ws_path.to_string_lossy());
                     restored = app.restore_session(&ws_path);
                     app.start_file_watcher(&ws_path);
                 }

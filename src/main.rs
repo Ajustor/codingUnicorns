@@ -98,6 +98,52 @@ fn load_icon() -> Option<egui::IconData> {
     })
 }
 
+/// Keeps the IDE in the foreground of the terminal that started it.
+#[cfg(unix)]
+const WAIT_FLAG: &str = "--wait";
+/// Set on the background copy so it doesn't detach again.
+#[cfg(unix)]
+const DETACHED_ENV: &str = "CODING_UNICORNS_DETACHED";
+
+/// Started from a terminal (`cu .`), relaunch in the background and let the
+/// shell have its prompt back, like `code .`. Returns true when the caller
+/// should exit. Windows needs nothing here: the app has no console, and the
+/// `cu.cmd` wrapper goes through `start`.
+#[cfg(unix)]
+fn detach_from_terminal(args: &[String]) -> bool {
+    use std::io::IsTerminal;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    // `cargo run` stays attached, and so does an explicit --wait.
+    if cfg!(debug_assertions)
+        || args.iter().any(|a| a == WAIT_FLAG)
+        || std::env::var_os(DETACHED_ENV).is_some()
+        || !std::io::stdin().is_terminal()
+    {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    Command::new(exe)
+        .args(args)
+        .env(DETACHED_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        // Its own process group: closing the terminal or Ctrl+C there no
+        // longer reaches the IDE.
+        .process_group(0)
+        .spawn()
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+fn detach_from_terminal(_args: &[String]) -> bool {
+    false
+}
+
 fn main() -> eframe::Result<()> {
     // Re-invoked by `claude` as the permission MCP server — no GUI.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -135,6 +181,10 @@ fn main() -> eframe::Result<()> {
         if !new_window && single_instance::forward(path) {
             return Ok(());
         }
+    }
+
+    if detach_from_terminal(&args) {
+        return Ok(());
     }
 
     let icon = load_icon();
