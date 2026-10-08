@@ -1,6 +1,8 @@
 # Coding Unicorns — Plugin System
 
-Coding Unicorns supports a lightweight plugin system inspired by VSCode extensions. Plugins live in-process and integrate directly with the editor loop.
+Coding Unicorns supports a lightweight plugin system inspired by VSCode extensions. This document covers **built-in plugins**: Rust types compiled into the editor that implement the `Plugin` trait and run in-process with the editor loop.
+
+> **Language extensions are different.** Syntax highlighting, hover and LSP for a language come from *extensions*: native modules (`cdylib`) described by a `manifest.toml`, installed from the online registry, git, a ZIP or a local folder, and loaded at runtime through `libloading`. Each one is wrapped in an `FfiLangPlugin` (`src/extension/ffi_plugin.rs`) that implements this same trait. Their manifest format, exported C functions and install methods are documented in the README, section *Extensions de langage*; the [official modules](https://github.com/Ajustor/coding-unicorns-modules) are working examples.
 
 ---
 
@@ -64,7 +66,7 @@ fn render_sidebar(&mut self, _panel_id: &str, ui: &mut egui::Ui) {
 
 ### `tokenize_line(&self, lang: &str, line: &str) -> Option<Vec<Token>>`
 
-Optional. Return `Some(tokens)` to override syntax highlighting for a given language and line. Return `None` to fall back to the built-in highlighter.
+Optional. Return `Some(tokens)` to provide syntax highlighting for a given language and line. Return `None` when the plugin doesn't handle that language.
 
 ```rust
 fn tokenize_line(&self, lang: &str, line: &str) -> Option<Vec<Token>> {
@@ -77,14 +79,31 @@ fn tokenize_line(&self, lang: &str, line: &str) -> Option<Vec<Token>> {
 
 ---
 
+### Language support methods
+
+All optional, with inert defaults (see `src/plugin/mod.rs`):
+
+| Method | Purpose |
+|--------|---------|
+| `hover_info(lang, word, file_content) -> Option<String>` | Hover text for `word` (e.g. a code-fenced signature) |
+| `tokenize_document(lang, text) -> Option<Vec<Vec<Token>>>` | Whole-document tokens, one vector per line, for multi-line constructs |
+| `reset_tokenizer()` | Reset multi-line tokenizer state before a new document |
+| `file_extensions() -> &[&str]` | Extensions handled (e.g. `&["ts", "tsx"]`), used to pick the plugin and LSP server for a file |
+| `lsp_server_command() -> Option<(String, Vec<String>)>` | LSP server binary and arguments |
+| `dap_config() -> Option<DapConfig>` | Debug adapter configuration (built-in plugins only: FFI extensions can't provide one) |
+
+---
+
 ## Registering a Plugin
 
-In `src/app.rs`, inside `CodingUnicorns::new()`:
+In `src/app/mod.rs`, inside `CodingUnicorns::new()`:
 
 ```rust
 let mut plugin_manager = PluginManager::new();
 plugin_manager.register(Box::new(MyPlugin::new()));
 ```
+
+Registering a plugin under a name already in use replaces the previous one.
 
 ---
 
@@ -149,7 +168,6 @@ pub struct PluginResponse {
 
 ## Future Plans
 
-- **Dynamic loading** via `libloading` — load `.so` / `.dll` plugin files at runtime without recompiling the editor.
 - **Plugin configuration** — per-plugin settings stored in the workspace config.
 - **Event bus** — subscribe to editor events (file open, save, cursor move) instead of polling in `update()`.
 - **Async plugins** — plugins that can spawn background tasks (e.g. linters, formatters).
