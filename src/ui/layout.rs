@@ -721,11 +721,11 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         if action.start_or_continue {
                             if app.dap.is_paused() {
                                 if let Some(tid) = app.dap.paused_thread_id() {
-                                    if let Some(sess) = &mut app.dap.session {
+                                    if let Some(sess) = app.dap.active_mut() {
                                         sess.continue_execution(tid);
                                     }
                                 }
-                            } else if !app.dap.is_active() {
+                            } else if app.dap.can_start() {
                                 app.start_debug_session();
                             }
                         }
@@ -734,27 +734,27 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         }
                         if action.step_over {
                             if let Some(tid) = app.dap.paused_thread_id() {
-                                if let Some(sess) = &mut app.dap.session {
+                                if let Some(sess) = app.dap.active_mut() {
                                     sess.next_step(tid);
                                 }
                             }
                         }
                         if action.step_in {
                             if let Some(tid) = app.dap.paused_thread_id() {
-                                if let Some(sess) = &mut app.dap.session {
+                                if let Some(sess) = app.dap.active_mut() {
                                     sess.step_in(tid);
                                 }
                             }
                         }
                         if action.step_out {
                             if let Some(tid) = app.dap.paused_thread_id() {
-                                if let Some(sess) = &mut app.dap.session {
+                                if let Some(sess) = app.dap.active_mut() {
                                     sess.step_out(tid);
                                 }
                             }
                         }
                         if action.pause {
-                            if let Some(sess) = &mut app.dap.session {
+                            if let Some(sess) = app.dap.active_mut() {
                                 sess.pause(1);
                             }
                         }

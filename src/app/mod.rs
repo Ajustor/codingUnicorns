@@ -434,6 +434,8 @@ impl CodingUnicorns {
 impl eframe::App for CodingUnicorns {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_session();
+        // Debug adapters (and the programs they run) must not outlive us.
+        self.dap.shutdown();
         // Before any relaunch: the new process must not forward its path back to us.
         if let Some(server) = &self.single_instance {
             server.release();
@@ -645,31 +647,31 @@ impl eframe::App for CodingUnicorns {
         if want_debug_f5 {
             if self.dap.is_paused() {
                 if let Some(tid) = self.dap.paused_thread_id() {
-                    if let Some(sess) = &mut self.dap.session {
+                    if let Some(sess) = self.dap.active_mut() {
                         sess.continue_execution(tid);
                     }
                 }
-            } else if !self.dap.is_active() {
+            } else if self.dap.can_start() {
                 self.start_debug_session();
             }
         }
         if want_step_over_f10 {
             if let Some(tid) = self.dap.paused_thread_id() {
-                if let Some(sess) = &mut self.dap.session {
+                if let Some(sess) = self.dap.active_mut() {
                     sess.next_step(tid);
                 }
             }
         }
         if want_step_in_f11 {
             if let Some(tid) = self.dap.paused_thread_id() {
-                if let Some(sess) = &mut self.dap.session {
+                if let Some(sess) = self.dap.active_mut() {
                     sess.step_in(tid);
                 }
             }
         }
         if want_step_out_shift_f11 {
             if let Some(tid) = self.dap.paused_thread_id() {
-                if let Some(sess) = &mut self.dap.session {
+                if let Some(sess) = self.dap.active_mut() {
                     sess.step_out(tid);
                 }
             }
@@ -694,8 +696,12 @@ impl eframe::App for CodingUnicorns {
         if want_split {
             self.toggle_split();
         }
-        // Poll the DAP session every frame.
+        // Poll the DAP session every frame; adapter events arrive without
+        // any input, so keep frames coming while a session is active.
         self.dap.poll();
+        if self.dap.is_active() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if want_close_tab && self.close_tab_id_pending.is_none() {
             if let Some(id) = self.tab_manager.active_tab {
                 let is_modified = self

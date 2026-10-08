@@ -90,7 +90,8 @@ All optional, with inert defaults (see `src/plugin/mod.rs`):
 | `reset_tokenizer()` | Reset multi-line tokenizer state before a new document |
 | `file_extensions() -> &[&str]` | Extensions handled (e.g. `&["ts", "tsx"]`), used to pick the plugin and LSP server for a file |
 | `lsp_server_command() -> Option<(String, Vec<String>)>` | LSP server binary and arguments |
-| `dap_config() -> Option<DapConfig>` | Debug adapter configuration (built-in plugins only: FFI extensions can't provide one) |
+
+Debug adapters are not part of this trait: a language module declares its own in the `[debugger]` section of its `manifest.toml` (see the README), read by `src/dap/adapters.rs`. The IDE ships no language-specific debugger.
 
 ---
 

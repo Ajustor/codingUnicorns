@@ -50,8 +50,10 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 - ⌨️ Historique shell, complétion Tab, Ctrl+C/D
 
 ### Debug (DAP)
-- 🐛 Breakpoints, step over/into/out, call stack, variables
-- ▶️ Configurations de lancement (launch.toml)
+- 🐛 Breakpoints (clic dans la marge ou `F9`), step over/into/out, call stack, variables, expressions surveillées
+- ▶️ Configurations de lancement (`launch.toml`, import de `.vscode/launch.json`)
+- 🔨 `preLaunchTask` exécutée avant le lancement (tâches `process`, `shell` et `npm` de `.vscode/tasks.json`, avec leurs `dependsOn`)
+- 🧰 Le débogueur d'un langage vient de son module (section `[debugger]` du manifeste), l'IDE n'en embarque aucun. Modules officiels : **C#** (netcoredbg), **TypeScript / JavaScript / React / Vue / Svelte / HTML** (vscode-js-debug, Node ou Chrome/Edge), **PowerShell** (PowerShell Editor Services) — téléchargés au premier lancement —, **Python** (debugpy), **Go** (Delve) et **Rust** (lldb-dap)
 
 ### Extensions
 - 🌐 Registre en ligne : parcourir, installer et mettre à jour les modules officiels depuis le panneau Extensions (binaires précompilés vérifiés par SHA-256)
@@ -309,6 +311,23 @@ pip = []                    # pip3 install
 cargo = []                  # cargo install
 go = []                     # go install
 dotnet = ["some-tool@1.2.3"]  # dotnet tool update --global (version épinglable)
+
+[debugger]                  # optionnel : adaptateur de debug (DAP)
+types = ["mylang"]          # `type` des configurations de launch.json servies
+command = ["mylang-dap"]    # binaire (ou candidats dans l'ordre), cherché dans le PATH
+args = ["--stdio"]          # ${debuggerDir} = dossier du téléchargement, ${port} = port TCP
+transport = "stdio"         # ou "tcp" : l'adaptateur écoute sur 127.0.0.1:${port}
+type_map = { mylang-old = "mylang" }        # optionnel : renomme le `type` des configurations
+install_hint = "cargo install mylang-dap"   # affiché si introuvable
+
+[debugger.default_launch]   # optionnel : arguments de `launch` sans configuration
+program = "${file}"
+
+[debugger.download]         # optionnel : archive décompressée dans ${debuggerDir}
+binary = "mylang-dap/mylang-dap"            # fichier qui atteste l'installation (sans .exe)
+[debugger.download.urls]    # .zip ou .tar.gz par plateforme
+windows-x86_64 = "https://example.com/mylang-dap-win64.zip"
+linux-x86_64 = "https://example.com/mylang-dap-linux.tar.gz"
 ```
 
 Le crate exporte des fonctions C :
@@ -324,7 +343,7 @@ Le crate exporte des fonctions C :
 | `hover_info_ffi(word, content)` | Texte de survol |
 | `free_string(ptr)` | Libère **toute** chaîne renvoyée par les fonctions ci-dessus |
 
-Le serveur LSP est déclaré dans le manifeste, pas exporté. Les extensions ne fournissent pas d'adaptateur de debug : le debug se configure dans `launch.toml`. Les [modules officiels](https://github.com/Ajustor/coding-unicorns-modules) sont les meilleurs exemples à copier.
+Le serveur LSP et le débogueur sont déclarés dans le manifeste, pas exportés : un module peut fournir un débogueur sans bibliothèque. Au lancement (F5), l'IDE prend le module dont `types` contient le `type` de la configuration de debug, sinon celui du langage du fichier ouvert ; sans `default_launch`, une configuration dans `launch.toml` ou `.vscode/launch.json` est nécessaire. L'archive est téléchargée au premier lancement quand `args` utilise `${debuggerDir}`, ou quand `command` n'est pas dans le `PATH` (le binaire téléchargé sert alors de commande). En TCP, les sessions enfants demandées par l'adaptateur (`startDebugging`, utilisé par vscode-js-debug) sont ouvertes automatiquement. Les [modules officiels](https://github.com/Ajustor/coding-unicorns-modules) sont les meilleurs exemples à copier.
 
 ---
 

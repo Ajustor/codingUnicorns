@@ -64,7 +64,7 @@ impl DebuggerPanel {
             } else {
                 "▶ Start (F5)"
             };
-            let start_enabled = !is_active || is_paused;
+            let start_enabled = dap.can_start() || is_paused;
             if ui
                 .add_enabled(start_enabled, egui::Button::new(start_label))
                 .clicked()
@@ -108,6 +108,7 @@ impl DebuggerPanel {
         // ── Status ────────────────────────────────────────────────────────────
         let status_text = match &state {
             DebugSessionState::Idle => "Idle — press F5 to start",
+            DebugSessionState::Preparing => "Preparing (build, debugger download)…",
             DebugSessionState::Launching => "Launching…",
             DebugSessionState::Running => "Running",
             DebugSessionState::Paused { .. } => "Paused",

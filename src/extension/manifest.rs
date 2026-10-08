@@ -38,6 +38,84 @@ pub struct ExtensionManifest {
     pub capabilities: Capabilities,
     #[serde(default)]
     pub dependencies: Dependencies,
+    /// Debug adapter (DAP) of the language, if the module ships one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debugger: Option<DebuggerSpec>,
+}
+
+/// `[debugger]` section: how to start the language's debug adapter (DAP
+/// over stdio, or over a local TCP port).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebuggerSpec {
+    /// VS Code debug `type`s handled (e.g. `["coreclr"]`), matched against
+    /// launch configurations.
+    #[serde(default)]
+    pub types: Vec<String>,
+    /// Executable, or candidates tried in order, looked up on `PATH`.
+    pub command: OneOrMany,
+    /// Arguments. `${debuggerDir}` is the folder the download is unpacked
+    /// in, `${port}` the TCP port to listen on (`transport = "tcp"`).
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub transport: DebuggerTransport,
+    /// Launch configuration `type` rewrites (e.g. `node = "pwa-node"`) for
+    /// adapters that only know some of the names VS Code accepts.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub type_map: std::collections::BTreeMap<String, String>,
+    /// Launch arguments used without a launch configuration (e.g.
+    /// `{ program = "${file}" }`). Without it a launch configuration is
+    /// required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_launch: Option<toml::Table>,
+    /// Shown when the adapter is missing and cannot be downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_hint: Option<String>,
+    /// Archive unpacked in the module's folder (`${debuggerDir}`): on first
+    /// use when `args` refer to `${debuggerDir}`, else when the command is
+    /// not on `PATH` (the downloaded binary is then the command).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<DebuggerDownload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebuggerDownload {
+    /// File inside the archive (`/`-separated) whose presence means the
+    /// download is installed; an executable is given without `.exe`
+    /// (e.g. `netcoredbg/netcoredbg`).
+    pub binary: String,
+    /// `.zip` or `.tar.gz` URL per platform key (`windows-x86_64`,
+    /// `linux-x86_64`, `macos-aarch64`…).
+    pub urls: std::collections::BTreeMap<String, String>,
+}
+
+/// How the IDE talks to a debug adapter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DebuggerTransport {
+    /// DAP on the adapter's stdin/stdout.
+    #[default]
+    Stdio,
+    /// The adapter listens on `127.0.0.1:${port}`; the IDE connects to it.
+    /// Child sessions (`startDebugging`) open more connections.
+    Tcp,
+}
+
+/// A string or a list of strings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    pub fn as_slice(&self) -> &[String] {
+        match self {
+            OneOrMany::One(s) => std::slice::from_ref(s),
+            OneOrMany::Many(v) => v,
+        }
+    }
 }
 
 impl ExtensionManifest {
@@ -206,6 +284,66 @@ dotnet = ["csharp-ls@0.16.0"]
         assert_eq!(m.dependencies.cargo, vec!["ruff"]);
         assert_eq!(m.dependencies.go.len(), 1);
         assert_eq!(m.dependencies.dotnet, vec!["csharp-ls@0.16.0"]);
+    }
+
+    #[test]
+    fn parses_debugger_section() {
+        let m = ExtensionManifest::parse(&format!(
+            r#"{FULL}
+[debugger]
+types = ["coreclr"]
+command = "netcoredbg"
+args = ["--interpreter=vscode"]
+install_hint = "get it"
+
+[debugger.default_launch]
+program = "${{file}}"
+
+[debugger.download]
+binary = "netcoredbg/netcoredbg"
+[debugger.download.urls]
+windows-x86_64 = "https://example.invalid/w.zip"
+"#
+        ))
+        .unwrap();
+        let d = m.debugger.unwrap();
+        assert_eq!(d.types, ["coreclr"]);
+        assert_eq!(d.command.as_slice(), ["netcoredbg"]);
+        assert_eq!(d.args, ["--interpreter=vscode"]);
+        assert_eq!(
+            d.default_launch.unwrap()["program"].as_str(),
+            Some("${file}")
+        );
+        let dl = d.download.unwrap();
+        assert_eq!(dl.binary, "netcoredbg/netcoredbg");
+        assert_eq!(dl.urls["windows-x86_64"], "https://example.invalid/w.zip");
+
+        let m = ExtensionManifest::parse(&format!(
+            r#"{FULL}
+[debugger]
+command = ["python", "python3"]
+"#
+        ))
+        .unwrap();
+        let d = m.debugger.unwrap();
+        assert_eq!(d.command.as_slice(), ["python", "python3"]);
+        assert!(d.types.is_empty() && d.download.is_none());
+        assert_eq!(d.transport, DebuggerTransport::Stdio);
+        assert!(d.type_map.is_empty());
+
+        let m = ExtensionManifest::parse(&format!(
+            r#"{FULL}
+[debugger]
+command = "node"
+transport = "tcp"
+type_map = {{ node = "pwa-node" }}
+"#
+        ))
+        .unwrap();
+        let d = m.debugger.unwrap();
+        assert_eq!(d.transport, DebuggerTransport::Tcp);
+        assert_eq!(d.type_map["node"], "pwa-node");
+        assert!(ExtensionManifest::parse(FULL).unwrap().debugger.is_none());
     }
 
     #[test]

@@ -124,18 +124,6 @@ impl PluginManager {
         None
     }
 
-    /// Return the DAP configuration for the plugin that handles the given file extension.
-    pub fn dap_config_for_ext(&self, ext: &str) -> Option<crate::dap::types::DapConfig> {
-        for plugin in &self.plugins {
-            if plugin.file_extensions().contains(&ext) {
-                if let Some(cfg) = plugin.dap_config() {
-                    return Some(cfg);
-                }
-            }
-        }
-        None
-    }
-
     /// Return the LSP server command for the plugin that handles the given file extension.
     /// Returns the first plugin whose `file_extensions()` includes `ext`, or `None`.
     pub fn lsp_server_for_ext(&self, ext: &str) -> Option<(String, Vec<String>)> {
@@ -159,7 +147,6 @@ impl Default for PluginManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dap::types::DapConfig;
     use crate::editor::highlight::{Token, TokenKind};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -174,7 +161,6 @@ mod tests {
         tokenizes: bool,
         hover: Option<&'static str>,
         lsp: Option<&'static str>,
-        dap: bool,
         resets: Arc<AtomicUsize>,
         rendered: Arc<AtomicUsize>,
         executed: Arc<AtomicUsize>,
@@ -250,13 +236,6 @@ mod tests {
             self.lsp
                 .map(|s| (s.to_string(), vec!["--stdio".to_string()]))
         }
-        fn dap_config(&self) -> Option<DapConfig> {
-            self.dap.then(|| DapConfig {
-                adapter_cmd: format!("{}-dap", self.name),
-                adapter_args: vec![],
-                launch_config: serde_json::json!({}),
-            })
-        }
     }
 
     fn ctx() -> PluginContext<'static> {
@@ -301,7 +280,6 @@ mod tests {
         assert!(m.tokenize_line("rs", "x").is_none());
         assert!(m.tokenize_document("rs", "x").is_none());
         assert!(m.hover_info("rs", "x", "").is_none());
-        assert!(m.dap_config_for_ext("rs").is_none());
         assert!(m.lsp_server_for_ext("rs").is_none());
     }
 
@@ -448,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn lsp_and_dap_lookup_by_extension() {
+    fn lsp_lookup_by_extension() {
         let mut m = PluginManager::new();
         m.register(Box::new(Fake {
             name: "py-nolsp",
@@ -459,7 +437,6 @@ mod tests {
             name: "py",
             exts: &["py", "pyw"],
             lsp: Some("pylsp"),
-            dap: true,
             ..Default::default()
         }));
         m.register(Box::new(Fake {
@@ -474,8 +451,6 @@ mod tests {
         );
         assert_eq!(m.lsp_server_for_ext("rs").unwrap().0, "rust-analyzer");
         assert!(m.lsp_server_for_ext("go").is_none());
-        assert_eq!(m.dap_config_for_ext("py").unwrap().adapter_cmd, "py-dap");
-        assert!(m.dap_config_for_ext("rs").is_none());
     }
 
     #[test]

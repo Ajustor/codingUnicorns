@@ -44,19 +44,55 @@ pub struct DapClient {
     /// `initialize` response; some adapters (e.g. debugpy) only emit `initialized`
     /// once they have received it.
     launch_sent: bool,
+    /// Child session (opened by a `startDebugging` request): its launch
+    /// arguments come from the adapter and are sent as is.
+    is_child: bool,
+    /// `startDebugging` requests to open as child sessions (their
+    /// launch/attach arguments).
+    child_requests: Vec<Value>,
 }
 
 impl DapClient {
     /// Spawn the debug adapter and send `initialize`.
     pub fn start(cfg: &DapConfig, workspace: &Path) -> anyhow::Result<Self> {
-        let args_ref: Vec<&str> = cfg.adapter_args.iter().map(|s| s.as_str()).collect();
-        let workspace_str = workspace.to_string_lossy();
-        let transport = DapTransport::spawn(&cfg.adapter_cmd, &args_ref, &workspace_str)?;
+        let transport = DapTransport::open(cfg, workspace)?;
         Ok(Self::from_transport(transport, cfg, workspace))
     }
 
+    /// A child session over a new connection to the same TCP adapter, for a
+    /// `startDebugging` request carrying `launch_args`.
+    pub fn start_child(port: u16, launch_args: Value, workspace: &Path) -> anyhow::Result<Self> {
+        let transport = DapTransport::connect(port)?;
+        let cfg = DapConfig {
+            launch_config: launch_args,
+            ..Default::default()
+        };
+        let mut client = Self::from_transport(transport, &cfg, workspace);
+        client.is_child = true;
+        Ok(client)
+    }
+
+    /// Stop the adapter process (see [`DapTransport::close`]).
+    pub fn close(&mut self, deadline: std::time::Instant) {
+        self.transport.close(deadline);
+    }
+
+    /// Port of a TCP adapter (child sessions connect to it).
+    pub fn port(&self) -> Option<u16> {
+        self.transport.port
+    }
+
+    /// Take the pending `startDebugging` requests (launch arguments).
+    pub fn take_child_requests(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.child_requests)
+    }
+
     /// Build a client on top of an already-connected transport and send `initialize`.
-    fn from_transport(mut transport: DapTransport, cfg: &DapConfig, workspace: &Path) -> Self {
+    pub(crate) fn from_transport(
+        mut transport: DapTransport,
+        cfg: &DapConfig,
+        workspace: &Path,
+    ) -> Self {
         // Substitute ${workspaceFolder} in launch_config (on parsed string
         // values, so backslashes in Windows paths need no JSON escaping).
         let mut launch_config = cfg.launch_config.clone();
@@ -78,8 +114,10 @@ impl DapClient {
                 "adapterID": "generic",
                 "linesStartAt1": true,
                 "columnsStartAt1": true,
+                "pathFormat": "path",
                 "supportsVariableType": true,
-                "supportsRunInTerminalRequest": false
+                "supportsRunInTerminalRequest": false,
+                "supportsStartDebuggingRequest": transport.port.is_some()
             }
         }));
 
@@ -103,7 +141,14 @@ impl DapClient {
             initialized: false,
             pending_breakpoints: vec![],
             launch_sent: false,
+            is_child: false,
+            child_requests: vec![],
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn launch_config_for_test(&self) -> &Value {
+        &self.launch_config
     }
 
     /// Test seam: build a client over an in-memory transport.
@@ -163,7 +208,7 @@ impl DapClient {
         let seq = self.next_seq();
         let mut args = self.launch_config.clone();
         // Inject workspaceFolder if not already present.
-        if args.get("cwd").is_none() {
+        if !self.is_child && args.get("cwd").is_none() {
             args["cwd"] = json!(self.workspace.to_string_lossy());
         }
         // launch.json entries may ask to attach to a running process instead.
@@ -404,7 +449,7 @@ impl DapClient {
                         "terminated" | "exited" => {
                             self.state = DebugSessionState::Terminated;
                         }
-                        "output" => {
+                        "output" if msg["body"]["category"] != "telemetry" => {
                             if let Some(text) = msg["body"]["output"].as_str() {
                                 // Limit log to last 500 lines.
                                 if self.output_log.len() >= 500 {
@@ -418,16 +463,63 @@ impl DapClient {
                         _ => {}
                     }
                 }
+                // Reverse requests: `startDebugging` (child sessions of a TCP
+                // adapter, e.g. js-debug) is accepted; others (runInTerminal…)
+                // are refused so the adapter does not wait forever.
+                "request" => {
+                    let command = msg["command"].as_str().unwrap_or("").to_string();
+                    let accepted = command == "startDebugging" && self.transport.port.is_some();
+                    if accepted {
+                        let mut args = msg["arguments"]["configuration"].clone();
+                        if !args.is_object() {
+                            args = json!({});
+                        }
+                        args["request"] = msg["arguments"]["request"].clone();
+                        self.child_requests.push(args);
+                    }
+                    let seq = self.next_seq();
+                    let mut response = json!({
+                        "seq": seq,
+                        "type": "response",
+                        "request_seq": msg["seq"],
+                        "command": command,
+                        "success": accepted,
+                    });
+                    if !accepted {
+                        response["message"] =
+                            json!(format!("{command} is not supported by Coding Unicorns"));
+                    }
+                    let _ = self.transport.send(&response);
+                }
                 "response" => {
                     let command = msg["command"].as_str().unwrap_or("");
                     let seq = msg["request_seq"].as_u64().unwrap_or(0);
+                    let failed = msg["success"] == false;
                     match command {
+                        "launch" | "attach" | "configurationDone" if failed => {
+                            let err = msg["body"]["error"]["format"]
+                                .as_str()
+                                .or_else(|| msg["message"].as_str())
+                                .unwrap_or("request failed");
+                            self.output_log
+                                .push(format!("[dap] {command} failed: {err}"));
+                            self.state = DebugSessionState::Terminated;
+                        }
+                        // Some adapters (netcoredbg) send no `continued` event
+                        // when the program starts.
+                        "configurationDone" if self.state == DebugSessionState::Launching => {
+                            self.state = DebugSessionState::Running;
+                        }
                         "initialize" => {
                             if msg["success"].as_bool().unwrap_or(true) {
                                 self.send_launch();
                             } else {
-                                let err = msg["message"].as_str().unwrap_or("initialize failed");
-                                self.output_log.push(format!("[dap] {err}"));
+                                let err = msg["body"]["error"]["format"]
+                                    .as_str()
+                                    .or_else(|| msg["message"].as_str())
+                                    .unwrap_or("initialize failed");
+                                self.output_log
+                                    .push(format!("[dap] initialize failed: {err}"));
                                 self.state = DebugSessionState::Terminated;
                             }
                         }
@@ -551,16 +643,21 @@ fn parse_evaluate(msg: &Value) -> WatchResult {
 /// Replace `var` with `replacement` in every string value of a JSON tree.
 /// Works on parsed values, so the replacement is never re-parsed as JSON.
 fn substitute_variable(value: &mut Value, var: &str, replacement: &str) {
+    map_strings(value, &|s| s.replace(var, replacement));
+}
+
+/// Rewrite every string value of a JSON tree with `f`.
+pub(crate) fn map_strings(value: &mut Value, f: &dyn Fn(&str) -> String) {
     match value {
-        Value::String(s) if s.contains(var) => *s = s.replace(var, replacement),
+        Value::String(s) => *s = f(s),
         Value::Array(items) => {
             for item in items {
-                substitute_variable(item, var, replacement);
+                map_strings(item, f);
             }
         }
         Value::Object(map) => {
             for v in map.values_mut() {
-                substitute_variable(v, var, replacement);
+                map_strings(v, f);
             }
         }
         _ => {}
@@ -623,6 +720,7 @@ mod tests {
 
     fn cfg(launch: Value) -> DapConfig {
         DapConfig {
+            transport: Default::default(),
             adapter_cmd: "adapter".into(),
             adapter_args: vec![],
             launch_config: launch,
@@ -716,6 +814,7 @@ mod tests {
     fn start_with_missing_adapter_fails() {
         let dir = tempfile::tempdir().unwrap();
         let c = DapConfig {
+            transport: Default::default(),
             adapter_cmd: "definitely-not-a-real-dap-adapter-xyz".into(),
             adapter_args: vec!["--x".into()],
             launch_config: json!({}),
@@ -1238,13 +1337,55 @@ mod tests {
         );
         h.push(json!({"type": "response", "command": "setBreakpoints", "request_seq": 1}));
         h.push(json!({"type": "response", "command": "evaluate", "request_seq": 1}));
-        h.push(json!({"type": "request", "command": "runInTerminal"}));
         h.push(json!({"type": "event", "event": "module"}));
         h.client.poll();
         assert!(h.client.call_stack.is_empty());
         assert!(h.client.scopes.is_empty());
         assert!(h.client.children.is_empty());
         assert!(h.sent().is_empty());
+    }
+
+    #[test]
+    fn reverse_requests_are_refused() {
+        let mut h = harness();
+        h.sent(); // discard `initialize`
+        h.push(json!({"type": "request", "seq": 7, "command": "runInTerminal"}));
+        h.client.poll();
+        let sent = h.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["type"], "response");
+        assert_eq!(sent[0]["request_seq"], 7);
+        assert_eq!(sent[0]["command"], "runInTerminal");
+        assert_eq!(sent[0]["success"], false);
+    }
+
+    #[test]
+    fn failed_launch_terminates_with_the_adapter_message() {
+        let mut h = harness();
+        h.push(
+            json!({"type": "response", "command": "launch", "success": false,
+            "message": "generic", "body": {"error": {"format": "program not found"}}}),
+        );
+        h.client.poll();
+        assert_eq!(h.client.state, DebugSessionState::Terminated);
+        assert_eq!(
+            h.client.output_log,
+            ["[dap] launch failed: program not found"]
+        );
+    }
+
+    #[test]
+    fn configuration_done_marks_the_program_running() {
+        let mut h = harness();
+        assert_eq!(h.client.state, DebugSessionState::Launching);
+        h.push(json!({"type": "response", "command": "configurationDone", "success": true}));
+        h.client.poll();
+        assert_eq!(h.client.state, DebugSessionState::Running);
+        // Telemetry output is not shown.
+        h.push(json!({"type": "event", "event": "output",
+            "body": {"category": "telemetry", "output": "t"}}));
+        h.client.poll();
+        assert!(h.client.output_log.is_empty());
     }
 
     #[test]

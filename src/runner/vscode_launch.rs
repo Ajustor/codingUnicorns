@@ -90,20 +90,6 @@ fn terminal_command(adapter_type: &str, request: &str, program: Option<&str>) ->
     }
 }
 
-/// File extensions whose language plugin is likely to provide the adapter
-/// for a VS Code debug `type` (tried in order).
-pub fn extensions_for_type(adapter_type: &str) -> &'static [&'static str] {
-    match adapter_type {
-        "python" | "debugpy" => &["py"],
-        "node" | "pwa-node" | "node-terminal" => &["js", "ts"],
-        "go" => &["go"],
-        "lldb" | "codelldb" => &["rs", "c", "cpp"],
-        "cppdbg" | "cppvsdbg" => &["cpp", "c", "rs"],
-        "coreclr" => &["cs"],
-        _ => &[],
-    }
-}
-
 fn scalar_to_string(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
@@ -327,12 +313,5 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(parse_launch_json("{ nope").is_err());
-    }
-
-    #[test]
-    fn extensions_for_known_types() {
-        assert_eq!(extensions_for_type("debugpy"), ["py"]);
-        assert_eq!(extensions_for_type("codelldb")[0], "rs");
-        assert!(extensions_for_type("mystery").is_empty());
     }
 }

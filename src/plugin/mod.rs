@@ -4,7 +4,6 @@ pub mod types;
 
 pub use types::{PluginCommand, PluginContext, PluginResponse, SidebarPanel};
 
-use crate::dap::types::DapConfig;
 use crate::editor::highlight::Token;
 
 /// The Plugin trait — all plugins implement this.
@@ -71,12 +70,6 @@ pub trait Plugin: Send + Sync {
     fn lsp_server_command(&self) -> Option<(String, Vec<String>)> {
         None
     }
-
-    /// Return a DAP (Debug Adapter Protocol) configuration for this language.
-    /// Return `None` if this plugin does not support debugging.
-    fn dap_config(&self) -> Option<DapConfig> {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -118,7 +111,6 @@ mod tests {
         p.reset_tokenizer();
         assert!(p.file_extensions().is_empty());
         assert!(p.lsp_server_command().is_none());
-        assert!(p.dap_config().is_none());
     }
 
     #[test]
