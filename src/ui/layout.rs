@@ -1216,14 +1216,24 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     app.active_pane = 0;
                 } else {
                     // Render right editor
-                    let no_bp: std::collections::HashSet<usize> = std::collections::HashSet::new();
                     if let Some(ref mut e2) = app.editor2 {
+                        let bp_lines: std::collections::HashSet<usize> = e2
+                            .current_path
+                            .as_ref()
+                            .map(|p| {
+                                app.dap
+                                    .breakpoint_lines_for(p)
+                                    .iter()
+                                    .map(|l| l.saturating_sub(1)) // 1-based → 0-based
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         e2.show(
                             &mut right_ui,
                             &app.config,
                             &app.plugin_manager,
                             None,
-                            &no_bp,
+                            &bp_lines,
                             app.palette,
                             app.spacing,
                         );

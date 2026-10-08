@@ -6,12 +6,14 @@ pub mod remote;
 pub mod staging;
 pub mod stash;
 pub mod status;
+pub mod watch;
 
 pub use blame::{blame_file, BlameEntry};
 pub use branches::{BranchGraphEntry, BranchInfo};
 pub use stash::StashEntry;
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// `path` relative to the repository `workdir`.
 ///
@@ -55,6 +57,8 @@ pub struct GitStatus {
     pub last_error: Option<String>,
     /// Stash stack, most recent first.
     pub stashes: Vec<StashEntry>,
+    /// Detects changes made outside the panel; reset by every (re)load.
+    watch: Option<watch::RepoWatch>,
 }
 
 impl GitStatus {
@@ -69,6 +73,7 @@ impl GitStatus {
             behind: 0,
             last_error: None,
             stashes: vec![],
+            watch: None,
         }
     }
 
@@ -85,7 +90,10 @@ impl GitStatus {
         self.repo_path = Some(path.clone());
         self.last_error = None;
         self.stashes.clear();
+        self.watch = None;
         if let Ok(mut repo) = git2::Repository::discover(&path) {
+            // Snapshot taken now: changes made by this load don't count.
+            self.watch = Some(watch::RepoWatch::new(&repo));
             match repo.head() {
                 Ok(head) => {
                     if let Some(name) = head.shorthand() {
@@ -172,6 +180,39 @@ impl GitStatus {
         if let Some(path) = self.repo_path.clone() {
             self.load(path);
         }
+    }
+
+    /// Refresh if the repository changed since the last load (see [`watch`]).
+    /// Cheap enough to call every frame. Returns true when it refreshed.
+    pub fn refresh_if_changed(&mut self, now: Instant) -> bool {
+        let changed = self.watch.as_mut().is_some_and(|w| w.poll(now));
+        if changed {
+            // An error shown in the panel (e.g. a rejected push) stays until the
+            // next user action, not until the next background refresh.
+            let error = self.last_error.take();
+            self.refresh();
+            self.last_error = error;
+        }
+        changed
+    }
+
+    /// A working-tree file changed: the file list may be stale.
+    pub fn note_worktree_change(&mut self) {
+        if let Some(w) = &mut self.watch {
+            w.note_worktree_change();
+        }
+    }
+
+    /// Something in the git dir changed: check without waiting.
+    pub fn note_git_dir_change(&mut self) {
+        if let Some(w) = &mut self.watch {
+            w.note_git_dir_change();
+        }
+    }
+
+    /// Delay before a pending refresh can run, so the UI can wake up for it.
+    pub fn refresh_pending_in(&self, now: Instant) -> Option<Duration> {
+        self.watch.as_ref().and_then(|w| w.pending_in(now))
     }
 }
 

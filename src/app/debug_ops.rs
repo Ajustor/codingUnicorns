@@ -53,6 +53,22 @@ impl CodingUnicorns {
         Some(cfg)
     }
 
+    /// Apply breakpoints toggled by a click in either editor's gutter.
+    pub fn apply_gutter_breakpoint_clicks(&mut self) {
+        let mut clicks = Vec::new();
+        for ed in std::iter::once(&mut self.editor).chain(self.editor2.as_mut()) {
+            if let (Some(row), Some(path)) =
+                (ed.breakpoint_toggle_request.take(), ed.current_path.clone())
+            {
+                clicks.push((path, row));
+            }
+        }
+        for (path, row) in clicks {
+            // Breakpoints are 1-based in DAP.
+            self.dap.toggle_breakpoint(&path, row + 1);
+        }
+    }
+
     /// Toggle a breakpoint at the current cursor line.
     pub fn toggle_breakpoint_at_cursor(&mut self) {
         let Some(path) = self.editor.current_path.clone() else {

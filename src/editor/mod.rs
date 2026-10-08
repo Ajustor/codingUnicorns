@@ -156,6 +156,9 @@ pub struct Editor {
     // ── Bracket matching ────────────────────────────────────────────────────
     /// (open_row, open_col, close_row, close_col) of the matching bracket pair.
     bracket_match: Option<(usize, usize, usize, usize)>,
+    /// Row (0-based) whose breakpoint was toggled by a click in the gutter this
+    /// frame. Breakpoints belong to the debugger, so the app takes it from here.
+    pub breakpoint_toggle_request: Option<usize>,
     // ── Code folding ────────────────────────────────────────────────────────
     /// Lines that are the *start* of folded regions.
     pub folded_lines: std::collections::HashSet<usize>,
@@ -260,6 +263,7 @@ impl Editor {
             find_case_sensitive: false,
             find_use_regex: false,
             bracket_match: None,
+            breakpoint_toggle_request: None,
             folded_lines: std::collections::HashSet::new(),
             fold_regions: Vec::new(),
             fold_regions_version: -1,
@@ -340,6 +344,31 @@ impl Editor {
     /// Longest line length (chars), cached and recomputed only when the content
     /// changes — used to size the horizontal scrollbar and clamp horizontal scroll.
     /// Avoids an allocating O(file) scan every frame.
+    /// Row whose breakpoint a click at `local` (relative to the editor rect)
+    /// toggles: the gutter left of the fold markers, on an existing line.
+    fn gutter_breakpoint_row(
+        &self,
+        local: egui::Vec2,
+        gutter_width: f32,
+        blame_width: f32,
+        line_height: f32,
+        char_width: f32,
+    ) -> Option<usize> {
+        // The last 14 px of the gutter hold the fold markers.
+        if local.x < blame_width || local.x >= gutter_width - 14.0 || local.y < 0.0 {
+            return None;
+        }
+        if !self.wrap.active()
+            && ((local.y + self.scroll_offset.y) / line_height) as usize >= self.buffer.num_lines()
+        {
+            return None;
+        }
+        Some(
+            self.hit_test(local, gutter_width, line_height, char_width)
+                .0,
+        )
+    }
+
     fn cached_max_line_chars(&mut self) -> usize {
         if self.max_line_chars_version != self.content_version {
             self.max_line_chars = (0..self.buffer.num_lines())
@@ -2240,6 +2269,31 @@ impl Editor {
                     })
                     .collect();
 
+                // Click in the gutter left of the fold markers: toggle a breakpoint.
+                let gutter_bp_row = |ed: &Self, pos: egui::Pos2| {
+                    ed.gutter_breakpoint_row(
+                        pos - rect.min,
+                        gutter_width,
+                        blame_extra_width,
+                        line_height,
+                        char_width,
+                    )
+                };
+                if response.clicked() {
+                    if let Some(row) = response
+                        .interact_pointer_pos()
+                        .and_then(|pos| gutter_bp_row(self, pos))
+                    {
+                        self.breakpoint_toggle_request = Some(row);
+                    }
+                }
+                let bp_hover_row = response
+                    .hover_pos()
+                    .and_then(|pos| gutter_bp_row(self, pos));
+                if bp_hover_row.is_some() {
+                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+
                 // Handle gutter click to toggle fold
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
@@ -2452,13 +2506,16 @@ impl Editor {
                     }
 
                     // Breakpoint dot in gutter (red circle, left side)
+                    let bp_center =
+                        egui::pos2(rect.min.x + blame_extra_width + 5.0, y + line_height * 0.5);
                     if breakpoint_lines.contains(&line_idx) {
-                        let bp_x = rect.min.x + blame_extra_width + 5.0;
-                        let bp_y = y + line_height * 0.5;
+                        painter.circle_filled(bp_center, 5.0, egui::Color32::from_rgb(220, 50, 50));
+                    } else if bp_hover_row == Some(line_idx) {
+                        // Preview of the breakpoint a click would add.
                         painter.circle_filled(
-                            egui::pos2(bp_x, bp_y),
+                            bp_center,
                             5.0,
-                            egui::Color32::from_rgb(220, 50, 50),
+                            egui::Color32::from_rgba_unmultiplied(220, 50, 50, 90),
                         );
                     }
 
@@ -4874,6 +4931,22 @@ bar",
         }
         h.frame(&mut ed, vec![Harness::button(p3, false, NONE)], NONE);
         assert_eq!(ed.scroll_offset.y, 0.0);
+    }
+
+    #[test]
+    fn gutter_click_left_of_fold_markers_requests_a_breakpoint() {
+        let (mut h, mut ed) = setup("a\nb\nc\nd");
+        h.idle(&mut ed);
+        h.click_at(&mut ed, egui::pos2(10.0, 10.0), NONE);
+        assert_eq!(ed.breakpoint_toggle_request.take(), Some(0));
+        let lh = ed.line_height;
+        h.click_at(&mut ed, egui::pos2(10.0, 10.0 + 2.0 * lh), NONE);
+        assert_eq!(ed.breakpoint_toggle_request.take(), Some(2));
+        // Fold markers, text and the empty space below the last line don't.
+        h.click_at(&mut ed, egui::pos2(43.0, 10.0), NONE);
+        h.click_at(&mut ed, egui::pos2(120.0, 10.0), NONE);
+        h.click_at(&mut ed, egui::pos2(10.0, 10.0 + 20.0 * lh), NONE);
+        assert_eq!(ed.breakpoint_toggle_request, None);
     }
 
     #[test]
