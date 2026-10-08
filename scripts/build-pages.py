@@ -1,18 +1,30 @@
 #!/usr/bin/env python3
-"""Render the GitHub Pages download page from `pages/index.html`.
+"""Render the GitHub Pages download page, once per language.
 
-Usage: build-pages.py <template> <latest.json> <files-dir> <output> [CHANGELOG.md]
+Usage: build-pages.py <latest.json> <files-dir> <site-dir>
 
-Fills `{{version}}`, `{{downloads}}` (one card per asset of the manifest),
-`{{notes}}` (the release notes, a small Markdown subset rendered to HTML) and
-`{{history}}` (the older versions of the changelog).
-Run by the `pages` job of .github/workflows/release.yml.
+Run from the repository root. For each language of LANGS, fills the template
+`pages/index.html` with the strings of `pages/i18n/<lang>.json` (`{{t.key}}`),
+`{{version}}`, `{{downloads}}` (one card per asset of the manifest), `{{notes}}`
+(this version's section of the language's changelog) and `{{history}}` (its
+older versions), and writes it under <site-dir>. Also copies the stylesheet.
+Called by scripts/build-site.sh.
 """
 import html
 import json
 import os
 import re
+import shutil
 import sys
+
+from changelog import parse
+
+# English is the default page at the root; each other language lives in a
+# folder of the same name. Every page links to the others.
+LANGS = {
+    "en": {"out": "index.html", "root": "./", "changelog": "CHANGELOG.md"},
+    "fr": {"out": "fr/index.html", "root": "../", "changelog": "CHANGELOG.fr.md"},
+}
 
 ICONS = {
     "windows": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5 10.5 4.5v7H3zM11.5 4.4 21 3v8.5h-9.5zM3 12.5h7.5v7L3 18.5zM11.5 12.5H21V21l-9.5-1.4z"/></svg>',
@@ -21,45 +33,50 @@ ICONS = {
     "autre": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2h8l6 6v14H6zm8 1.5V9h5.5z"/></svg>',
 }
 
-# (substring of the asset name, os, card title, detail) — first match wins.
+# (substring of the asset name, os, kind) — first match wins. A kind names the
+# card's title and detail in the `cards` table of the language file.
 KINDS = [
-    (".msi", "windows", "Windows", "Installateur .msi — recommandé"),
-    ("windows", "windows", "Windows", "Version portable .exe, sans installation"),
-    ("linux-x64", "linux", "Linux", "Binaire x86_64"),
-    ("linux", "linux", "Linux", "Binaire"),
-    ("macos-arm64", "macos", "macOS", "Apple Silicon (M1 et suivants)"),
-    ("macos-x64", "macos", "macOS", "Intel"),
-    ("macos", "macos", "macOS", "Binaire"),
+    (".msi", "windows", "msi"),
+    ("windows", "windows", "exe"),
+    ("linux-x64", "linux", "linux_x64"),
+    ("linux", "linux", "linux"),
+    ("macos-arm64", "macos", "macos_arm64"),
+    ("macos-x64", "macos", "macos_x64"),
+    ("macos", "macos", "macos"),
 ]
 
 
 def classify(name):
-    for needle, os_, title, detail in KINDS:
+    for needle, os_, kind in KINDS:
         if needle in name:
-            return os_, title, detail
-    return "autre", name, "Fichier"
+            return os_, kind
+    return "autre", "other"
 
 
-def human_size(n):
-    for unit in ("o", "Ko", "Mo", "Go"):
-        if n < 1024 or unit == "Go":
-            return f"{n:.0f} {unit}" if unit == "o" else f"{n:.1f} {unit}".replace(".", ",")
+def human_size(n, t):
+    for unit in t["size_units"]:
+        if n < 1024 or unit == t["size_units"][-1]:
+            if unit == t["size_units"][0]:
+                return f"{n:.0f} {unit}"
+            return f"{n:.1f} {unit}".replace(".", t["decimal_separator"])
         n /= 1024
 
 
-def card(asset, files_dir):
+def card(asset, files_dir, t):
     name = asset["name"]
-    os_, title, detail = classify(name)
+    os_, kind = classify(name)
+    title, detail = t["cards"][kind]
+    title = title or name
     path = os.path.join(files_dir, name)
-    size = f" · {human_size(os.path.getsize(path))}" if os.path.exists(path) else ""
+    size = f" · {human_size(os.path.getsize(path), t)}" if os.path.exists(path) else ""
     e = html.escape
     return f"""        <li class="carte" data-os="{os_}" data-label="{e(title)}">
-          <span class="pastille">Votre système</span>
+          <span class="pastille">{e(t["your_system"])}</span>
           <span class="os">{ICONS[os_]}{e(title)}</span>
           <span class="detail">{e(detail)}{size}</span>
-          <a class="bouton principal" href="{e(asset['url'])}" download>Télécharger</a>
+          <a class="bouton principal" href="{e(asset['url'])}" download>{e(t["download"])}</a>
           <span class="fichier mono">{e(name)}</span>
-          <details><summary>Empreinte SHA-256</summary><code>{e(asset['sha256'])}</code></details>
+          <details><summary>{e(t["sha256"])}</summary><code>{e(asset['sha256'])}</code></details>
         </li>"""
 
 
@@ -131,14 +148,10 @@ def markdown(md, heading_base=3):
     return "\n".join(out)
 
 
-def history(changelog_path, current):
+def history(sections, current):
     """Every released version but the current one, newest first, folded."""
-    if not changelog_path or not os.path.exists(changelog_path):
-        return ""
-    from changelog import parse
-
     items = []
-    for version, date, body in parse(changelog_path):
+    for version, date, body in sections:
         if version == current:
             continue
         when = f' <span class="date">{html.escape(date)}</span>' if date else ""
@@ -153,26 +166,50 @@ def history(changelog_path, current):
     return "\n".join(items)
 
 
+def render(template, lang, manifest, files_dir):
+    conf = LANGS[lang]
+    with open(f"pages/i18n/{lang}.json", encoding="utf-8") as f:
+        t = json.load(f)
+    version = manifest["version"]
+    sections = parse(conf["changelog"]) if os.path.exists(conf["changelog"]) else []
+    # This version's notes in this language; the manifest's (English) notes
+    # when the changelog has no section for it.
+    notes = next((body for v, _, body in sections if v == version), None)
+    if notes is None:
+        notes = manifest.get("notes") or ""
+    assets = sorted(manifest["assets"], key=sort_key)
+
+    page = template
+    # Language strings first: they may contain `{{root}}` or `{{version}}`.
+    for key, value in t.items():
+        if isinstance(value, str):
+            page = page.replace("{{t." + key + "}}", value)
+    page = (
+        page.replace("{{lang}}", lang)
+        .replace("{{root}}", conf["root"])
+        .replace("{{version}}", html.escape(version))
+        .replace("{{downloads}}", "\n".join(card(a, files_dir, t) for a in assets))
+        .replace("{{notes}}", markdown(notes) or f"<p>{html.escape(t['no_notes'])}</p>")
+        .replace("{{history}}", history(sections, version))
+    )
+    missing = sorted(set(re.findall(r"\{\{[^}]+\}\}", page)))
+    if missing:
+        sys.exit(f"pages/i18n/{lang}.json: no value for {', '.join(missing)}")
+    return page
+
+
 def main():
-    template_path, manifest_path, files_dir, out_path = sys.argv[1:5]
-    changelog_path = sys.argv[5] if len(sys.argv) > 5 else None
-    with open(template_path, encoding="utf-8") as f:
-        page = f.read()
+    manifest_path, files_dir, site_dir = sys.argv[1:4]
+    with open("pages/index.html", encoding="utf-8") as f:
+        template = f.read()
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
-
-    assets = sorted(manifest["assets"], key=sort_key)
-    page = (
-        page.replace("{{version}}", html.escape(manifest["version"]))
-        .replace("{{downloads}}", "\n".join(card(a, files_dir) for a in assets))
-        .replace(
-            "{{notes}}",
-            markdown(manifest.get("notes") or "") or "<p>Pas de notes pour cette version.</p>",
-        )
-        .replace("{{history}}", history(changelog_path, manifest["version"]))
-    )
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(page)
+    for lang, conf in LANGS.items():
+        out = os.path.join(site_dir, conf["out"])
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(render(template, lang, manifest, files_dir))
+    shutil.copy("pages/styles.css", os.path.join(site_dir, "styles.css"))
 
 
 if __name__ == "__main__":

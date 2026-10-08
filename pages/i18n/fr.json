@@ -1,0 +1,56 @@
+{
+  "meta_description": "Coding Unicorns — un IDE léger et performant construit en Rust, inspiré de VSCode. 30 à 80 Mo de RAM, extensible par plugins.",
+  "skip": "Aller au contenu",
+  "nav_label": "Navigation principale",
+  "nav_features": "Fonctionnalités",
+  "nav_extensions": "Extensions",
+  "nav_download": "Télécharger",
+  "nav_changes": "Nouveautés",
+  "theme": "Changer de thème",
+  "other_lang": "en",
+  "other_lang_href": "{{root}}",
+  "other_lang_label": "English",
+
+  "latest_stable": "dernière version stable",
+  "tagline": "Un IDE léger et performant, construit en Rust.",
+  "lead": "Inspiré de VSCode, sans son poids. L'éditeur est volontairement nu : aucun langage n'est intégré en dur — la coloration syntaxique, le LSP et les outils de développement sont fournis par des <strong>extensions installables</strong>.",
+  "download": "Télécharger",
+  "download_for": "Télécharger pour",
+  "discover": "Découvrir les fonctionnalités",
+  "platforms_line": "Windows · Linux · macOS (Apple Silicon) — mises à jour automatiques",
+
+  "figures_title": "En quelques chiffres",
+  "figures": "        <li><b>30–80 Mo</b><span>de RAM visés, contre 300–500 Mo pour VSCode</span></li>\n        <li><b>0</b><span>langage intégré en dur : tout passe par des extensions</span></li>\n        <li><b>43</b><span>raccourcis clavier configurables</span></li>\n        <li><b>3</b><span>plateformes : Windows, Linux et macOS</span></li>",
+
+  "download_title": "Télécharger la",
+  "download_intro": "Choisissez le fichier de votre système. Une fois installé, Coding Unicorns se met à jour tout seul : il vérifie au démarrage si une nouvelle version existe et contrôle chaque téléchargement par son empreinte SHA-256.",
+  "download_tip": "<strong>Linux / macOS :</strong> rendez le binaire exécutable avec <code>chmod +x coding-unicorns-*</code> puis lancez-le. <strong>Windows :</strong> l'installateur <code>.msi</code> est recommandé ; le <code>.exe</code> est une version portable, sans installation.",
+  "your_system": "Votre système",
+  "sha256": "Empreinte SHA-256",
+  "size_units": ["o", "Ko", "Mo", "Go"],
+  "decimal_separator": ",",
+  "cards": {
+    "msi": ["Windows", "Installateur .msi — recommandé"],
+    "exe": ["Windows", "Version portable .exe, sans installation"],
+    "linux_x64": ["Linux", "Binaire x86_64"],
+    "linux": ["Linux", "Binaire"],
+    "macos_arm64": ["macOS", "Apple Silicon (M1 et suivants)"],
+    "macos_x64": ["macOS", "Intel"],
+    "macos": ["macOS", "Binaire"],
+    "other": ["", "Fichier"]
+  },
+
+  "features_title": "Tout ce qu'il faut, rien de plus",
+  "features": "        <li>\n          <h3>✏️ Éditeur</h3>\n          <ul>\n            <li>Undo/redo, sélection, word wrap</li>\n            <li>Split editor côte à côte <kbd>Ctrl+\\</kbd></li>\n            <li>Multi-curseurs <kbd>Ctrl+D</kbd> <kbd>Ctrl+Shift+L</kbd></li>\n            <li>Code folding et bracket matching</li>\n            <li>Auto-close des parenthèses et guillemets</li>\n          </ul>\n        </li>\n        <li>\n          <h3>🧭 Navigation</h3>\n          <ul>\n            <li>Command palette <kbd>Ctrl+P</kbd> <kbd>Ctrl+Shift+P</kbd></li>\n            <li>Arbre de fichiers avec icônes et renommage inline</li>\n            <li>Breadcrumbs avec le symbole courant</li>\n            <li>Go to Definition <kbd>F12</kbd>, back/forward <kbd>Alt+←/→</kbd></li>\n            <li>Recherche workspace et Find &amp; Replace avec regex</li>\n          </ul>\n        </li>\n        <li>\n          <h3>🌿 Git</h3>\n          <ul>\n            <li>Branche courante, ahead/behind et graphe des commits</li>\n            <li>Créer, renommer, fusionner et supprimer des branches</li>\n            <li>Stage/unstage, commit, push, pull, stash</li>\n            <li>Merge tool à 3 panneaux pour les conflits</li>\n            <li>Git blame par ligne et diff dans la gouttière</li>\n          </ul>\n        </li>\n        <li>\n          <h3>💡 LSP</h3>\n          <ul>\n            <li>Hover, complétion, find references</li>\n            <li>Rename symbol, code actions, signature help</li>\n            <li>Formatage du document</li>\n            <li>Diagnostics inline : erreurs et warnings</li>\n          </ul>\n        </li>\n        <li>\n          <h3>🖥️ Terminal &amp; Debug</h3>\n          <ul>\n            <li>Terminal intégré : vrai PTY, multi-onglets, 256 couleurs</li>\n            <li>Debug DAP : breakpoints, step over/into/out</li>\n            <li>Call stack et variables</li>\n            <li>Configurations de lancement <code>launch.toml</code></li>\n          </ul>\n        </li>\n        <li>\n          <h3>⚙️ Configuration</h3>\n          <ul>\n            <li>Thèmes Dark, Light, Monokai, Solarized Dark, One Dark et couleurs perso</li>\n            <li>43 raccourcis à configurer dans Settings → Keybindings</li>\n            <li>Auto-save optionnel</li>\n            <li>Mises à jour automatiques vérifiées par SHA-256</li>\n          </ul>\n        </li>",
+
+  "extensions_title": "Les langages arrivent par extensions",
+  "extensions_intro": "Chaque extension est un crate Rust compilé en <code>cdylib</code>, décrit par un <code>manifest.toml</code>. Elle apporte la coloration et le hover de ses langages et désigne le serveur de langage à lancer ; l'IDE installe pour vous les dépendances de ce serveur (npm, pip, cargo, go, dotnet). 14 modules officiels : Rust, JavaScript, TypeScript, React, Python, Go, Vue, Svelte, HTML, XML, TOML, C#, PowerShell et speedster-js.",
+  "extensions_browse": "Parcourir les extensions officielles →",
+  "extensions_steps": "        <li><b>Ouvrez le panneau Extensions</b>depuis la barre d'activité (icône de pièce de puzzle).</li>\n        <li><b>Parcourez le registre</b>et cherchez un langage dans « Browse registry ».</li>\n        <li><b>Install</b>télécharge une version compilée pour votre système, vérifiée par SHA-256 — aucune toolchain Rust nécessaire.</li>",
+  "extensions_more": "Les mises à jour apparaissent dans le même panneau (« Update to … ») et la désinstallation peut aussi retirer les dépendances du serveur de langage. Une extension peut aussi s'installer depuis un dépôt Git, une archive ZIP, un dossier local ou un workspace Cargo. Les modules précompilés existent pour Windows x86_64, Linux x86_64 et macOS Apple Silicon.",
+
+  "changes_title": "Nouveautés de la",
+  "history_title": "Historique des versions",
+  "no_notes": "Pas de notes pour cette version.",
+  "footer": "Licence MIT · Construit en Rust avec egui"
+}
