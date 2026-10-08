@@ -293,7 +293,7 @@ Au démarrage (builds release uniquement), l'IDE lit le manifeste [`latest.json`
 
 Vérification manuelle : palette de commandes → **Check for Updates**. Désactivable dans Settings → Updates (`check_updates = false`).
 
-Pour publier : mettre à jour `version` dans `Cargo.toml`, puis pousser un tag `vX.Y.Z` identique — le workflow de release refuse un tag qui ne correspond pas. Les tags de pré-release (`v1.2.0-beta`) créent une release GitHub mais ne sont pas publiés sur Pages. Seule la dernière version stable est hébergée sur Pages ; page de téléchargement : https://ajustor.github.io/codingUnicorns/
+Pour publier : mettre à jour `version` dans `Cargo.toml`, ajouter la section `## [X.Y.Z] - AAAA-MM-JJ` correspondante dans [`CHANGELOG.md`](CHANGELOG.md), puis pousser un tag `vX.Y.Z` identique — le workflow de release refuse un tag qui ne correspond pas à `Cargo.toml` ou sans entrée dans le changelog. Le dépôt étant privé, ce changelog est ce que voient les utilisateurs : il sert de texte à la release GitHub, de notes dans la fenêtre de mise à jour et alimente la page de téléchargement (version courante + historique). Modifier `CHANGELOG.md` sur `master` republie la page. Les tags de pré-release (`v1.2.0-beta`) créent une release GitHub mais ne sont pas publiés sur Pages. Seule la dernière version stable est hébergée sur Pages ; page de téléchargement : https://ajustor.github.io/codingUnicorns/
 
 ---
 

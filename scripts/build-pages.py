@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Render the GitHub Pages download page from `pages/index.html`.
 
-Usage: build-pages.py <template> <latest.json> <files-dir> <output>
+Usage: build-pages.py <template> <latest.json> <files-dir> <output> [CHANGELOG.md]
 
-Fills `{{version}}`, `{{downloads}}` (one card per asset of the manifest) and
-`{{notes}}` (the release notes, a small Markdown subset rendered to HTML).
+Fills `{{version}}`, `{{downloads}}` (one card per asset of the manifest),
+`{{notes}}` (the release notes, a small Markdown subset rendered to HTML) and
+`{{history}}` (the older versions of the changelog).
 Run by the `pages` job of .github/workflows/release.yml.
 """
 import html
@@ -81,46 +82,80 @@ def inline(text):
     return text
 
 
-def markdown(md):
-    """Headings, bullet lists and paragraphs: enough for GitHub release notes."""
-    out, in_list, para = [], False, []
+def markdown(md, heading_base=3):
+    """Headings, (nested) bullet lists and paragraphs: enough for release notes."""
+    out, para = [], []
+    depths = []  # Indentation of each open <ul>.
 
     def flush_para():
         if para:
             out.append(f"<p>{inline(' '.join(para))}</p>")
             para.clear()
 
+    def close_lists(indent=-1):
+        while depths and depths[-1] > indent:
+            depths.pop()
+            out.append("</li></ul>")
+
     for raw in md.replace("\r\n", "\n").split("\n"):
         line = raw.strip()
+        indent = len(raw) - len(raw.lstrip())
         bullet = re.match(r"^[-*] (.*)", line)
         heading = re.match(r"^(#{1,6}) (.*)", line)
         if bullet:
             flush_para()
-            if not in_list:
+            close_lists(indent)
+            if depths and depths[-1] == indent:
+                out.append("</li>")
+            else:
                 out.append("<ul>")
-                in_list = True
-            out.append(f"<li>{inline(bullet.group(1))}</li>")
+                depths.append(indent)
+            out.append(f"<li>{inline(bullet.group(1))}")
             continue
-        if in_list:
-            out.append("</ul>")
-            in_list = False
+        if depths and line and indent > depths[-1]:
+            # Continuation of the current list item.
+            out[-1] += " " + inline(line)
+            continue
+        close_lists()
         if heading:
             flush_para()
-            # Section headings sit under the page's h2.
-            level = min(max(len(heading.group(1)) + 1, 3), 4)
+            level = min(heading_base + len(heading.group(1)) - 3, 6)
+            level = max(level, heading_base)
             out.append(f"<h{level}>{inline(heading.group(2))}</h{level}>")
         elif line:
             para.append(line)
         else:
             flush_para()
-    if in_list:
-        out.append("</ul>")
+    close_lists()
     flush_para()
-    return "\n".join(out) or "<p>Pas de notes pour cette version.</p>"
+    return "\n".join(out)
+
+
+def history(changelog_path, current):
+    """Every released version but the current one, newest first, folded."""
+    if not changelog_path or not os.path.exists(changelog_path):
+        return ""
+    from changelog import parse
+
+    items = []
+    for version, date, body in parse(changelog_path):
+        if version == current:
+            continue
+        when = f' <span class="date">{html.escape(date)}</span>' if date else ""
+        items.append(
+            f"""        <details class="version">
+          <summary><b>v{html.escape(version)}</b>{when}</summary>
+          <div class="prose">
+{markdown(body, heading_base=4)}
+          </div>
+        </details>"""
+        )
+    return "\n".join(items)
 
 
 def main():
     template_path, manifest_path, files_dir, out_path = sys.argv[1:5]
+    changelog_path = sys.argv[5] if len(sys.argv) > 5 else None
     with open(template_path, encoding="utf-8") as f:
         page = f.read()
     with open(manifest_path, encoding="utf-8") as f:
@@ -130,7 +165,11 @@ def main():
     page = (
         page.replace("{{version}}", html.escape(manifest["version"]))
         .replace("{{downloads}}", "\n".join(card(a, files_dir) for a in assets))
-        .replace("{{notes}}", markdown(manifest.get("notes") or ""))
+        .replace(
+            "{{notes}}",
+            markdown(manifest.get("notes") or "") or "<p>Pas de notes pour cette version.</p>",
+        )
+        .replace("{{history}}", history(changelog_path, manifest["version"]))
     )
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(page)
