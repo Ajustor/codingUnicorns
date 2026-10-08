@@ -156,6 +156,8 @@ pub struct KeyBindings {
     pub rename_symbol: KeyBinding,
     pub code_actions: KeyBinding,
     pub toggle_blame: KeyBinding,
+    /// Opens the workspace search (Ctrl+Shift+F). The name is historical and
+    /// kept so saved configs still load; formatting is Shift+Alt+F.
     pub format_document: KeyBinding,
     // Debug
     pub debug_start: KeyBinding,

@@ -8,6 +8,13 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.10.4] - 2026-10-08
+
+### Modifications
+
+- `Ctrl+Shift+F` lance la recherche dans le workspace sur le texte sélectionné (une seule ligne, cherché littéralement en mode regex) et place le focus dans le champ de recherche.
+- **Formater le document passe à `Shift+Alt+F`**, comme dans VSCode : `Ctrl+Shift+F` formatait le fichier *et* ouvrait la recherche en même temps.
+
 ## [0.10.3] - 2026-10-08
 
 ### Corrections

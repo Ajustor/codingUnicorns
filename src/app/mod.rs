@@ -631,6 +631,9 @@ impl eframe::App for CodingUnicorns {
         if want_search {
             self.show_sidebar = true;
             self.sidebar_tab = SidebarTab::Search;
+            let selection = self.editor.selected_text();
+            self.workspace_search
+                .open_with_selection(selection, self.workspace_path.as_deref());
         }
         if want_run {
             self.run_active_config();

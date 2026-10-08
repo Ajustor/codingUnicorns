@@ -82,6 +82,8 @@ pub struct WorkspaceSearch {
     replace_rx: Option<mpsc::Receiver<usize>>,
     pub is_replacing: bool,
     pub replace_count: Option<usize>,
+    /// Give the query field focus (and select its text) on the next frame.
+    pub focus_query: bool,
 }
 
 impl WorkspaceSearch {
@@ -101,6 +103,26 @@ impl WorkspaceSearch {
             replace_rx: None,
             is_replacing: false,
             replace_count: None,
+            focus_query: false,
+        }
+    }
+
+    /// Ctrl+Shift+F: search for the editor's selection, like VSCode. A
+    /// single-line selection becomes the query (escaped in regex mode, so it
+    /// is matched literally) and the search starts; otherwise the previous
+    /// query is kept. The query field takes focus either way.
+    pub fn open_with_selection(&mut self, selection: Option<String>, workspace: Option<&Path>) {
+        self.focus_query = true;
+        let Some(text) = selection.filter(|t| !t.is_empty() && !t.contains('\n')) else {
+            return;
+        };
+        self.query = if self.use_regex {
+            regex::escape(&text)
+        } else {
+            text
+        };
+        if let Some(ws) = workspace {
+            self.start_search(ws.to_path_buf());
         }
     }
 
@@ -217,6 +239,18 @@ impl WorkspaceSearch {
                     .hint_text("Search in workspace…")
                     .desired_width(ui.available_width() - 55.0),
             );
+            if std::mem::take(&mut self.focus_query) {
+                resp.request_focus();
+                // Select the query so typing replaces it.
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+                    let all = egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(self.query.chars().count()),
+                    );
+                    state.cursor.set_char_range(Some(all));
+                    state.store(ui.ctx(), resp.id);
+                }
+            }
             if (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 || resp.changed()
             {
@@ -611,6 +645,49 @@ mod tests {
 
     fn found(re: &Regex, s: &str) -> Vec<String> {
         re.find_iter(s).map(|m| m.as_str().to_string()).collect()
+    }
+
+    #[test]
+    fn open_with_selection_fills_the_query() {
+        let mut s = WorkspaceSearch::new();
+        s.open_with_selection(Some("fn main".into()), None);
+        assert_eq!(s.query, "fn main");
+        assert!(s.focus_query, "the field takes focus");
+
+        // Regex mode searches the selection literally.
+        s.use_regex = true;
+        s.open_with_selection(Some("foo(a.b)".into()), None);
+        assert_eq!(s.query, r"foo\(a\.b\)");
+    }
+
+    #[test]
+    fn open_with_empty_or_multiline_selection_keeps_the_query() {
+        let mut s = WorkspaceSearch::new();
+        s.query = "previous".into();
+        s.open_with_selection(None, None);
+        s.open_with_selection(Some(String::new()), None);
+        s.open_with_selection(Some("a\nb".into()), None);
+        assert_eq!(s.query, "previous");
+        assert!(s.focus_query);
+    }
+
+    #[test]
+    fn open_with_selection_starts_the_search() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "needle here").unwrap();
+        let mut s = WorkspaceSearch::new();
+        s.open_with_selection(Some("needle".into()), Some(dir.path()));
+        assert!(s.is_searching);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while s.results.is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "search never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            s.poll();
+        }
+        assert_eq!(s.results.unwrap().matches.len(), 1);
     }
 
     #[test]
