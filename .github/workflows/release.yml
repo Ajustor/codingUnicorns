@@ -246,6 +246,10 @@ jobs:
       contents: read
       pages: write
       id-token: write
+    # Shared with pages.yml: never two deploys at once, none cancelled.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
@@ -267,33 +271,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           BASE_URL: ${{ steps.pages.outputs.base_url }}
-        run: |
-          set -euo pipefail
-          dir="site/download/$TAG"
-          mkdir -p "$dir"
-          find artifacts -type f ! -name '*.ico' -exec cp {} "$dir/" \;
-
-          notes=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
-
-          assets='[]'
-          for f in "$dir"/*; do
-            name=$(basename "$f")
-            sha=$(sha256sum "$f" | cut -d' ' -f1)
-            url="$BASE_URL/download/$TAG/$name"
-            assets=$(jq --arg name "$name" --arg url "$url" --arg sha "$sha" \
-              '. + [{name: $name, url: $url, sha256: $sha}]' <<<"$assets")
-          done
-
-          jq -n --arg version "${TAG#v}" --arg notes "$notes" --arg page "$BASE_URL/" \
-            --argjson assets "$assets" \
-            '{version: $version, notes: $notes, page_url: $page, assets: $assets}' \
-            > site/latest.json
-
-          # The page itself: pages/index.html filled from the manifest.
-          cp assets/icon.png site/icon.png
-          python3 scripts/build-pages.py pages/index.html site/latest.json "$dir" site/index.html
-
-          cat site/latest.json
+        run: bash scripts/build-site.sh "$TAG" "$BASE_URL" artifacts
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
