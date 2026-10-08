@@ -8,7 +8,7 @@
     - target\release\coding-unicorns.exe
 
   Build commands (from the project root):
-    candle.exe -arch x64 -dProductVersion=0.9.1 -out wix\main.wixobj wix\main.wxs
+    candle.exe -arch x64 -dProductVersion=0.10.0 -out wix\main.wixobj wix\main.wxs
     light.exe  -ext WixUIExtension -out coding-unicorns-setup.msi wix\main.wixobj
 
   Or via cargo-wix:
