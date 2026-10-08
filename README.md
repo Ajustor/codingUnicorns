@@ -227,22 +227,23 @@ L'éditeur ne contient aucun support de langage intégré. La coloration syntaxi
 
 Les modules officiels sont publiés par le dépôt [`coding-unicorns-modules`](https://github.com/Ajustor/coding-unicorns-modules). La liste complète, avec les versions publiées, est sur la **[page des extensions](https://ajustor.github.io/coding-unicorns-modules/)** (index machine : [`registry.json`](https://ajustor.github.io/coding-unicorns-modules/registry.json)).
 
-| Extension | Fichiers | Serveur LSP | Dépendances installées |
-|-----------|----------|-------------|------------------------|
-| **rust-lang** | `.rs` | rust-analyzer | — (rust-analyzer via rustup) |
-| **javascript-lang** | `.js` `.mjs` | typescript-language-server | npm |
-| **typescript-lang** | `.ts` | typescript-language-server | npm |
-| **react-lang** | `.jsx` `.tsx` | typescript-language-server | npm |
-| **python-lang** | `.py` `.pyw` | pylsp | pip |
-| **go-lang** | `.go` | gopls | go |
-| **vue-lang** | `.vue` | vue-language-server | npm |
-| **svelte-lang** | `.svelte` | svelte-language-server | npm |
-| **html-lang** | `.html` `.htm` | vscode-html-language-server | npm |
-| **xml-lang** | `.xml` `.xsl` `.xsd` `.svg` `.xhtml` | lemminx | — (à installer) |
-| **toml-lang** | `.toml` | taplo | — (à installer) |
-| **csharp-lang** | `.cs` `.csx` | csharp-ls | dotnet (SDK .NET requis) |
-| **powershell-lang** | `.ps1` `.psm1` `.psd1` | — | — |
-| **spd-lang** | `.spd` | speedster-language-server | — (à installer) |
+| Extension | Fichiers | Serveur LSP | Débogueur | Dépendances installées |
+|-----------|----------|-------------|-----------|------------------------|
+| **rust-lang** | `.rs` | rust-analyzer | lldb-dap (LLVM) | — (rust-analyzer via rustup) |
+| **javascript-lang** | `.js` `.mjs` | typescript-language-server | vscode-js-debug | npm |
+| **typescript-lang** | `.ts` | typescript-language-server | vscode-js-debug | npm |
+| **react-lang** | `.jsx` `.tsx` | typescript-language-server | vscode-js-debug | npm |
+| **python-lang** | `.py` `.pyw` | pylsp | debugpy | pip |
+| **go-lang** | `.go` | gopls | Delve | go |
+| **vue-lang** | `.vue` | vue-language-server | vscode-js-debug | npm |
+| **svelte-lang** | `.svelte` | svelte-language-server | vscode-js-debug | npm |
+| **html-lang** | `.html` `.htm` | vscode-html-language-server | vscode-js-debug | npm |
+| **xml-lang** | `.xml` `.xsl` `.xsd` `.svg` `.xhtml` | lemminx | — | — (à installer) |
+| **toml-lang** | `.toml` | taplo | — | — (à installer) |
+| **csharp-lang** | `.cs` `.csx` | csharp-ls | netcoredbg | dotnet (SDK .NET requis) |
+| **powershell-lang** | `.ps1` `.psm1` `.psd1` | — | PowerShell Editor Services | — |
+| **spd-lang** | `.spd` | speedster-language-server | — | — (à installer) |
+| **json-lang** | `.json` `.jsonc` `.json5` `.geojson` `.webmanifest` | vscode-json-language-server | — | npm |
 
 Des binaires précompilés existent pour **Windows x86_64**, **Linux x86_64** et **macOS Apple Silicon**. Sur une autre plateforme, le registre affiche « Not available for this platform » : il faut alors compiler depuis les sources (voir ci-dessous).
 
@@ -304,6 +305,8 @@ repository = "https://github.com/acme/mylang"  # optionnel
 languages = ["ml", "mli"]   # extensions de fichiers, sans le point
 lsp_server = "mylang-lsp"   # optionnel : binaire du serveur LSP
 lsp_args = ["--stdio"]
+language_ids = { mli = "mylang" }  # optionnel : languageId LSP quand il diffère de l'extension
+lsp_init_options = { provideFormatter = true }  # optionnel : initializationOptions du serveur
 
 [dependencies]              # optionnel, installé avec le module
 npm = ["mylang-lsp"]        # npm install -g
@@ -336,7 +339,7 @@ Le crate exporte des fonctions C :
 |---------|------|
 | `language_id()` | **Requis.** Nom du langage |
 | `file_extensions()` | **Requis.** Extensions supportées, séparées par des virgules (ex. `"ml,mli"`) |
-| `tokenize_line_ffi(line)` | JSON `[{"text","kind"}]` des tokens d'une ligne (`keyword`, `type`, `string`, `comment`, `number`, `function`, `macro`) |
+| `tokenize_line_ffi(line)` | JSON `[{"text","kind"}]` des tokens d'une ligne (`keyword`, `type`, `string`, `comment`, `number`, `function`, `macro`, `property`, `operator`, `class`) |
 | `tokenize_document_ffi(text)` | Tokens du document entier (un tableau par ligne), pour les constructions multi-lignes |
 | `tokenize_document_tsx_ffi(text)` | Variante utilisée pour `.tsx` / `.jsx` |
 | `reset_tokenizer()` | Réinitialise l'état du tokenizer |

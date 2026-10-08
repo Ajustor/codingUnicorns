@@ -198,6 +198,14 @@ pub struct Capabilities {
     /// Arguments to pass to the LSP server (e.g. ["--stdio"]).
     #[serde(default)]
     pub lsp_args: Vec<String>,
+    /// `initializationOptions` sent to the LSP server (e.g.
+    /// `{ provideFormatter = true }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsp_init_options: Option<toml::Table>,
+    /// LSP `languageId` per file extension when it differs from the
+    /// extension (e.g. `{ cs = "csharp" }`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub language_ids: std::collections::BTreeMap<String, String>,
 }
 
 #[cfg(test)]
@@ -279,6 +287,13 @@ dotnet = ["csharp-ls@0.16.0"]
         assert_eq!(m.capabilities.themes, vec!["dark"]);
         assert_eq!(m.capabilities.lsp_server.as_deref(), Some("pylsp"));
         assert_eq!(m.capabilities.lsp_args, vec!["--stdio"]);
+        assert!(m.capabilities.language_ids.is_empty());
+        let m = ExtensionManifest::parse(&FULL.replace(
+            "lsp_args = [\"--stdio\"]",
+            "lsp_args = []\nlanguage_ids = { py = \"python\" }",
+        ))
+        .unwrap();
+        assert_eq!(m.capabilities.language_ids["py"], "python");
         assert_eq!(m.dependencies.pip, vec!["python-lsp-server"]);
         assert_eq!(m.dependencies.npm, vec!["pyright"]);
         assert_eq!(m.dependencies.cargo, vec!["ruff"]);

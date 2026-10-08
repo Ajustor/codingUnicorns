@@ -105,8 +105,9 @@ impl CodingUnicorns {
             if let Some(workspace) = self.workspace_path.clone() {
                 // Prefer the plugin manager (covers installed FFI modules), then builtins.
                 if let Some((cmd, args)) = self.plugin_manager.lsp_server_for_ext(ext) {
+                    let init = self.extension_registry.lsp_init_options(ext);
                     self.lsp
-                        .ensure_started_with_cmd(ext, &cmd, &args, &workspace);
+                        .ensure_started_with_cmd(ext, &cmd, &args, &workspace, init);
                 } else {
                     self.lsp.ensure_started(ext, &workspace);
                 }
@@ -342,19 +343,5 @@ impl CodingUnicorns {
                 }
             }
         }
-    }
-}
-
-/// Map a file extension to the LSP standard `languageId` sent in `textDocument/didOpen`.
-/// Servers like csharp-ls key document handling on this, so `.cs` must be `"csharp"`,
-/// not `"cs"`.
-pub(crate) fn language_id_for_ext(ext: &str) -> &str {
-    match ext {
-        "rs" => "rust",
-        "ts" | "tsx" => "typescript",
-        "js" | "jsx" => "javascript",
-        "py" => "python",
-        "cs" | "csx" => "csharp",
-        other => other,
     }
 }

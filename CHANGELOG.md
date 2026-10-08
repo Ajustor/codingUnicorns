@@ -15,6 +15,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Language modules ship their debugger: a `[debugger]` section in `manifest.toml` names the adapter, the launch configuration types it serves, and optionally an archive to download it from. Adapters can talk over stdio or TCP, and the child sessions an adapter asks for (`startDebugging`) are opened automatically. The IDE itself contains no debugger.
 - Official modules updated, offered in the Extensions panel: **C#** debugs with netcoredbg, **TypeScript, JavaScript, React, Vue, Svelte and HTML** with vscode-js-debug (Node programs, or pages in Chrome/Edge), **PowerShell** with PowerShell Editor Services (all three downloaded on first use), **Python** with debugpy (installed with the module), **Go** with Delve (installed with the module) and **Rust** with lldb-dap (from LLVM).
 - Text a debugger prints outside the protocol shows in the debug output.
+- New **JSON** module (`.json`, `.jsonc`, `.json5`, `.geojson`, `.webmanifest`): highlighting with keys distinct from values, comments and trailing commas, hover docs for `package.json` and `tsconfig.json` keys, and vscode-json-language-server for validation (including `$schema`) and formatting.
+- Modules can color tokens as `property`, `operator` and `class`, and pass `initializationOptions` to their language server (`lsp_init_options`).
+
+### Changed
+
+- The LSP language id of a file extension (e.g. `cs` → `csharp`) now comes from its module (`language_ids` in `manifest.toml`) instead of a table in the IDE. **Update your modules** from the Extensions panel: older C#, Python and Rust modules don't declare it.
 
 ### Fixed
 

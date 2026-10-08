@@ -300,6 +300,9 @@ fn parse_token_json(json: &str) -> Option<Vec<Token>> {
             "number" => TokenKind::Number,
             "function" => TokenKind::Function,
             "macro" => TokenKind::Macro,
+            "property" => TokenKind::Property,
+            "operator" => TokenKind::Operator,
+            "class" => TokenKind::Class,
             _ => TokenKind::Normal,
         };
         tokens.push(Token { text, kind });
@@ -419,7 +422,7 @@ mod token_parse_tests {
 
     #[test]
     fn all_kinds_are_mapped() {
-        let json = r#"[{"text":"a","kind":"keyword"},{"text":"b","kind":"type"},{"text":"c","kind":"string"},{"text":"d","kind":"comment"},{"text":"e","kind":"number"},{"text":"f","kind":"function"},{"text":"g","kind":"macro"},{"text":"h","kind":"weird"}]"#;
+        let json = r#"[{"text":"a","kind":"keyword"},{"text":"b","kind":"type"},{"text":"c","kind":"string"},{"text":"d","kind":"comment"},{"text":"e","kind":"number"},{"text":"f","kind":"function"},{"text":"g","kind":"macro"},{"text":"h","kind":"weird"},{"text":"i","kind":"property"},{"text":"j","kind":"operator"},{"text":"k","kind":"class"}]"#;
         let kinds: Vec<TokenKind> = parse_token_json(json)
             .unwrap()
             .into_iter()
@@ -436,6 +439,9 @@ mod token_parse_tests {
                 TokenKind::Function,
                 TokenKind::Macro,
                 TokenKind::Normal,
+                TokenKind::Property,
+                TokenKind::Operator,
+                TokenKind::Class,
             ]
         );
     }

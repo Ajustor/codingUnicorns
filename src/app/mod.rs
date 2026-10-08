@@ -402,10 +402,10 @@ impl CodingUnicorns {
                         // Without this, resuming a session leaves the LSP cold.
                         app.ensure_lsp_for_file(&file_path);
                         if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
-                            let lang_id = lsp_ops::language_id_for_ext(ext);
+                            let lang_id = app.extension_registry.lsp_language_id(ext);
                             let uri = crate::lsp::client::path_to_uri(&file_path);
                             if let Some(client) = app.lsp.get_mut(ext) {
-                                client.did_open(&uri, lang_id, &content);
+                                client.did_open(&uri, &lang_id, &content);
                             }
                         }
                         app.last_lsp_content_version = 0;
@@ -738,9 +738,9 @@ impl eframe::App for CodingUnicorns {
                 if reconnected_exts.contains(&ext) {
                     let uri = crate::lsp::client::path_to_uri(path);
                     let content = self.editor.buffer.to_string();
-                    let lang_id = lsp_ops::language_id_for_ext(&ext);
+                    let lang_id = self.extension_registry.lsp_language_id(&ext);
                     if let Some(client) = self.lsp.get_mut(&ext) {
-                        client.did_open(&uri, lang_id, &content);
+                        client.did_open(&uri, &lang_id, &content);
                     }
                 }
             }

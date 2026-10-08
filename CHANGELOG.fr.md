@@ -15,6 +15,12 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Les modules de langage fournissent leur débogueur : une section `[debugger]` du `manifest.toml` indique l'adaptateur, les types de configuration qu'il sert et, au besoin, une archive d'où le télécharger. Les adaptateurs communiquent par stdio ou TCP, et les sessions enfants qu'un adaptateur demande (`startDebugging`) s'ouvrent automatiquement. L'IDE lui-même ne contient aucun débogueur.
 - Modules officiels mis à jour, proposés dans le panneau Extensions : **C#** débogue avec netcoredbg, **TypeScript, JavaScript, React, Vue, Svelte et HTML** avec vscode-js-debug (programmes Node, ou pages dans Chrome/Edge), **PowerShell** avec PowerShell Editor Services (tous trois téléchargés au premier lancement), **Python** avec debugpy (installé avec le module), **Go** avec Delve (installé avec le module) et **Rust** avec lldb-dap (fourni par LLVM).
 - Le texte qu'un débogueur affiche hors protocole apparaît dans la sortie Debug.
+- Nouveau module **JSON** (`.json`, `.jsonc`, `.json5`, `.geojson`, `.webmanifest`) : coloration distinguant clés et valeurs, commentaires et virgules finales, aide au survol des clés de `package.json` et `tsconfig.json`, et vscode-json-language-server pour la validation (y compris `$schema`) et le formatage.
+- Les modules peuvent colorer des tokens comme `property`, `operator` et `class`, et transmettre des `initializationOptions` à leur serveur de langage (`lsp_init_options`).
+
+### Modifications
+
+- L'identifiant de langage LSP d'une extension de fichier (par ex. `cs` → `csharp`) vient désormais de son module (`language_ids` dans `manifest.toml`) au lieu d'une table dans l'IDE. **Mettez à jour vos modules** depuis le panneau Extensions : les anciens modules C#, Python et Rust ne le déclarent pas.
 
 ### Corrections
 
