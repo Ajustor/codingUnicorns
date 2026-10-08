@@ -50,7 +50,8 @@ $binDir = Split-Path $binaryPath
 
 # --- Write cu.cmd -------------------------------------------------------------
 $cmdPath = Join-Path $binDir 'cu.cmd'
-$cmdContent = "@echo off`r`n`"%~dp0coding-unicorns.exe`" %*`r`n"
+# Same as scripts/cu.cmd: `start` returns at once instead of waiting for the IDE.
+$cmdContent = "@echo off`r`nstart `"`" `"%~dp0coding-unicorns.exe`" %*`r`n"
 [System.IO.File]::WriteAllText($cmdPath, $cmdContent, [System.Text.Encoding]::ASCII)
 Write-Host "Created $cmdPath" -ForegroundColor Green
 
