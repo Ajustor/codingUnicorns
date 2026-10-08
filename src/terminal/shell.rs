@@ -149,7 +149,9 @@ fn shell_exists(path: &str) -> bool {
     // Relative name (e.g. "pwsh.exe", "bash.exe"): check PATH
     #[cfg(windows)]
     {
+        use crate::process_ext::CommandExt as _;
         std::process::Command::new("where")
+            .no_window()
             .arg(path)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

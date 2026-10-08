@@ -43,6 +43,19 @@ pub fn workspace_key(ws: &Path) -> String {
         .to_string()
 }
 
+/// Absolute on this platform, or a Windows path (`C:\…`, `\\server\…`) — the
+/// file may have been written on another OS, and stays readable there.
+fn looks_absolute(path: &str) -> bool {
+    let b = path.as_bytes();
+    Path::new(path).is_absolute()
+        || path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && matches!(b[2], b'\\' | b'/'))
+}
+
 impl Sessions {
     pub fn sessions_path() -> PathBuf {
         super::Config::config_path().with_file_name("sessions.toml")
@@ -53,10 +66,14 @@ impl Sessions {
     }
 
     pub fn load_from(path: &Path) -> Self {
-        std::fs::read_to_string(path)
+        let mut sessions: Self = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Versions before 0.10.1 could key a session by a relative path (`cu .`),
+        // which no longer says which folder it was.
+        sessions.workspaces.retain(|key, _| looks_absolute(key));
+        sessions
     }
 
     pub fn save_to(&self, path: &Path) {
@@ -131,6 +148,22 @@ mod tests {
         s.set(Path::new("/ws"), WorkspaceSession::default());
         assert!(s.get(Path::new("/ws")).is_none());
         assert!(s.workspaces.is_empty());
+    }
+
+    /// `cu .` with an older version keyed a session by ".": dropped on load.
+    #[test]
+    fn load_drops_sessions_keyed_by_a_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sessions.toml");
+        let mut s = Sessions::default();
+        s.set(Path::new("."), sample());
+        s.set(Path::new("sub/dir"), sample());
+        s.set(Path::new("C:\\proj"), sample());
+        s.set(Path::new("/home/me/proj"), sample());
+        s.set(Path::new("\\\\server\\share"), sample());
+        s.save_to(&file);
+        let keys: Vec<String> = Sessions::load_from(&file).workspaces.into_keys().collect();
+        assert_eq!(keys, ["/home/me/proj", "C:\\proj", "\\\\server\\share"]);
     }
 
     #[test]

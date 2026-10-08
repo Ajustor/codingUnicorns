@@ -45,7 +45,8 @@ impl Drop for Turn {
 /// Build the `claude` command line for one turn (not yet spawned).
 fn build_command(req: &TurnRequest) -> Command {
     let mut cmd = Command::new(&req.binary);
-    cmd.arg("-p")
+    crate::no_window(&mut cmd)
+        .arg("-p")
         .arg(&req.prompt)
         .args(["--output-format", "stream-json", "--verbose"])
         .args(["--permission-prompt-tool", "mcp__editor__approve"])
