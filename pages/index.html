@@ -485,21 +485,6 @@
 
     /* --- Extensions ------------------------------------------------------- */
 
-    .tableau { overflow-x: auto; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9375rem;
-    }
-    th, td {
-      padding: 0.5rem 0.875rem;
-      border-bottom: 1px solid var(--bordure);
-      text-align: left;
-      vertical-align: top;
-    }
-    th { font-weight: 600; white-space: nowrap; }
-    td code { white-space: nowrap; font-size: 0.875em; color: var(--marque-forte); }
-
     .etapes {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
@@ -706,21 +691,6 @@
         hover et un adaptateur de debug.
       </p>
       <p><a class="bouton secondaire" href="https://ajustor.github.io/coding-unicorns-modules/">Parcourir les extensions officielles →</a></p>
-      <div class="tableau">
-        <table>
-          <thead><tr><th>Extension</th><th>Fichiers</th><th>Serveur LSP</th></tr></thead>
-          <tbody>
-            <tr><td><b>rust-lang</b></td><td><code>.rs</code></td><td>rust-analyzer</td></tr>
-            <tr><td><b>javascript-lang</b></td><td><code>.js</code> <code>.mjs</code></td><td>typescript-language-server</td></tr>
-            <tr><td><b>typescript-lang</b></td><td><code>.ts</code></td><td>typescript-language-server</td></tr>
-            <tr><td><b>react-lang</b></td><td><code>.jsx</code> <code>.tsx</code></td><td>typescript-language-server</td></tr>
-            <tr><td><b>python-lang</b></td><td><code>.py</code> <code>.pyw</code></td><td>pylsp</td></tr>
-            <tr><td><b>go-lang</b></td><td><code>.go</code></td><td>gopls</td></tr>
-            <tr><td><b>vue-lang</b></td><td><code>.vue</code></td><td>vue-language-server</td></tr>
-            <tr><td><b>svelte-lang</b></td><td><code>.svelte</code></td><td>svelte-language-server</td></tr>
-          </tbody>
-        </table>
-      </div>
       <ol class="etapes">
         <li><b>Ouvrez le panneau Extensions</b>depuis la barre d'activité.</li>
         <li><b>Install Group from Git</b>et collez l'URL du dépôt de modules.</li>
