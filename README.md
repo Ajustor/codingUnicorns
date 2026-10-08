@@ -36,7 +36,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 - 🔀 3-panel merge tool (Ours | Result | Theirs) pour les conflits
 - 📝 Git blame par ligne
 - 🎨 Diff gutter (ajouts/modifications/suppressions)
-- 🖱️ Clic droit sur les branches : checkout, merge, delete, create, rename
+- 🌱 Gestion des branches (boutons ou clic droit) : checkout, merge, create (depuis HEAD, une branche ou un commit du graphe), rename, delete avec confirmation
 
 ### LSP (Language Server Protocol)
 - 💡 Hover, complétion, go-to-definition, find references
@@ -209,6 +209,8 @@ cargo run --release
 L'éditeur ne contient aucun support de langage intégré. Pour obtenir la coloration syntaxique et le LSP, installez des extensions.
 
 ### Extensions officielles
+
+La liste complète, avec les versions publiées, est sur la **[page des extensions](https://ajustor.github.io/coding-unicorns-modules/)** (index machine : [`registry.json`](https://ajustor.github.io/coding-unicorns-modules/registry.json)).
 
 | Extension | Langages | LSP |
 |-----------|----------|-----|
