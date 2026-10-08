@@ -1,13 +1,23 @@
 use crate::git::{BranchInfo, FileChangeKind, GitStatus};
+use egui_phosphor::regular;
+
+/// The inline branch dialog shown under the BRANCHES header, if any.
+enum BranchDialog {
+    None,
+    Create { from: String },
+    Rename { old: String },
+    Delete { name: String, merged: bool },
+}
 
 pub struct GitPanel {
     pub commit_message: String,
-    pub new_branch_name: String,
-    pub show_new_branch_dialog: bool,
-    pub new_branch_from: String,
-    pub rename_branch_name: String,
-    pub rename_branch_old: String,
-    pub show_rename_dialog: bool,
+    branch_dialog: BranchDialog,
+    /// Text field shared by the create and rename dialogs.
+    branch_input: String,
+    /// "Checkout" checkbox of the create dialog.
+    checkout_new_branch: bool,
+    /// Give the dialog's text field focus on its first frame.
+    focus_branch_input: bool,
     /// Optional message for the next "Stash changes".
     pub stash_message: String,
     /// Cached conflict file paths to avoid reading files every frame.
@@ -20,12 +30,10 @@ impl GitPanel {
     pub fn new() -> Self {
         Self {
             commit_message: String::new(),
-            new_branch_name: String::new(),
-            show_new_branch_dialog: false,
-            new_branch_from: String::new(),
-            rename_branch_name: String::new(),
-            rename_branch_old: String::new(),
-            show_rename_dialog: false,
+            branch_dialog: BranchDialog::None,
+            branch_input: String::new(),
+            checkout_new_branch: true,
+            focus_branch_input: false,
             stash_message: String::new(),
             cached_conflict_files: vec![],
             conflict_cache_file_count: 0,
@@ -215,80 +223,47 @@ impl GitPanel {
         self.show_conflicts(ui, git)
     }
 
+    fn open_branch_dialog(&mut self, dialog: BranchDialog) {
+        self.branch_input = match &dialog {
+            BranchDialog::Rename { old } => old.clone(),
+            _ => String::new(),
+        };
+        self.focus_branch_input = true;
+        self.branch_dialog = dialog;
+    }
+
     fn show_branches(&mut self, ui: &mut egui::Ui, git: &mut GitStatus) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("BRANCHES").strong().small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        git.repo_path.is_some(),
+                        egui::Button::new(format!("{} New branch", regular::PLUS)).small(),
+                    )
+                    .on_hover_text("Create a branch from HEAD")
+                    .clicked()
+                {
+                    self.open_branch_dialog(BranchDialog::Create {
+                        from: "HEAD".to_string(),
+                    });
+                }
+            });
         });
 
-        // Inline dialogs
-        if self.show_new_branch_dialog {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("New branch:").small());
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_branch_name)
-                        .desired_width(120.0)
-                        .hint_text("branch-name"),
-                );
-                let can_create = !self.new_branch_name.trim().is_empty();
-                if ui
-                    .add_enabled(can_create, egui::Button::new("Create").small())
-                    .clicked()
-                {
-                    let name = self.new_branch_name.trim().to_string();
-                    let from = self.new_branch_from.clone();
-                    match git.create_branch(&name, &from) {
-                        Ok(()) => {
-                            git.last_error = None;
-                        }
-                        Err(e) => git.last_error = Some(e),
-                    }
-                    self.new_branch_name.clear();
-                    self.show_new_branch_dialog = false;
-                }
-                if ui.button(egui::RichText::new("✕").small()).clicked() {
-                    self.show_new_branch_dialog = false;
-                    self.new_branch_name.clear();
-                }
-            });
-        }
-
-        if self.show_rename_dialog {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("Rename '{}':", self.rename_branch_old)).small(),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.rename_branch_name)
-                        .desired_width(120.0)
-                        .hint_text("new-name"),
-                );
-                let can_rename = !self.rename_branch_name.trim().is_empty();
-                if ui
-                    .add_enabled(can_rename, egui::Button::new("Rename").small())
-                    .clicked()
-                {
-                    let old = self.rename_branch_old.clone();
-                    let new_name = self.rename_branch_name.trim().to_string();
-                    match git.rename_branch(&old, &new_name) {
-                        Ok(()) => {
-                            git.last_error = None;
-                        }
-                        Err(e) => git.last_error = Some(e),
-                    }
-                    self.rename_branch_name.clear();
-                    self.show_rename_dialog = false;
-                }
-                if ui.button(egui::RichText::new("✕").small()).clicked() {
-                    self.show_rename_dialog = false;
-                    self.rename_branch_name.clear();
-                }
-            });
-        }
+        self.show_branch_dialog(ui, git);
 
         egui::ScrollArea::vertical()
             .id_salt("branches")
             .max_height(250.0)
             .show(ui, |ui| {
+                // Pending actions collected during UI to execute after loop
+                let mut checkout_name: Option<String> = None;
+                let mut merge_name: Option<String> = None;
+                let mut delete_name: Option<String> = None;
+                let mut create_from: Option<String> = None;
+                let mut rename_old: Option<String> = None;
+
                 // --- Commit graph section ---
                 let graph_entries = git.graph_entries.clone();
                 if !graph_entries.is_empty() {
@@ -300,10 +275,16 @@ impl GitPanel {
                             let line_x = dot_x;
 
                             for (i, entry) in graph_entries.iter().enumerate() {
-                                let (rect, _response) = ui.allocate_exact_size(
+                                let (rect, response) = ui.allocate_exact_size(
                                     egui::vec2(ui.available_width(), row_height),
-                                    egui::Sense::hover(),
+                                    egui::Sense::click(),
                                 );
+                                response.context_menu(|ui| {
+                                    if ui.button("Create branch here…").clicked() {
+                                        create_from = Some(entry.short_hash.clone());
+                                        ui.close_menu();
+                                    }
+                                });
 
                                 if ui.is_rect_visible(rect) {
                                     let painter = ui.painter();
@@ -383,13 +364,6 @@ impl GitPanel {
                     .cloned()
                     .collect();
 
-                // Pending actions collected during UI to execute after loop
-                let mut checkout_name: Option<String> = None;
-                let mut merge_name: Option<String> = None;
-                let mut delete_name: Option<String> = None;
-                let mut create_from: Option<String> = None;
-                let mut rename_old: Option<String> = None;
-
                 // Local branches
                 if !local.is_empty() {
                     egui::CollapsingHeader::new(egui::RichText::new("Local").small())
@@ -423,19 +397,19 @@ impl GitPanel {
                                                 ui.close_menu();
                                             }
                                         }
-                                        if ui.button("Create new branch from here").clicked() {
+                                        if ui.button("Create new branch from here…").clicked() {
                                             create_from = Some(branch_name.clone());
                                             ui.close_menu();
                                         }
+                                        if ui.button("Rename…").clicked() {
+                                            rename_old = Some(branch_name.clone());
+                                            ui.close_menu();
+                                        }
                                         if !is_current {
-                                            if ui.button("Rename").clicked() {
-                                                rename_old = Some(branch_name.clone());
-                                                ui.close_menu();
-                                            }
                                             ui.separator();
                                             if ui
                                                 .button(
-                                                    egui::RichText::new("Delete").color(
+                                                    egui::RichText::new("Delete…").color(
                                                         egui::Color32::from_rgb(220, 80, 80),
                                                     ),
                                                 )
@@ -446,6 +420,42 @@ impl GitPanel {
                                             }
                                         }
                                     });
+                                    // Same actions as the context menu, as visible buttons.
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if !is_current
+                                                && icon_button(ui, regular::TRASH, "Delete…")
+                                                    .clicked()
+                                            {
+                                                delete_name = Some(branch.name.clone());
+                                            }
+                                            if icon_button(ui, regular::PENCIL_SIMPLE, "Rename…")
+                                                .clicked()
+                                            {
+                                                rename_old = Some(branch.name.clone());
+                                            }
+                                            if !is_current
+                                                && icon_button(
+                                                    ui,
+                                                    regular::GIT_MERGE,
+                                                    "Merge into current",
+                                                )
+                                                .clicked()
+                                            {
+                                                merge_name = Some(branch.name.clone());
+                                            }
+                                            if icon_button(
+                                                ui,
+                                                regular::GIT_BRANCH,
+                                                "Create new branch from here…",
+                                            )
+                                            .clicked()
+                                            {
+                                                create_from = Some(branch.name.clone());
+                                            }
+                                        },
+                                    );
                                 });
                             }
                         });
@@ -464,11 +474,25 @@ impl GitPanel {
                                         egui::RichText::new(&branch.name).small().color(color),
                                     );
                                     response.context_menu(|ui| {
-                                        if ui.button("Create new branch from here").clicked() {
+                                        if ui.button("Create new branch from here…").clicked() {
                                             create_from = Some(branch.name.clone());
                                             ui.close_menu();
                                         }
                                     });
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if icon_button(
+                                                ui,
+                                                regular::GIT_BRANCH,
+                                                "Create local branch from here…",
+                                            )
+                                            .clicked()
+                                            {
+                                                create_from = Some(branch.name.clone());
+                                            }
+                                        },
+                                    );
                                 });
                             }
                         });
@@ -494,21 +518,129 @@ impl GitPanel {
                     }
                 }
                 if let Some(name) = delete_name {
-                    if let Err(e) = git.delete_branch(&name) {
-                        git.last_error = Some(e);
+                    match git.is_branch_merged(&name) {
+                        Ok(merged) => {
+                            self.open_branch_dialog(BranchDialog::Delete { name, merged })
+                        }
+                        Err(e) => git.last_error = Some(e),
                     }
                 }
                 if let Some(from) = create_from {
-                    self.new_branch_from = from;
-                    self.show_new_branch_dialog = true;
-                    self.new_branch_name.clear();
+                    self.open_branch_dialog(BranchDialog::Create { from });
                 }
                 if let Some(old) = rename_old {
-                    self.rename_branch_old = old;
-                    self.show_rename_dialog = true;
-                    self.rename_branch_name.clear();
+                    self.open_branch_dialog(BranchDialog::Rename { old });
                 }
             });
+    }
+
+    /// Inline create / rename / delete-confirmation row under the header.
+    fn show_branch_dialog(&mut self, ui: &mut egui::Ui, git: &mut GitStatus) {
+        let error_color = egui::Color32::from_rgb(220, 80, 80);
+        let mut close = false;
+        match &self.branch_dialog {
+            BranchDialog::None => return,
+            BranchDialog::Create { from } | BranchDialog::Rename { old: from } => {
+                let is_rename = matches!(self.branch_dialog, BranchDialog::Rename { .. });
+                let from = from.clone();
+                let name = self.branch_input.trim().to_string();
+                // Renaming to the same name is a no-op, not an error worth showing.
+                let validation = if is_rename && name == from {
+                    Err(None)
+                } else {
+                    git.validate_branch_name(&name).map_err(Some)
+                };
+                let title = if is_rename {
+                    format!("Rename '{from}' to:")
+                } else if from == "HEAD" {
+                    "New branch from HEAD:".to_string()
+                } else {
+                    format!("New branch from '{from}':")
+                };
+                ui.label(egui::RichText::new(title).small());
+                let mut submit = false;
+                ui.horizontal(|ui| {
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.branch_input)
+                            .desired_width(140.0)
+                            .hint_text("branch-name"),
+                    );
+                    if std::mem::take(&mut self.focus_branch_input) {
+                        response.request_focus();
+                    }
+                    if response.lost_focus() {
+                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            submit = true;
+                        } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            close = true;
+                        }
+                    }
+                    if !is_rename {
+                        ui.checkbox(&mut self.checkout_new_branch, "Checkout")
+                            .on_hover_text("Switch to the new branch once created");
+                    }
+                    let label = if is_rename { "Rename" } else { "Create" };
+                    if ui
+                        .add_enabled(validation.is_ok(), egui::Button::new(label).small())
+                        .clicked()
+                    {
+                        submit = true;
+                    }
+                    if ui.small_button("✕").on_hover_text("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+                if let Err(Some(e)) = &validation {
+                    if !name.is_empty() {
+                        ui.label(egui::RichText::new(e).color(error_color).small());
+                    }
+                }
+                if submit && validation.is_ok() {
+                    let result = if is_rename {
+                        git.rename_branch(&from, &name)
+                    } else {
+                        git.create_branch(&name, &from).and_then(|()| {
+                            if self.checkout_new_branch {
+                                git.checkout_branch(&name)
+                            } else {
+                                Ok(())
+                            }
+                        })
+                    };
+                    git.last_error = result.err();
+                    close = true;
+                }
+            }
+            BranchDialog::Delete { name, merged } => {
+                let (name, merged) = (name.clone(), *merged);
+                ui.label(egui::RichText::new(format!("Delete branch '{name}'?")).small());
+                if !merged {
+                    ui.label(
+                        egui::RichText::new("⚠ Not merged into HEAD: its commits will be lost.")
+                            .color(error_color)
+                            .small(),
+                    );
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(egui::RichText::new("Delete").color(error_color).small())
+                        .clicked()
+                    {
+                        git.last_error = git.delete_branch(&name).err();
+                        close = true;
+                    }
+                    if ui.small_button("Cancel").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    {
+                        close = true;
+                    }
+                });
+            }
+        }
+        if close {
+            self.branch_dialog = BranchDialog::None;
+            self.branch_input.clear();
+        }
     }
 
     fn show_stashes(&mut self, ui: &mut egui::Ui, git: &mut GitStatus) {
@@ -660,6 +792,12 @@ impl GitPanel {
         }
         open_path
     }
+}
+
+/// Small frameless icon button with a tooltip, for per-row actions.
+fn icon_button(ui: &mut egui::Ui, icon: &str, tooltip: &str) -> egui::Response {
+    ui.add(egui::Button::new(egui::RichText::new(icon).small()).frame(false))
+        .on_hover_text(tooltip)
 }
 
 fn file_kind_icon(kind: &FileChangeKind) -> (&'static str, egui::Color32) {

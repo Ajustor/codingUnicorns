@@ -171,18 +171,19 @@ impl GitStatus {
     pub fn create_branch(&mut self, name: &str, from_branch: &str) -> Result<(), String> {
         let repo_path = self.repo_path.as_ref().ok_or("No repository")?;
         let repo = git2::Repository::discover(repo_path).map_err(|e| e.message().to_string())?;
-        // Local branch first, then remote-tracking branch (`origin/x`).
-        let (branch, is_remote) = match repo.find_branch(from_branch, git2::BranchType::Local) {
-            Ok(b) => (b, false),
+        // Local branch first, then remote-tracking branch (`origin/x`), then
+        // any revision (`HEAD`, a commit hash from the graph, ...).
+        let (commit, is_remote) = match repo.find_branch(from_branch, git2::BranchType::Local) {
+            Ok(b) => (b.get().peel_to_commit(), false),
             Err(local_err) => match repo.find_branch(from_branch, git2::BranchType::Remote) {
-                Ok(b) => (b, true),
-                Err(_) => return Err(local_err.message().to_string()),
+                Ok(b) => (b.get().peel_to_commit(), true),
+                Err(_) => match repo.revparse_single(from_branch) {
+                    Ok(obj) => (obj.peel_to_commit(), false),
+                    Err(_) => return Err(local_err.message().to_string()),
+                },
             },
         };
-        let commit = branch
-            .get()
-            .peel_to_commit()
-            .map_err(|e| e.message().to_string())?;
+        let commit = commit.map_err(|e| e.message().to_string())?;
         let mut new_branch = repo
             .branch(name, &commit, false)
             .map_err(|e| e.message().to_string())?;
@@ -193,6 +194,43 @@ impl GitStatus {
         }
         self.refresh();
         Ok(())
+    }
+
+    /// Checks a prospective local branch name, so the UI can explain why it
+    /// can't be used before anything is submitted.
+    pub fn validate_branch_name(&self, name: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("Branch name is empty".to_string());
+        }
+        if !git2::Branch::name_is_valid(name).unwrap_or(false) {
+            return Err(format!("'{name}' is not a valid branch name"));
+        }
+        if self.branches.iter().any(|b| !b.is_remote && b.name == name) {
+            return Err(format!("Branch '{name}' already exists"));
+        }
+        Ok(())
+    }
+
+    /// Whether every commit of local branch `name` is reachable from HEAD,
+    /// i.e. deleting it loses nothing (like `git branch -d`'s check).
+    pub fn is_branch_merged(&self, name: &str) -> Result<bool, String> {
+        let repo_path = self.repo_path.as_ref().ok_or("No repository")?;
+        let repo = git2::Repository::discover(repo_path).map_err(|e| e.message().to_string())?;
+        let tip = repo
+            .find_branch(name, git2::BranchType::Local)
+            .map_err(|e| e.message().to_string())?
+            .get()
+            .target()
+            .ok_or("Branch has no target")?;
+        let head = repo
+            .head()
+            .ok()
+            .and_then(|h| h.target())
+            .ok_or("No HEAD commit")?;
+        Ok(head == tip
+            || repo
+                .graph_descendant_of(head, tip)
+                .map_err(|e| e.message().to_string())?)
     }
 
     pub fn rename_branch(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
@@ -689,6 +727,67 @@ mod tests {
         s.rename_branch("main", "trunk").unwrap();
         assert_eq!(s.branch, "trunk");
         assert_eq!(current(&s), ["trunk"]);
+    }
+
+    #[test]
+    fn create_branch_from_head_or_commit_hash() {
+        let r = diverged();
+        let base = r.repo.revparse_single("main~1").unwrap().id();
+        let mut s = r.status();
+        s.create_branch("from-head", "HEAD").unwrap();
+        assert_eq!(
+            r.repo.revparse_single("from-head").unwrap().id(),
+            r.head_oid()
+        );
+        let short = base.to_string()[..7].to_string();
+        s.create_branch("from-hash", &short).unwrap();
+        assert_eq!(r.repo.revparse_single("from-hash").unwrap().id(), base);
+        let b = r
+            .repo
+            .find_branch("from-hash", git2::BranchType::Local)
+            .unwrap();
+        assert!(b.upstream().is_err(), "no upstream for a plain commit");
+    }
+
+    #[test]
+    fn create_branch_from_detached_head() {
+        let r = diverged();
+        let base = r.repo.revparse_single("main~1").unwrap().id();
+        r.repo.set_head_detached(base).unwrap();
+        let mut s = r.status();
+        s.create_branch("rescue", "HEAD").unwrap();
+        assert_eq!(r.repo.revparse_single("rescue").unwrap().id(), base);
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_empty_invalid_and_existing() {
+        let r = diverged();
+        let s = r.status();
+        assert!(s.validate_branch_name("feat/ok-1").is_ok());
+        assert!(s.validate_branch_name("").is_err());
+        assert!(s.validate_branch_name("bad name").is_err());
+        assert!(s.validate_branch_name("a..b").is_err());
+        assert!(s.validate_branch_name("ends.lock").is_err());
+        assert_eq!(
+            s.validate_branch_name("feature").unwrap_err(),
+            "Branch 'feature' already exists"
+        );
+    }
+
+    #[test]
+    fn is_branch_merged_detects_unmerged_commits() {
+        let r = diverged();
+        r.branch("same");
+        let s = r.status();
+        assert!(!s.is_branch_merged("feature").unwrap(), "f1 not on main");
+        assert!(s.is_branch_merged("same").unwrap());
+        assert!(s.is_branch_merged("main").unwrap());
+        assert!(s.is_branch_merged("missing").is_err());
+
+        let mut s = r.status();
+        s.merge_branch("feature").unwrap();
+        s.commit("Merge feature").unwrap();
+        assert!(s.is_branch_merged("feature").unwrap());
     }
 
     #[test]
