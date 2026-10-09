@@ -182,6 +182,17 @@ pub fn parse_index(text: &str) -> Result<RegistryIndex, String> {
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
 
+/// TLS settings of every HTTPS request: certificates are checked against
+/// the operating system's trust store (macOS Keychain, Windows store, Linux
+/// CA bundle) rather than the roots bundled in the binary, so a corporate
+/// proxy or an antivirus inspecting HTTPS (whose root the user's system
+/// trusts) no longer fails with "invalid peer certificate: UnknownIssuer".
+pub fn tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build()
+}
+
 /// Real HTTP fetch via `ureq`, with timeouts and a body size cap.
 pub fn http_fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     let timeout = if limit > MAX_INDEX_BYTES {
@@ -190,6 +201,7 @@ pub fn http_fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
         INDEX_TIMEOUT
     };
     let mut config = ureq::Agent::config_builder()
+        .tls_config(tls_config())
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_global(Some(timeout));
     if is_loopback(url) {
@@ -427,6 +439,20 @@ pub fn start_install_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real HTTPS through the system trust store (network needed).
+    #[test]
+    #[ignore = "network"]
+    fn fetches_over_https_with_the_system_trust_store() {
+        let body = http_fetch(DEFAULT_REGISTRY_URL, MAX_INDEX_BYTES).unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("\"modules\""));
+        let body = http_fetch(
+            "https://ajustor.github.io/codingUnicorns/latest.json",
+            MAX_INDEX_BYTES,
+        )
+        .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("\"version\""));
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
