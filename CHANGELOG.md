@@ -8,6 +8,13 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- The selected entry of the command palette is readable: it is drawn in the theme's contrast color on a solid accent background, instead of accent text on an accent tint.
+- On Linux and macOS, cancelling a debug launch also stops the command its `preLaunchTask` started, instead of leaving it running.
+
 ## [0.10.6] - 2026-10-09
 
 ### Added
