@@ -66,9 +66,9 @@ impl CodingUnicorns {
                         ui.label("Downloading…");
                     }
                     UpdateState::Ready(_) => {
-                        ui.label("Update ready.");
+                        ui.label("Update ready: it installs when you quit.");
                         restart = ui.button("Restart now").clicked();
-                        later = ui.button("When I quit").clicked();
+                        later = ui.button("Later").clicked();
                     }
                     _ => {}
                 });
