@@ -205,7 +205,14 @@ impl RegistryBrowser {
         Some((text, color))
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, registry: &ExtensionRegistry, url: &str) {
+    /// Draw the registry. Returns the id of an installed module whose
+    /// *Uninstall* button was clicked.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        registry: &ExtensionRegistry,
+        url: &str,
+    ) -> Option<String> {
         if url.trim().is_empty() {
             ui.label(
                 egui::RichText::new(
@@ -215,7 +222,7 @@ impl RegistryBrowser {
                 .size(11.0)
                 .color(egui::Color32::GRAY),
             );
-            return;
+            return None;
         }
 
         let loading = self.state == IndexState::Loading;
@@ -277,11 +284,12 @@ impl RegistryBrowser {
             }
         });
 
-        let Some(index) = index else { return };
+        let index = index?;
         ui.add_space(4.0);
 
         let query = self.search.to_lowercase();
         let mut requested: Option<(RegistryModule, Vec<String>)> = None;
+        let mut uninstall: Option<String> = None;
         let mut any = false;
         for module in index.modules.iter().filter(|m| m.matches(&query)) {
             any = true;
@@ -350,6 +358,14 @@ impl RegistryBrowser {
                                 false
                             }
                         };
+                        if installed.is_some()
+                            && ui
+                                .add(uninstall_button())
+                                .on_hover_text("Uninstall this module")
+                                .clicked()
+                        {
+                            uninstall = Some(module.id.clone());
+                        }
                         if clicked {
                             let langs = installed
                                 .map(|e| e.manifest.capabilities.languages.clone())
@@ -402,7 +418,18 @@ impl RegistryBrowser {
         if let Some((module, langs)) = requested {
             self.request_install(module, langs);
         }
+        uninstall
     }
+}
+
+/// Red *Uninstall* button shared by the registry and the installed list.
+pub(crate) fn uninstall_button() -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(format!("{} Uninstall", egui_phosphor::regular::TRASH))
+            .small()
+            .color(egui::Color32::WHITE),
+    )
+    .fill(egui::Color32::from_rgb(170, 50, 50))
 }
 
 #[cfg(test)]
@@ -469,5 +496,73 @@ mod tests {
         assert!(!b.poll(&mut reg, "  ", &ctx));
         assert_eq!(b.state, IndexState::Idle);
         assert!(b.index_rx.is_none(), "no fetch without a URL");
+    }
+
+    #[test]
+    fn installed_modules_offer_uninstall() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a.inst");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.toml"),
+            "[extension]
+id = \"a.inst\"
+name = \"N\"
+version = \"1.0.0\"
+description = \"\"
+",
+        )
+        .unwrap();
+        let mut reg = ExtensionRegistry::new_in(tmp.path().to_path_buf());
+        reg.load_installed();
+        let mut index = remote_registry::parse_index(
+            r#"{"schema":1,"modules":[{"id":"a.inst","dir":"d","name":"N","version":"1.0.0"},
+               {"id":"a.other","dir":"d","name":"O","version":"1.0.0"}]}"#,
+        )
+        .unwrap();
+        index.modules.iter_mut().for_each(|m| m.assets.clear());
+        reg.remote_index = Some(index);
+        let mut b = RegistryBrowser::new();
+        b.state = IndexState::Loaded;
+        b.loaded_url = "u".into();
+
+        let ctx = egui::Context::default();
+        let label = format!("{} Uninstall", egui_phosphor::regular::TRASH);
+        let mut frame = |events: Vec<egui::Event>| {
+            let mut clicked = None;
+            let out = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        clicked = b.show(ui, &reg, "u");
+                    });
+                },
+            );
+            (out, clicked)
+        };
+        let (out, _) = frame(vec![]);
+        let buttons: Vec<egui::Pos2> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    Some(t.pos + t.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(buttons.len(), 1, "only the installed module");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: buttons[0],
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(buttons[0]), press(true)]);
+        let (_, clicked) = frame(vec![press(false)]);
+        assert_eq!(clicked.as_deref(), Some("a.inst"));
     }
 }

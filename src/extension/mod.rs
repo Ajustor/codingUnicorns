@@ -7,6 +7,7 @@ pub mod registry_ui;
 pub mod remote_registry;
 pub mod template;
 pub mod ui;
+pub mod ui_host;
 
 pub use manifest::ExtensionManifest;
 pub use registry::ExtensionRegistry;

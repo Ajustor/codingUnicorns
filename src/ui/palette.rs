@@ -499,6 +499,11 @@ impl CommandPalette {
                         ui.label(egui::RichText::new(msg).color(egui::Color32::GRAY));
                     }
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        // Selected row: solid accent with its contrasting text
+                        // (the default is accent text on a translucent accent).
+                        let visuals = ui.visuals_mut();
+                        visuals.selection.bg_fill = palette.accent;
+                        visuals.selection.stroke.color = palette.on_accent;
                         for (i, entry) in self.entries.clone().iter().enumerate() {
                             let is_selected = i == sel;
                             match entry {
@@ -533,9 +538,14 @@ impl CommandPalette {
                                             format!("    {}", cmd.shortcut())
                                         }
                                     );
+                                    let color = if is_selected {
+                                        palette.on_accent
+                                    } else {
+                                        palette.accent
+                                    };
                                     let resp = ui.selectable_label(
                                         is_selected,
-                                        egui::RichText::new(label).color(palette.accent),
+                                        egui::RichText::new(label).color(color),
                                     );
                                     if is_selected {
                                         resp.scroll_to_me(None);
@@ -1088,6 +1098,33 @@ mod tests {
         let (_, cmd) = h.frame(vec![press(false)]);
         assert_eq!(cmd, Some(PaletteCommand::RestartLsp));
         assert!(!h.p.is_open());
+    }
+
+    #[test]
+    fn selected_command_is_drawn_in_the_accent_contrast_color() {
+        let palette =
+            crate::ui::theme::Palette::from_theme(&crate::config::Config::default().theme);
+        let mut h = Harness::new(&[]);
+        h.query(">");
+        let mut ws = None;
+        let Harness { ctx, p, tree } = &mut h;
+        let out = ctx.run(RawInput::default(), |ctx| {
+            p.show(ctx, tree, &mut ws, palette);
+        });
+        // Colors of the command rows' text, in drawing order.
+        let colors: Vec<egui::Color32> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with('⚡') => {
+                    Some(t.galley.job.sections[0].format.color)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(colors.len() > 1, "{colors:?}");
+        assert_eq!(colors[0], palette.on_accent, "selected row");
+        assert!(colors[1..].iter().all(|c| *c == palette.accent));
     }
 
     #[test]

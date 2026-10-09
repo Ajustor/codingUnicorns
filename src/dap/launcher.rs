@@ -164,6 +164,10 @@ fn run_task(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Its own process group, so cancelling also kills what the task started
+    // (`sh -c` runs its command as a child).
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("task `{}` could not start: {e}", task.label))?;
@@ -213,6 +217,15 @@ fn kill_tree(child: &mut std::process::Child) {
         let _ = Command::new("taskkill")
             .no_window()
             .args(["/F", "/T", "/PID", &child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // The task leads its process group (see `run_task`): kill the group.
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

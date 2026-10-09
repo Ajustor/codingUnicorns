@@ -129,12 +129,32 @@ impl PluginManager {
     pub fn lsp_server_for_ext(&self, ext: &str) -> Option<(String, Vec<String>)> {
         for plugin in &self.plugins {
             if plugin.file_extensions().contains(&ext) {
-                if let Some(cmd) = plugin.lsp_server_command() {
+                if let Some(cmd) = plugin.lsp_server_command_for(ext) {
                     return Some(cmd);
                 }
             }
         }
         None
+    }
+}
+
+impl PluginManager {
+    /// Panels of every loaded plugin, in load order.
+    pub fn ui_panels(&self) -> Vec<crate::extension::manifest::PanelSpec> {
+        self.plugins.iter().flat_map(|p| p.ui_panels()).collect()
+    }
+
+    /// JSON view of `panel_id`, from the plugin declaring it.
+    pub fn ui_view(&self, panel_id: &str) -> Option<String> {
+        self.plugins.iter().find_map(|p| p.ui_view(panel_id))
+    }
+
+    /// Deliver an event to the plugin declaring `panel_id`.
+    pub fn ui_event(&self, panel_id: &str, event: &str) -> Option<String> {
+        self.plugins
+            .iter()
+            .find(|p| p.ui_panels().iter().any(|s| s.id == panel_id))
+            .and_then(|p| p.ui_event(panel_id, event))
     }
 }
 
