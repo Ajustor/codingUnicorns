@@ -773,13 +773,22 @@ fn tempdir_for_clone(repo_url: &str) -> anyhow::Result<PathBuf> {
 /// On Windows, scripts like `npm`, `pip3`, `go` are batch files (.cmd/.bat)
 /// and need to be invoked through `cmd /C`.
 fn shell_command(program: &str) -> std::process::Command {
-    if cfg!(target_os = "windows") {
+    let mut cmd = if cfg!(target_os = "windows") {
         let mut cmd = std::process::Command::new("cmd");
         cmd.args(["/C", program]).no_window();
         cmd
     } else {
         std::process::Command::new(program)
+    };
+    if program == "npm" {
+        // Node trusts only its bundled certificates: behind a proxy or an
+        // antivirus that re-signs HTTPS, `npm install` fails with
+        // UNABLE_TO_GET_ISSUER_CERT_LOCALLY. Node 22.15+ / 23.8+ use the
+        // system's trust store with this; older versions ignore it. (pip
+        // 24.2+, cargo, go and dotnet already use the system's certificates.)
+        cmd.env("NODE_USE_SYSTEM_CA", "1");
     }
+    cmd
 }
 
 fn install_deps(
@@ -1543,6 +1552,20 @@ mod tests {
         assert!(errs.is_empty());
         assert!(steps.is_empty());
         assert!(uninstall_deps(&Dependencies::default()).is_empty());
+    }
+
+    #[test]
+    fn npm_uses_the_system_certificates() {
+        let env = |c: &std::process::Command| {
+            c.get_envs()
+                .find(|(k, _)| *k == "NODE_USE_SYSTEM_CA")
+                .and_then(|(_, v)| v.map(|v| v.to_os_string()))
+        };
+        assert_eq!(
+            env(&shell_command("npm")).as_deref(),
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert!(env(&shell_command("pip3")).is_none());
     }
 
     #[test]

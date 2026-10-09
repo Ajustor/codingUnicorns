@@ -261,10 +261,16 @@ impl Updater {
                     Ok(staged) => {
                         self.staged_msi = staged;
                         self.state = UpdateState::Ready(info);
+                        // A downloaded MSI is installed when the app quits, however
+                        // it is closed: before, only "Restart now" / "When I quit"
+                        // scheduled it, and closing the window left it unused.
+                        self.schedule_on_quit();
+                        log_step(&format!("ready, exit action: {:?}", self.exit_action));
                         Some(UpdateEvent::Ready)
                     }
                     Err(e) => {
                         log::warn!("update install failed: {e}");
+                        log_step(&format!("download failed: {e}"));
                         self.state = UpdateState::Failed(e.clone());
                         // Installs are always user-initiated, so always report.
                         Some(UpdateEvent::Error(e))
@@ -277,6 +283,7 @@ impl Updater {
 
 /// Apply `action` as the app shuts down. `workspace` is reopened on relaunch.
 pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>) {
+    log_step(&format!("on exit: {action:?}"));
     let result = match action {
         ExitAction::Relaunch => std::env::current_exe().and_then(|exe| {
             let mut cmd = std::process::Command::new(exe);
@@ -293,6 +300,8 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
             .arg("/i")
             .arg(msi)
             .arg("/passive")
+            .arg("/l*v")
+            .arg(msi_log_path(msi))
             .spawn()
             .map(|_| ()),
         // The app is exiting, so a detached PowerShell waits for msiexec and then starts
@@ -309,8 +318,45 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
                 .map(|_| ())
         }),
     };
-    if let Err(e) = result {
-        log::error!("failed to apply update on exit: {e}");
+    match result {
+        Ok(()) => log_step("on exit: started"),
+        Err(e) => {
+            log::error!("failed to apply update on exit: {e}");
+            log_step(&format!("on exit: failed to start: {e}"));
+        }
+    }
+}
+
+/// Folder the update is downloaded to (with `update.log` and the
+/// installer's `install.log`).
+fn update_dir() -> PathBuf {
+    std::env::temp_dir().join("coding-unicorns-update")
+}
+
+/// msiexec's verbose log, next to the staged MSI.
+fn msi_log_path(msi: &std::path::Path) -> PathBuf {
+    msi.with_file_name("install.log")
+}
+
+/// Append a step of the update to `update.log`: the app has no console on
+/// Windows, so this is what tells why an update did not apply.
+fn log_step(msg: &str) {
+    use std::io::Write as _;
+    if cfg!(test) {
+        return; // keep the user's log free of test runs
+    }
+    let dir = update_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("update.log"))
+    {
+        let _ = writeln!(f, "[{secs}] v{} {msg}", Updater::current_version());
     }
 }
 
@@ -335,10 +381,11 @@ fn msi_relaunch_script(
         None => format!(" -ArgumentList '{new_window}'"),
     };
     format!(
-        "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i',{msi},'/passive' -Wait -PassThru\n\
+        "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i',{msi},'/passive','/l*v',{log} -Wait -PassThru\n\
          # 3010: success, reboot required\n\
          if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {{ Start-Process -FilePath {exe}{relaunch_args} }}\n",
         msi = arg(msi),
+        log = arg(&msi_log_path(msi)),
         exe = literal(exe),
     )
 }
@@ -365,7 +412,12 @@ fn encode_powershell_command(script: &str) -> String {
 }
 
 fn http_get(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
-    ureq::get(url)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::extension::remote_registry::tls_config())
+        .build()
+        .into();
+    agent
+        .get(url)
         .header("User-Agent", USER_AGENT)
         .call()
         .map_err(|e| format!("request to {url} failed: {e}"))
@@ -455,8 +507,7 @@ fn download_and_apply(info: &ReleaseInfo) -> Result<Option<PathBuf>, String> {
         .limit(MAX_ASSET_BYTES)
         .read_to_vec()
         .map_err(|e| format!("downloading {}: {e}", info.asset.name))?;
-    let dir = std::env::temp_dir().join("coding-unicorns-update");
-    stage_and_apply(info, &bytes, &dir)
+    stage_and_apply(info, &bytes, &update_dir())
 }
 
 /// Verify `bytes`, write them into `dir`, then stage (MSI) or self-replace (binary).
@@ -892,6 +943,10 @@ mod tests {
             u.staged_msi.as_deref(),
             Some(std::path::Path::new("setup.msi"))
         );
+        // Installed when the app quits, even if the dialog is never answered.
+        assert!(
+            matches!(&u.exit_action, Some(ExitAction::RunMsi(p)) if p == &PathBuf::from("setup.msi"))
+        );
     }
 
     #[test]
@@ -962,8 +1017,16 @@ mod tests {
             std::path::Path::new(r"C:\Program Files\Coding Unicorns\cu.exe"),
             Some(std::path::Path::new(r"C:\dev\it's mine")),
         );
+        // `\` only separates paths on Windows, where this runs.
+        let log = msi_log_path(std::path::Path::new(r"C:\Temp\cu.msi"));
+        if cfg!(windows) {
+            assert_eq!(log, std::path::Path::new(r"C:\Temp\install.log"));
+        }
         assert!(
-            s.contains(r#"-ArgumentList '/i','"C:\Temp\cu.msi"','/passive' -Wait -PassThru"#),
+            s.contains(&format!(
+                r#"-ArgumentList '/i','"C:\Temp\cu.msi"','/passive','/l*v','"{}"' -Wait -PassThru"#,
+                log.display()
+            )),
             "{s}"
         );
         assert!(

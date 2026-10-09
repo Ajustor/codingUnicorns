@@ -8,6 +8,19 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Non publié]
+
+### Nouveautés
+
+- **Update all** est en haut du panneau Extensions, à côté de *Check for updates*, visible sans faire défiler.
+- Les vues des modules peuvent afficher des logs : un élément `log` (chasse fixe, sélectionnable, qui défile jusqu'à la fin).
+- Le module **Docker** (0.2.0) ajoute **Containers & logs** : un onglet qui liste les conteneurs avec Start, Stop, Restart, Remove et Shell, et un onglet de logs qui suit le conteneur choisi.
+
+### Corrections
+
+- **Les mises à jour s'installent de nouveau.** Après *Install*, la mise à jour ne s'appliquait que si l'on cliquait *Restart now* ou *When I quit* ; fermer la fenêtre autrement laissait l'installeur téléchargé inutilisé. Elle s'installe désormais dès que l'application se ferme (*Restart now* installe et relance tout de suite). Chaque étape est écrite dans `update.log` du dossier de mise à jour, et le journal de l'installeur dans `install.log`.
+- Les requêtes HTTPS (registre des modules, téléchargements, mises à jour) font confiance aux certificats du système. Derrière un proxy d'entreprise ou un antivirus qui inspecte le HTTPS, le registre échouait avec « invalid peer certificate: UnknownIssuer ». Les installations de serveurs de langage via npm utilisent aussi les certificats du système (Node 22.15+ / 23.8+) ; git, pip, cargo, go et dotnet le faisaient déjà.
+
 ## [0.10.7] - 2026-10-09
 
 ### Nouveautés

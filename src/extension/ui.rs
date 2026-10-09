@@ -122,6 +122,51 @@ impl ExtensionsPanel {
         }
     }
 
+    /// *Check for updates*, and when modules have a newer version, their
+    /// count and *Update all*.
+    fn show_updates_bar(&mut self, ui: &mut egui::Ui, registry: &mut ExtensionRegistry) {
+        ui.horizontal_wrapped(|ui| {
+            if ui.small_button("⟳ Check for updates").clicked() {
+                registry.check_updates();
+            }
+            let pending: Vec<&InstalledExtension> = registry
+                .installed
+                .iter()
+                .filter(|e| e.update_available.is_some())
+                .collect();
+            if pending.is_empty() {
+                return;
+            }
+            ui.label(
+                egui::RichText::new(format!("{} update(s) available", pending.len()))
+                    .small()
+                    .color(egui::Color32::from_rgb(255, 200, 60)),
+            );
+            let startable: Vec<&InstalledExtension> = pending
+                .into_iter()
+                .filter(|e| !self.is_updating(&e.manifest.extension.id))
+                .collect();
+            let btn = ui.add_enabled(
+                !startable.is_empty(),
+                egui::Button::new(
+                    egui::RichText::new("⬆ Update all")
+                        .small()
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(egui::Color32::from_rgb(0, 120, 212)),
+            );
+            if btn.clicked() {
+                for ext in startable {
+                    self.start_update(
+                        ext,
+                        registry.remote_index.as_ref(),
+                        &registry.extensions_dir,
+                    );
+                }
+            }
+        });
+    }
+
     /// True while `id` is being updated (from its source or the registry).
     fn is_updating(&self, id: &str) -> bool {
         self.update_jobs.contains_key(id) || self.registry_browser.is_busy(id)
@@ -393,6 +438,10 @@ impl ExtensionsPanel {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.set_max_width(max_w);
 
+            // Updates, at the top so they are seen without scrolling.
+            self.show_updates_bar(ui, registry);
+            ui.add_space(4.0);
+
             // Search bar
             ui.horizontal(|ui| {
                 ui.label("🔍");
@@ -424,48 +473,6 @@ impl ExtensionsPanel {
             egui::CollapsingHeader::new("INSTALLED")
                 .default_open(true)
                 .show(ui, |ui| {
-                // "Check for updates" button
-                ui.horizontal(|ui| {
-                    if ui.small_button("⟳ Check for updates").clicked() {
-                        registry.check_updates();
-                    }
-                    let update_count = registry.installed.iter()
-                        .filter(|e| e.update_available.is_some())
-                        .count();
-                    if update_count > 0 {
-                        ui.label(
-                            egui::RichText::new(format!("{update_count} update(s) available"))
-                                .small()
-                                .color(egui::Color32::from_rgb(255, 200, 60)),
-                        );
-                        let pending: Vec<&InstalledExtension> = registry
-                            .installed
-                            .iter()
-                            .filter(|e| {
-                                e.update_available.is_some()
-                                    && !self.is_updating(&e.manifest.extension.id)
-                            })
-                            .collect();
-                        let btn = ui.add_enabled(
-                            !pending.is_empty(),
-                            egui::Button::new(
-                                egui::RichText::new("⬆ Update all")
-                                    .small()
-                                    .color(egui::Color32::WHITE),
-                            )
-                            .fill(egui::Color32::from_rgb(0, 120, 212)),
-                        );
-                        if btn.clicked() {
-                            for ext in pending {
-                                self.start_update(
-                                    ext,
-                                    registry.remote_index.as_ref(),
-                                    &registry.extensions_dir,
-                                );
-                            }
-                        }
-                    }
-                });
                 ui.add_space(4.0);
                 let query = self.search_query.to_lowercase();
                 let mut to_uninstall: Option<UninstallPrompt> = None;
