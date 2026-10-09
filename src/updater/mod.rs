@@ -1017,10 +1017,16 @@ mod tests {
             std::path::Path::new(r"C:\Program Files\Coding Unicorns\cu.exe"),
             Some(std::path::Path::new(r"C:\dev\it's mine")),
         );
+        // `\` only separates paths on Windows, where this runs.
+        let log = msi_log_path(std::path::Path::new(r"C:\Temp\cu.msi"));
+        if cfg!(windows) {
+            assert_eq!(log, std::path::Path::new(r"C:\Temp\install.log"));
+        }
         assert!(
-            s.contains(
-                r#"-ArgumentList '/i','"C:\Temp\cu.msi"','/passive','/l*v','"C:\Temp\install.log"' -Wait -PassThru"#
-            ),
+            s.contains(&format!(
+                r#"-ArgumentList '/i','"C:\Temp\cu.msi"','/passive','/l*v','"{}"' -Wait -PassThru"#,
+                log.display()
+            )),
             "{s}"
         );
         assert!(
