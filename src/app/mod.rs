@@ -105,6 +105,8 @@ pub struct CodingUnicorns {
     last_plugin_input: Option<PluginInputKey>,
     pub extension_registry: crate::extension::registry::ExtensionRegistry,
     pub extensions_panel: crate::extension::ui::ExtensionsPanel,
+    /// Renders the panels and pages of extension modules.
+    pub ext_ui: crate::extension::ui_host::UiHost,
     /// Whether the "unsaved files" quit dialog is showing.
     pub show_close_warning: bool,
     /// Set to true after user confirms quitting — lets the next close go through.
@@ -205,11 +207,7 @@ impl CodingUnicorns {
         // Load installed FFI language modules into the plugin manager.
         for ext in &extension_registry.installed {
             if let Some(lib_path) = &ext.lib_path {
-                let lsp_server = ext.manifest.capabilities.lsp_server.clone();
-                let lsp_args = ext.manifest.capabilities.lsp_args.clone();
-                match crate::extension::ffi_plugin::FfiLangPlugin::load(
-                    lib_path, lsp_server, lsp_args,
-                ) {
+                match crate::extension::ffi_plugin::FfiLangPlugin::load(lib_path, &ext.manifest) {
                     Ok(plugin) => plugin_manager.register(Box::new(plugin)),
                     Err(e) => eprintln!(
                         "Failed to load extension {}: {e}",
@@ -311,6 +309,7 @@ impl CodingUnicorns {
             last_plugin_input: None,
             extension_registry,
             extensions_panel: crate::extension::ui::ExtensionsPanel::new(),
+            ext_ui: crate::extension::ui_host::UiHost::new(),
             show_close_warning: false,
             confirmed_close: false,
             close_tab_id_pending: None,
@@ -429,6 +428,56 @@ impl CodingUnicorns {
             message: message.into(),
             born: std::time::Instant::now(),
         });
+    }
+
+    /// Run what extension module panels asked for (see `extension::ui_host`).
+    fn run_extension_actions(&mut self, ctx: &egui::Context) {
+        use crate::extension::manifest::PanelLocation;
+        use crate::extension::ui_host::Action;
+        for action in self.ext_ui.take_actions() {
+            match action {
+                Action::Toast { text } => self.toast(text),
+                Action::Terminal { command } => {
+                    let mut term = crate::terminal::Terminal::new(&self.config.shell);
+                    // `\r` is Enter for every shell (a bare `\n` does not submit
+                    // in PowerShell).
+                    term.send_input(&format!("{command}\r"));
+                    self.terminals.push(term);
+                    self.active_terminal = self.terminals.len() - 1;
+                    self.show_terminal = true;
+                    if self.terminal_height < 150.0 {
+                        self.terminal_height = 250.0;
+                    }
+                }
+                Action::OpenPanel { panel } => {
+                    let spec = self
+                        .plugin_manager
+                        .ui_panels()
+                        .into_iter()
+                        .find(|p| p.id == panel);
+                    match spec {
+                        Some(p) if p.location == PanelLocation::Page => {
+                            self.tab_manager.open_page(&p.id, &p.title);
+                        }
+                        Some(p) => {
+                            self.show_sidebar = true;
+                            self.sidebar_tab = crate::ui::layout::SidebarTab::Module(p.id);
+                        }
+                        None => log::warn!("open_panel: unknown panel {panel}"),
+                    }
+                }
+                Action::OpenUrl { url } => ctx.open_url(egui::OpenUrl::new_tab(url)),
+                Action::OpenFile { path } => {
+                    let path = PathBuf::from(path);
+                    let path = match &self.workspace_path {
+                        Some(ws) if path.is_relative() => ws.join(path),
+                        _ => path,
+                    };
+                    self.open_file(path);
+                }
+                Action::Unknown => {}
+            }
+        }
     }
 }
 
@@ -1092,6 +1141,7 @@ impl eframe::App for CodingUnicorns {
             ctx.request_repaint_after(delay);
         }
         crate::ui::layout::render(self, ctx);
+        self.run_extension_actions(ctx);
         self.apply_gutter_breakpoint_clicks();
         self.tick_session();
 
@@ -1130,8 +1180,12 @@ impl eframe::App for CodingUnicorns {
                 });
             }
             // Now safe to delete the files.
-            if let Err(e) = self.extension_registry.uninstall(&id) {
-                log::error!("Uninstall failed: {e}");
+            match self.extension_registry.uninstall(&id) {
+                Ok(()) => self.toast(format!("Uninstalled {id}")),
+                Err(e) => {
+                    log::error!("Uninstall failed: {e}");
+                    self.toast(format!("Could not uninstall {id}: {e}"));
+                }
             }
             self.extensions_panel.plugins_changed = true;
         }
@@ -1151,16 +1205,28 @@ impl eframe::App for CodingUnicorns {
             self.extensions_panel.plugins_changed = false;
             self.extension_registry.load_installed();
             self.extension_registry.publish_file_names();
+            self.ext_ui.reset();
             // Re-register all installed FFI language plugins.
             for ext in &self.extension_registry.installed {
                 if let Some(lib_path) = &ext.lib_path {
-                    let lsp_server = ext.manifest.capabilities.lsp_server.clone();
-                    let lsp_args = ext.manifest.capabilities.lsp_args.clone();
-                    if let Ok(plugin) = crate::extension::ffi_plugin::FfiLangPlugin::load(
-                        lib_path, lsp_server, lsp_args,
-                    ) {
+                    if let Ok(plugin) =
+                        crate::extension::ffi_plugin::FfiLangPlugin::load(lib_path, &ext.manifest)
+                    {
                         self.plugin_manager.register(Box::new(plugin));
                     }
+                }
+            }
+            // Drop the views of modules that are gone.
+            let panels: Vec<String> = self
+                .plugin_manager
+                .ui_panels()
+                .into_iter()
+                .map(|p| p.id)
+                .collect();
+            self.tab_manager.retain_pages(&panels);
+            if let crate::ui::layout::SidebarTab::Module(id) = &self.sidebar_tab {
+                if !panels.contains(id) {
+                    self.sidebar_tab = crate::ui::layout::SidebarTab::Extensions;
                 }
             }
             // Ensure the LSP for the currently open file is started with the new plugins.

@@ -10,6 +10,13 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 
 ## [Non publié]
 
+### Nouveautés
+
+- Les modules peuvent ajouter des interfaces à l'IDE : des panneaux latéraux avec leur icône dans la barre d'activité, et des pages ouvertes en onglet (`[[panels]]` dans `manifest.toml`). Le module renvoie des vues JSON (textes, boutons, champs, listes, tableaux…) que l'IDE dessine, reçoit les clics, et peut afficher des notifications, lancer une commande dans un terminal ou ouvrir une page.
+- Le module **Docker** ajoute un panneau **Docker** : liste des images locales, téléchargement, lancement dans un terminal, suppression et nettoyage, avec un tableau complet dans une page.
+- Un module peut désormais utiliser un serveur de langage différent par langage (`[capabilities.lsp_servers.<langage>]`) et reçoit le langage du fichier pour la coloration et le survol (fonctions `*_lang_ffi`). Les modules Dockerfile et Docker Compose ne font plus qu'un module **Docker**.
+- Les boutons **Uninstall** sont plus faciles à trouver : un bouton rouge dans la section *Installed*, désormais ouverte par défaut, et sur les modules installés dans le registre. Un échec de désinstallation est signalé au lieu d'être seulement journalisé.
+
 ### Corrections
 
 - L'entrée sélectionnée de la palette de commandes est lisible : elle s'affiche dans la couleur de contraste du thème sur un fond d'accent plein, au lieu d'un texte couleur accent sur une teinte d'accent.

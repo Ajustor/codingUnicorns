@@ -70,6 +70,28 @@ pub trait Plugin: Send + Sync {
     fn lsp_server_command(&self) -> Option<(String, Vec<String>)> {
         None
     }
+
+    /// LSP server command for files of `lang`, when a plugin's languages use
+    /// different servers. Defaults to [`Plugin::lsp_server_command`].
+    fn lsp_server_command_for(&self, _lang: &str) -> Option<(String, Vec<String>)> {
+        self.lsp_server_command()
+    }
+
+    /// Interfaces (sidebar panels, pages) this plugin draws through
+    /// [`Plugin::ui_view`].
+    fn ui_panels(&self) -> Vec<crate::extension::manifest::PanelSpec> {
+        Vec::new()
+    }
+
+    /// JSON view of `panel_id` (see `crate::extension::ui_host`).
+    fn ui_view(&self, _panel_id: &str) -> Option<String> {
+        None
+    }
+
+    /// Deliver a JSON event of `panel_id`; returns JSON actions for the IDE.
+    fn ui_event(&self, _panel_id: &str, _event: &str) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +133,10 @@ mod tests {
         p.reset_tokenizer();
         assert!(p.file_extensions().is_empty());
         assert!(p.lsp_server_command().is_none());
+        assert!(p.lsp_server_command_for("rs").is_none());
+        assert!(p.ui_panels().is_empty());
+        assert!(p.ui_view("x").is_none());
+        assert!(p.ui_event("x", "{}").is_none());
     }
 
     #[test]

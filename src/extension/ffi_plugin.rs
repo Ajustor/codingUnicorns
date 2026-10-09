@@ -1,8 +1,13 @@
-use std::ffi::{CStr, CString};
+use std::collections::BTreeMap;
+use std::ffi::{c_char, CStr, CString};
 use std::path::Path;
 
+use super::manifest::{ExtensionManifest, PanelSpec};
 use crate::editor::highlight::{Token, TokenKind};
 use crate::plugin::{Plugin, PluginContext, PluginResponse};
+
+type StrFn2 = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_char;
+type StrFn3 = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char) -> *mut c_char;
 
 /// A language plugin loaded from a compiled `.so`/`.dll` extension.
 ///
@@ -15,6 +20,21 @@ pub struct FfiLangPlugin {
     extensions: Vec<String>,
     lsp_server: Option<String>,
     lsp_args: Vec<String>,
+    /// Per-language servers (`[capabilities.lsp_servers]`).
+    lsp_servers: BTreeMap<String, (String, Vec<String>)>,
+    /// Interfaces declared in the manifest (`[[panels]]`).
+    panels: Vec<PanelSpec>,
+    /// `tokenize_line_lang_ffi(lang, line)`: preferred over `tokenize_line_ffi`
+    /// by modules handling several languages.
+    tokenize_line_lang_fn: Option<StrFn2>,
+    /// `tokenize_document_lang_ffi(lang, text)`.
+    tokenize_document_lang_fn: Option<StrFn2>,
+    /// `hover_info_lang_ffi(lang, word, content)`.
+    hover_lang_fn: Option<StrFn3>,
+    /// `ui_view_ffi(panel_id)`: JSON view of a panel.
+    ui_view_fn: Option<unsafe extern "C" fn(*const c_char) -> *mut c_char>,
+    /// `ui_event_ffi(panel_id, event_json)`: JSON actions, or null.
+    ui_event_fn: Option<StrFn2>,
     tokenize_fn: Option<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut std::ffi::c_char>,
     free_fn: Option<unsafe extern "C" fn(*mut std::ffi::c_char)>,
     hover_fn: Option<
@@ -36,13 +56,18 @@ unsafe impl Send for FfiLangPlugin {}
 unsafe impl Sync for FfiLangPlugin {}
 
 impl FfiLangPlugin {
-    /// Load a language extension from `lib_path`.
-    /// `lsp_server` / `lsp_args` come from the extension's `manifest.toml`.
-    pub fn load(
-        lib_path: &Path,
-        lsp_server: Option<String>,
-        lsp_args: Vec<String>,
-    ) -> anyhow::Result<Self> {
+    /// Load a language extension from `lib_path`; language servers and
+    /// panels come from its `manifest`.
+    pub fn load(lib_path: &Path, manifest: &ExtensionManifest) -> anyhow::Result<Self> {
+        let caps = &manifest.capabilities;
+        let lsp_server = caps.lsp_server.clone();
+        let lsp_args = caps.lsp_args.clone();
+        let lsp_servers = caps
+            .lsp_servers
+            .iter()
+            .map(|(lang, s)| (lang.clone(), (s.command.clone(), s.args.clone())))
+            .collect();
+        let panels = manifest.panels.clone();
         unsafe {
             let lib = libloading::Library::new(lib_path)?;
 
@@ -115,12 +140,34 @@ impl FfiLangPlugin {
                 .ok()
                 .map(|s| *s);
 
+            let tokenize_line_lang_fn = lib
+                .get::<StrFn2>(b"tokenize_line_lang_ffi\0")
+                .ok()
+                .map(|s| *s);
+            let tokenize_document_lang_fn = lib
+                .get::<StrFn2>(b"tokenize_document_lang_ffi\0")
+                .ok()
+                .map(|s| *s);
+            let hover_lang_fn = lib.get::<StrFn3>(b"hover_info_lang_ffi\0").ok().map(|s| *s);
+            let ui_view_fn = lib
+                .get::<unsafe extern "C" fn(*const c_char) -> *mut c_char>(b"ui_view_ffi\0")
+                .ok()
+                .map(|s| *s);
+            let ui_event_fn = lib.get::<StrFn2>(b"ui_event_ffi\0").ok().map(|s| *s);
+
             Ok(Self {
                 _lib: lib,
                 language_id,
                 extensions,
                 lsp_server,
                 lsp_args,
+                lsp_servers,
+                panels,
+                tokenize_line_lang_fn,
+                tokenize_document_lang_fn,
+                hover_lang_fn,
+                ui_view_fn,
+                ui_event_fn,
                 tokenize_fn,
                 free_fn,
                 hover_fn,
@@ -166,6 +213,31 @@ impl FfiLangPlugin {
         }
     }
 
+    /// Call a string-returning FFI function with C string `args`; the result
+    /// is copied and released with the module's `free_string`.
+    fn call_str(
+        &self,
+        args: &[&str],
+        f: impl FnOnce(&[*const c_char]) -> *mut c_char,
+    ) -> Option<String> {
+        let free = self.free_fn?;
+        let c_args = args
+            .iter()
+            .map(|a| CString::new(*a))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let ptrs: Vec<*const c_char> = c_args.iter().map(|c| c.as_ptr()).collect();
+        let ptr = f(&ptrs);
+        if ptr.is_null() {
+            return None;
+        }
+        unsafe {
+            let result = CStr::from_ptr(ptr).to_str().ok().map(str::to_string);
+            free(ptr);
+            result
+        }
+    }
+
     fn call_hover(&self, word: &str, content: &str) -> Option<String> {
         let hover = self.hover_fn?;
         let free = self.free_fn?;
@@ -192,7 +264,10 @@ impl Plugin for FfiLangPlugin {
         if !self.extensions.iter().any(|e| e == lang) {
             return None;
         }
-        let json = self.call_tokenize(line)?;
+        let json = match self.tokenize_line_lang_fn {
+            Some(f) => self.call_str(&[lang, line], |a| unsafe { f(a[0], a[1]) })?,
+            None => self.call_tokenize(line)?,
+        };
         parse_token_json(&json)
     }
 
@@ -200,8 +275,10 @@ impl Plugin for FfiLangPlugin {
         if !self.extensions.iter().any(|e| e == lang) {
             return None;
         }
-        let tsx = lang == "tsx" || lang == "jsx";
-        let json = self.call_tokenize_document(text, tsx)?;
+        let json = match self.tokenize_document_lang_fn {
+            Some(f) => self.call_str(&[lang, text], |a| unsafe { f(a[0], a[1]) })?,
+            None => self.call_tokenize_document(text, lang == "tsx" || lang == "jsx")?,
+        };
         parse_document_json(&json)
     }
 
@@ -209,7 +286,32 @@ impl Plugin for FfiLangPlugin {
         if !self.extensions.iter().any(|e| e == lang) {
             return None;
         }
-        self.call_hover(word, file_content)
+        match self.hover_lang_fn {
+            Some(f) => self.call_str(&[lang, word, file_content], |a| unsafe {
+                f(a[0], a[1], a[2])
+            }),
+            None => self.call_hover(word, file_content),
+        }
+    }
+
+    fn ui_panels(&self) -> Vec<PanelSpec> {
+        if self.ui_view_fn.is_some() {
+            self.panels.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn ui_view(&self, panel_id: &str) -> Option<String> {
+        let f = self.ui_view_fn?;
+        self.panels.iter().find(|p| p.id == panel_id)?;
+        self.call_str(&[panel_id], |a| unsafe { f(a[0]) })
+    }
+
+    fn ui_event(&self, panel_id: &str, event: &str) -> Option<String> {
+        let f = self.ui_event_fn?;
+        self.panels.iter().find(|p| p.id == panel_id)?;
+        self.call_str(&[panel_id, event], |a| unsafe { f(a[0], a[1]) })
     }
 
     fn file_extensions(&self) -> &[&str] {
@@ -234,6 +336,13 @@ impl Plugin for FfiLangPlugin {
     fn lsp_server_command(&self) -> Option<(String, Vec<String>)> {
         let server = self.lsp_server.clone()?;
         Some((server, self.lsp_args.clone()))
+    }
+
+    fn lsp_server_command_for(&self, lang: &str) -> Option<(String, Vec<String>)> {
+        match self.lsp_servers.get(lang) {
+            Some(cmd) => Some(cmd.clone()),
+            None => self.lsp_server_command(),
+        }
     }
 
     fn update(&mut self, _ctx: &PluginContext) -> PluginResponse {
@@ -585,6 +694,81 @@ mod tests {
         RESETS.fetch_add(1, Ordering::SeqCst);
     }
 
+    unsafe extern "C" fn ui_view(panel: *const c_char) -> *mut c_char {
+        let p = CStr::from_ptr(panel).to_str().unwrap();
+        CString::new(format!(
+            r#"{{"children":[{{"type":"text","text":"{p}"}}]}}"#
+        ))
+        .unwrap()
+        .into_raw()
+    }
+
+    unsafe extern "C" fn ui_event(panel: *const c_char, ev: *const c_char) -> *mut c_char {
+        let p = CStr::from_ptr(panel).to_str().unwrap();
+        let e = CStr::from_ptr(ev).to_str().unwrap();
+        CString::new(format!("{p}|{e}")).unwrap().into_raw()
+    }
+
+    unsafe extern "C" fn line_lang(lang: *const c_char, line: *const c_char) -> *mut c_char {
+        let l = CStr::from_ptr(lang).to_str().unwrap();
+        let s = CStr::from_ptr(line).to_str().unwrap();
+        CString::new(format!(r#"[{{"text":"{l}:{s}","kind":"string"}}]"#))
+            .unwrap()
+            .into_raw()
+    }
+
+    unsafe extern "C" fn doc_lang(lang: *const c_char, _text: *const c_char) -> *mut c_char {
+        let l = CStr::from_ptr(lang).to_str().unwrap();
+        CString::new(format!(r#"[[{{"text":"{l}","kind":"keyword"}}]]"#))
+            .unwrap()
+            .into_raw()
+    }
+
+    unsafe extern "C" fn hover_lang(
+        lang: *const c_char,
+        word: *const c_char,
+        _content: *const c_char,
+    ) -> *mut c_char {
+        let l = CStr::from_ptr(lang).to_str().unwrap();
+        let w = CStr::from_ptr(word).to_str().unwrap();
+        CString::new(format!("{l}/{w}")).unwrap().into_raw()
+    }
+
+    #[test]
+    fn language_aware_exports_receive_the_language() {
+        let mut p = full_plugin();
+        p.tokenize_line_lang_fn = Some(line_lang);
+        p.tokenize_document_lang_fn = Some(doc_lang);
+        p.hover_lang_fn = Some(hover_lang);
+        assert_eq!(p.tokenize_line("tl", "x").unwrap()[0].text, "tl:x");
+        assert_eq!(p.tokenize_document("tsx", "x").unwrap()[0][0].text, "tsx");
+        assert_eq!(p.hover_info("jsx", "w", "").as_deref(), Some("jsx/w"));
+        assert!(p.tokenize_line("rs", "x").is_none(), "unhandled language");
+    }
+
+    #[test]
+    fn per_language_server_overrides_the_module_server() {
+        let p = full_plugin();
+        assert_eq!(p.lsp_server_command_for("tsx").unwrap().0, "tsx-lsp");
+        assert_eq!(p.lsp_server_command_for("tl").unwrap().0, "tl-lsp");
+        assert!(bare_plugin().lsp_server_command_for("tl").is_none());
+    }
+
+    #[test]
+    fn panels_are_routed_to_the_ui_exports() {
+        let p = full_plugin();
+        assert_eq!(p.ui_panels().len(), 1);
+        assert!(p.ui_view("tl.panel").unwrap().contains("tl.panel"));
+        assert_eq!(p.ui_event("tl.panel", "{}").as_deref(), Some("tl.panel|{}"));
+        assert!(p.ui_view("other").is_none(), "undeclared panel");
+        assert!(p.ui_event("other", "{}").is_none());
+        // Panels declared without the exports are not offered.
+        let mut p = full_plugin();
+        p.ui_view_fn = None;
+        assert!(p.ui_panels().is_empty());
+        assert!(bare_plugin().ui_view("tl.panel").is_none());
+    }
+
     /// A handle to the running test binary — keeps `_lib` valid without a real extension.
     fn this_lib() -> libloading::Library {
         #[cfg(windows)]
@@ -601,6 +785,18 @@ mod tests {
             extensions: vec!["tl".into(), "tsx".into(), "jsx".into()],
             lsp_server: Some("tl-lsp".into()),
             lsp_args: vec!["--stdio".into()],
+            lsp_servers: BTreeMap::from([("tsx".to_string(), ("tsx-lsp".to_string(), vec![]))]),
+            panels: vec![PanelSpec {
+                id: "tl.panel".into(),
+                title: "TL".into(),
+                icon: None,
+                location: Default::default(),
+            }],
+            tokenize_line_lang_fn: None,
+            tokenize_document_lang_fn: None,
+            hover_lang_fn: None,
+            ui_view_fn: Some(ui_view),
+            ui_event_fn: Some(ui_event),
             tokenize_fn: Some(tokenize),
             free_fn: Some(free_string),
             hover_fn: Some(hover),
@@ -617,6 +813,13 @@ mod tests {
             extensions: vec!["tl".into()],
             lsp_server: None,
             lsp_args: vec![],
+            lsp_servers: BTreeMap::new(),
+            panels: vec![],
+            tokenize_line_lang_fn: None,
+            tokenize_document_lang_fn: None,
+            hover_lang_fn: None,
+            ui_view_fn: None,
+            ui_event_fn: None,
             tokenize_fn: None,
             free_fn: None,
             hover_fn: None,
@@ -730,15 +933,67 @@ mod tests {
         assert!(r.status_text.is_none() && r.notifications.is_empty());
     }
 
+    fn test_manifest() -> ExtensionManifest {
+        ExtensionManifest::parse(
+            "[extension]\nid = \"t\"\nname = \"T\"\nversion = \"1.0.0\"\ndescription = \"\"\n",
+        )
+        .unwrap()
+    }
+
+    /// Loads a real module: `CU_E2E_MODULE_DIR` holds its `manifest.toml` and
+    /// library (e.g. writing-unicorns-modules' docker-lang, built in release).
+    #[test]
+    #[ignore = "needs a built module (CU_E2E_MODULE_DIR)"]
+    fn real_module_from_env() {
+        let dir = std::path::PathBuf::from(std::env::var("CU_E2E_MODULE_DIR").unwrap());
+        let manifest =
+            ExtensionManifest::parse(&std::fs::read_to_string(dir.join("manifest.toml")).unwrap())
+                .unwrap();
+        let lib = super::super::registry::find_platform_lib(&dir).expect("module library");
+        let p = FfiLangPlugin::load(&lib, &manifest).unwrap();
+        for lang in &manifest.capabilities.languages {
+            assert!(p.file_extensions().contains(&lang.as_str()), "{lang}");
+            let (cmd, _) = p.lsp_server_command_for(lang).unwrap();
+            println!("{lang}: LSP {cmd}");
+        }
+        // `lang|text`, with `\n` written as two characters.
+        if let Ok(doc) = std::env::var("CU_E2E_DOC") {
+            let (lang, text) = doc.split_once('|').unwrap();
+            let lines = p
+                .tokenize_document(lang, &text.replace("\\n", "\n"))
+                .unwrap();
+            println!("{lang} tokens: {lines:?}");
+        }
+        for panel in p.ui_panels() {
+            let mut view = String::new();
+            // The first view starts the work; later ones show its result.
+            for _ in 0..40 {
+                view = p.ui_view(&panel.id).unwrap();
+                if view.contains("image(s)") || view.contains("\"error\"") {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            let parsed: super::super::ui_host::View = serde_json::from_str(&view).unwrap();
+            let entries = view.matches("\"actions\":[{").count();
+            println!(
+                "{} ({:?}): {} nodes, {entries} entries with actions",
+                panel.id,
+                panel.location,
+                parsed.children.len()
+            );
+        }
+    }
+
     #[test]
     fn load_missing_library_fails() {
         let p = std::env::temp_dir().join(format!("cu-missing-{}.dll", uuid::Uuid::new_v4()));
-        assert!(FfiLangPlugin::load(&p, None, vec![]).is_err());
+        assert!(FfiLangPlugin::load(&p, &test_manifest()).is_err());
     }
 
     #[cfg(windows)]
     #[test]
     fn load_library_without_language_id_fails() {
-        assert!(FfiLangPlugin::load(Path::new("kernel32.dll"), None, vec![]).is_err());
+        assert!(FfiLangPlugin::load(Path::new("kernel32.dll"), &test_manifest()).is_err());
     }
 }
