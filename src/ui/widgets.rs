@@ -66,6 +66,8 @@ pub struct Toast {
 
 const TOAST_TTL_MS: u128 = 2000;
 const TOAST_FADE_MS: u128 = 400;
+/// Longer toasts wrap at this width.
+const TOAST_MAX_WIDTH: f32 = 520.0;
 
 /// Draw active toasts bottom-centre and drop expired ones. Returns true if any remain
 /// (so the caller can request a repaint).
@@ -91,15 +93,21 @@ pub fn render_toasts(
                 } else {
                     255
                 };
+                let color = egui::Color32::from_rgba_unmultiplied(
+                    palette.text.r(),
+                    palette.text.g(),
+                    palette.text.b(),
+                    a,
+                );
+                // Laid out here, at a fixed maximum width: a label would wrap
+                // to the area's remembered width, which stays tiny after a
+                // frame in a small window (e.g. at startup) — a few letters
+                // per line.
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let galley =
+                    ui.fonts(|f| f.layout(t.message.clone(), font, color, TOAST_MAX_WIDTH));
                 popup_frame(palette, spacing).show(ui, |ui| {
-                    ui.label(egui::RichText::new(&t.message).color(
-                        egui::Color32::from_rgba_unmultiplied(
-                            palette.text.r(),
-                            palette.text.g(),
-                            palette.text.b(),
-                            a,
-                        ),
-                    ));
+                    ui.add(egui::Label::new(galley).selectable(false));
                 });
                 ui.add_space(spacing.sm);
             }
@@ -175,6 +183,73 @@ mod tests {
             result = (any, texts(&out));
         }
         result
+    }
+
+    /// Width of each painted toast text after `frames` frames.
+    fn toast_text_widths(toasts: &mut Vec<Toast>, frames: usize) -> Vec<(String, usize, f32)> {
+        // As in the app: its fonts and theme, a large window, side panels.
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::ui::theme::app_fonts());
+        let config = crate::config::Config::default();
+        let mut sizes = Vec::new();
+        for frame in 0..frames {
+            // First frames in a tiny window (minimised / being restored),
+            // then full size.
+            let size = if frame < 3 {
+                egui::vec2(60.0, 1150.0)
+            } else {
+                egui::vec2(2000.0, 1150.0)
+            };
+            let raw = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            let out = ctx.run(raw, |ctx| {
+                let (p, sp) = crate::ui::theme::apply_theme(ctx, &config);
+                egui::SidePanel::left("a")
+                    .exact_width(48.0)
+                    .show(ctx, |_| {});
+                egui::SidePanel::left("b")
+                    .exact_width(180.0)
+                    .show(ctx, |_| {});
+                egui::CentralPanel::default().show(ctx, |_| {});
+                render_toasts(ctx, p, sp, toasts);
+            });
+            sizes = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((
+                        t.galley.text().to_string(),
+                        t.galley.rows.len(),
+                        t.galley.rect.width(),
+                    )),
+                    _ => None,
+                })
+                .collect();
+        }
+        sizes
+    }
+
+    /// The toast area is anchored bottom-centre: wrapping its text to the
+    /// previous frame's width shrank it every frame, down to a few letters
+    /// per line.
+    #[test]
+    fn toasts_keep_their_width() {
+        let long = "Could not uninstall unicorns.docker-lang: the process cannot access the \
+                    file because it is being used by another process (os error 32)";
+        let mut toasts = vec![
+            toast("Coding Unicorns 0.10.8 is up to date", Duration::ZERO),
+            toast(long, Duration::ZERO),
+        ];
+        let sizes = toast_text_widths(&mut toasts, 12);
+        assert_eq!(sizes.len(), 2, "{sizes:?}");
+        assert_eq!(sizes[0].1, 1, "short message on one line: {sizes:?}");
+        assert!(
+            sizes[1].1 <= 3,
+            "long message wraps at a readable width: {sizes:?}"
+        );
+        assert!(sizes[1].2 > 300.0, "{sizes:?}");
     }
 
     #[test]

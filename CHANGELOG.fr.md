@@ -16,6 +16,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - **Le split de l'éditeur s'ouvre de nouveau.** Son seul accès était Ctrl+\, que l'AZERTY et d'autres dispositions tapent avec AltGr (Ctrl+Alt) : il ne fonctionnait jamais. Un bouton de split est désormais à droite de la barre d'onglets (un bouton de fermeture dans le volet droit), et la palette propose *Split Editor: Toggle*.
 - En vue partagée, le volet actif est celui dans lequel on tape : les fichiers ouverts depuis l'explorateur y arrivent. Avant, cliquer dans un éditeur ne le changeait pas, et les fichiers s'ouvraient dans le mauvais volet.
 - Partager l'éditeur sans fichier ouvert l'indique, au lieu d'ouvrir et refermer le split aussitôt.
+- Les notifications (« Checking for updates… », « … is up to date ») et la fenêtre de mise à jour sont lisibles : après les premières images d'une fenêtre encore petite au démarrage, elles gardaient cette largeur et mettaient leur texte à la ligne tous les quelques caractères, dans une colonne étroite au milieu de l'éditeur.
 
 ## [0.10.8] - 2026-10-09
 
