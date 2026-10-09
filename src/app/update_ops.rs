@@ -1,6 +1,9 @@
 use super::CodingUnicorns;
 use crate::updater::{UpdateEvent, UpdateState, Updater};
 
+/// Minimum width of the update dialog.
+const UPDATE_DIALOG_WIDTH: f32 = 380.0;
+
 impl CodingUnicorns {
     /// Poll the background updater and show the update dialog when relevant.
     pub(crate) fn update_updater(&mut self, ctx: &egui::Context) {
@@ -33,6 +36,10 @@ impl CodingUnicorns {
         egui::Window::new("Update available")
             .collapsible(false)
             .resizable(false)
+            // Shown at startup: without a minimum width it keeps the width of
+            // the first frames, when the window may still be tiny, and wraps
+            // its text a few words per line.
+            .min_width(UPDATE_DIALOG_WIDTH)
             .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -40.0])
             .show(ctx, |ui| {
                 ui.label(format!(
