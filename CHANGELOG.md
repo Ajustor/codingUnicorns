@@ -8,7 +8,7 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.6] - 2026-10-09
 
 ### Added
 
