@@ -131,6 +131,14 @@ pub enum Node {
         #[serde(default)]
         empty: Option<String>,
     },
+    /// Monospace text that can be selected and copied, scrolled to its end
+    /// (command output, logs).
+    Log {
+        text: String,
+        /// Height of the scrolled area in points (default 360).
+        #[serde(default)]
+        height: Option<f32>,
+    },
     Separator,
     Spinner {
         #[serde(default)]
@@ -587,6 +595,24 @@ fn draw_node(ui: &mut egui::Ui, node: &Node, d: &mut Draw) {
                         });
                 });
         }
+        Node::Log { text, height } => {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                egui::ScrollArea::both()
+                    .id_salt("ext-ui-log")
+                    .max_height(height.unwrap_or(360.0))
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        // A `&str` buffer: selectable and copyable, not editable.
+                        ui.add(
+                            egui::TextEdit::multiline(&mut text.as_str())
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .frame(false),
+                        );
+                    });
+            });
+        }
         Node::Separator => {
             ui.separator();
         }
@@ -778,7 +804,8 @@ mod tests {
         {"type":"list","items":[
             {"id":"sha1","title":"redis:7","subtitle":"40 MB",
              "actions":[{"id":"rm","label":"Remove","style":"danger","confirm":"Remove redis:7?"}]}]},
-        {"type":"table","columns":["Repo","Size"],"rows":[{"id":"r1","cells":["alpine","8 MB"]}]}
+        {"type":"table","columns":["Repo","Size"],"rows":[{"id":"r1","cells":["alpine","8 MB"]}]},
+        {"type":"log","text":"line one\nline two"}
     ]}"#;
 
     #[test]
@@ -788,8 +815,17 @@ mod tests {
         let out = h.frame(&backend, vec![]);
         let t = texts(&out);
         for expected in [
-            "Images", "2 images", "nginx", "Pull", "redis:7", "40 MB", "Remove", "alpine", "8 MB",
+            "Images",
+            "2 images",
+            "nginx",
+            "Pull",
+            "redis:7",
+            "40 MB",
+            "Remove",
+            "alpine",
+            "8 MB",
             "Repo",
+            "line one\nline two",
         ] {
             assert!(t.iter().any(|x| x == expected), "{expected} in {t:?}");
         }
