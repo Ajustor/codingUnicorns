@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Non publié]
+
+### Corrections
+
+- La page des réglages s'ouvre instantanément : lister les shells disponibles ne lance plus un processus `where` / `which` par shell (environ 100 ms chacun, davantage avec un antivirus), ce qui figeait la fenêtre à la première ouverture de la page. Les nouveaux terminaux démarrent aussi plus vite pour la même raison.
+
 ## [0.10.8] - 2026-10-09
 
 ### Nouveautés

@@ -146,34 +146,87 @@ fn shell_exists(path: &str) -> bool {
     if p.is_absolute() {
         return p.exists();
     }
-    // Relative name (e.g. "pwsh.exe", "bash.exe"): check PATH
-    #[cfg(windows)]
-    {
-        use crate::process_ext::CommandExt as _;
-        std::process::Command::new("where")
-            .no_window()
-            .arg(path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("which")
-            .arg(path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
+    // Relative name (e.g. "pwsh.exe", "bash.exe"): look it up in PATH here.
+    // Spawning `where` / `which` took ~100 ms per shell, which froze the
+    // Settings page the first time it opened.
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    find_in_dirs(std::env::split_paths(&path_var), path)
+}
+
+/// Whether `name` is a file in one of `dirs` (executable on Unix).
+fn find_in_dirs(dirs: impl IntoIterator<Item = std::path::PathBuf>, name: &str) -> bool {
+    dirs.into_iter().any(|dir| {
+        // `symlink_metadata`: Windows app execution aliases (e.g. `pwsh.exe`
+        // from the Store / winget in WindowsApps) can't be opened by
+        // `metadata`, but `where` finds them and they do run.
+        let Ok(meta) = std::fs::symlink_metadata(dir.join(name)) else {
+            return false;
+        };
+        if meta.is_dir() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            // Follow symlinks for the mode (`/bin/sh` is often a link).
+            let mode = std::fs::metadata(dir.join(name))
+                .map(|m| m.permissions().mode())
+                .unwrap_or(0);
+            mode & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_in_dirs_looks_for_the_file_in_each_directory() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let shell = b.path().join("myshell.exe");
+        std::fs::write(&shell, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::create_dir(a.path().join("dir.exe")).unwrap();
+        let dirs = || vec![a.path().to_path_buf(), b.path().to_path_buf()];
+        assert!(find_in_dirs(dirs(), "myshell.exe"));
+        assert!(!find_in_dirs(dirs(), "missing.exe"));
+        assert!(
+            !find_in_dirs(dirs(), "dir.exe"),
+            "a directory is not a shell"
+        );
+        assert!(!find_in_dirs(Vec::new(), "myshell.exe"));
+    }
+
+    #[test]
+    #[ignore = "timing, run by hand"]
+    fn list_available_shells_timing() {
+        let t = std::time::Instant::now();
+        let shells = list_available_shells();
+        println!("{shells:?} in {:?}", t.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_in_dirs_needs_the_executable_bit_on_unix() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("sh");
+        std::fs::write(&f, "").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!find_in_dirs(vec![d.path().to_path_buf()], "sh"));
+    }
 
     #[test]
     fn user_powershell_gets_standard_args() {

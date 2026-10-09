@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- The Settings page opens instantly: listing the available shells no longer starts a `where` / `which` process per shell (about 100 ms each, more with an antivirus), which froze the window the first time the page opened. New terminals start faster for the same reason.
+
 ## [0.10.8] - 2026-10-09
 
 ### Added
