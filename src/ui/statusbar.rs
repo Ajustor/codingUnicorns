@@ -71,7 +71,7 @@ impl StatusBar {
                     );
                     ui.separator();
 
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("txt");
+                    let ext = crate::language::language_key(path).unwrap_or_else(|| "txt".into());
                     ui.label(
                         egui::RichText::new(ext.to_uppercase())
                             .color(palette.on_accent)
@@ -260,12 +260,15 @@ mod tests {
     #[test]
     fn modified_marker_tabs_and_missing_extension() {
         let mut editor = Editor::new();
-        editor.current_path = Some(PathBuf::from("Makefile"));
+        editor.current_path = Some(PathBuf::from("README"));
         editor.is_modified = true;
         editor.detected_indent_spaces = false;
         let t = rendered(&editor, "main", LspStatus::Inactive);
-        assert!(has(&t, "Makefile ●"), "{t:?}");
+        assert!(has(&t, "README ●"), "{t:?}");
         assert!(has(&t, "TXT"), "extension defaults to txt");
+        editor.current_path = Some(PathBuf::from("Dockerfile"));
+        let t = rendered(&editor, "main", LspStatus::Inactive);
+        assert!(has(&t, "DOCKERFILE"), "named files show their language");
         assert!(has(&t, "Tabs"));
     }
 

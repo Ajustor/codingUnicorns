@@ -78,17 +78,9 @@ impl Highlighter {
     }
 
     pub fn set_language_from_filename(&mut self, filename: &str) {
-        let lower = filename.to_lowercase();
-        if lower == "dockerfile" || lower.starts_with("dockerfile.") {
-            self.set_language("dockerfile");
-            return;
-        }
-        if lower == "makefile" || lower == "gnumakefile" {
-            self.set_language("makefile");
-            return;
-        }
-        let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
-        self.set_language(&ext);
+        let lang = crate::language::language_key(std::path::Path::new(filename))
+            .unwrap_or_else(|| filename.rsplit('.').next().unwrap_or("").to_string());
+        self.set_language(&lang);
     }
 
     /// Force the token cache to be rebuilt on the next frame.

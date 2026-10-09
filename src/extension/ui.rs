@@ -1,6 +1,7 @@
 use super::installer::{InstallJob, InstallStatus, WorkspaceStatus};
 use super::manifest::SourceKind;
-use super::registry::ExtensionRegistry;
+use super::registry::{ExtensionRegistry, InstalledExtension};
+use super::remote_registry::RegistryIndex;
 
 /// Pending uninstall awaiting the user's choice in the confirmation dialog.
 struct UninstallPrompt {
@@ -108,6 +109,38 @@ impl ExtensionsPanel {
             picker_source_path: String::new(),
             picker_is_zip: false,
             registry_browser: super::registry_ui::RegistryBrowser::new(),
+        }
+    }
+
+    /// True while `id` is being updated (from its source or the registry).
+    fn is_updating(&self, id: &str) -> bool {
+        self.update_jobs.contains_key(id) || self.registry_browser.is_busy(id)
+    }
+
+    /// Update `ext` to its newer version: a registry module is reinstalled from
+    /// the index (its plugin is unloaded first), any other from its source.
+    fn start_update(
+        &mut self,
+        ext: &InstalledExtension,
+        remote_index: Option<&RegistryIndex>,
+        extensions_dir: &std::path::Path,
+    ) {
+        let ext_id = ext.manifest.extension.id.clone();
+        let registry_module = ext
+            .source
+            .as_ref()
+            .filter(|s| s.kind == SourceKind::Registry)
+            .and_then(|s| {
+                remote_index?
+                    .module(s.id.as_deref().unwrap_or(&ext_id))
+                    .cloned()
+            });
+        if let Some(module) = registry_module {
+            self.registry_browser
+                .request_install(module, ext.manifest.capabilities.languages.clone());
+        } else if let Some(rx) = start_update_job(&ext.source, extensions_dir) {
+            self.update_jobs.insert(ext_id.clone(), rx);
+            self.update_statuses.insert(ext_id, InstallStatus::Building);
         }
     }
 
@@ -387,6 +420,32 @@ impl ExtensionsPanel {
                                 .small()
                                 .color(egui::Color32::from_rgb(255, 200, 60)),
                         );
+                        let pending: Vec<&InstalledExtension> = registry
+                            .installed
+                            .iter()
+                            .filter(|e| {
+                                e.update_available.is_some()
+                                    && !self.is_updating(&e.manifest.extension.id)
+                            })
+                            .collect();
+                        let btn = ui.add_enabled(
+                            !pending.is_empty(),
+                            egui::Button::new(
+                                egui::RichText::new("⬆ Update all")
+                                    .small()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(0, 120, 212)),
+                        );
+                        if btn.clicked() {
+                            for ext in pending {
+                                self.start_update(
+                                    ext,
+                                    registry.remote_index.as_ref(),
+                                    &registry.extensions_dir,
+                                );
+                            }
+                        }
                     }
                 });
                 ui.add_space(4.0);
@@ -521,18 +580,7 @@ impl ExtensionsPanel {
                                         .small()
                                         .color(egui::Color32::from_rgb(255, 200, 60)),
                                     );
-                                    let ext_id = ext.manifest.extension.id.clone();
-                                    // Registry-sourced: reinstall the module from the index.
-                                    let registry_module = ext
-                                        .source
-                                        .as_ref()
-                                        .filter(|s| s.kind == SourceKind::Registry)
-                                        .and_then(|s| {
-                                            let id = s.id.as_deref().unwrap_or(&ext_id);
-                                            registry.remote_index.as_ref()?.module(id).cloned()
-                                        });
-                                    let is_updating = self.update_jobs.contains_key(&ext_id)
-                                        || self.registry_browser.is_busy(&ext_id);
+                                    let is_updating = self.is_updating(&ext.manifest.extension.id);
                                     let btn = ui.add_enabled(
                                         !is_updating,
                                         egui::Button::new(
@@ -546,15 +594,11 @@ impl ExtensionsPanel {
                                         ui.spinner();
                                     }
                                     if btn.clicked() {
-                                        if let Some(module) = registry_module {
-                                            self.registry_browser.request_install(
-                                                module,
-                                                ext.manifest.capabilities.languages.clone(),
-                                            );
-                                        } else if let Some(rx) = start_update_job(&ext.source, &registry.extensions_dir) {
-                                            self.update_jobs.insert(ext_id.clone(), rx);
-                                            self.update_statuses.insert(ext_id, InstallStatus::Building);
-                                        }
+                                        self.start_update(
+                                            ext,
+                                            registry.remote_index.as_ref(),
+                                            &registry.extensions_dir,
+                                        );
                                     }
                                 });
                                 // Show update status if in progress

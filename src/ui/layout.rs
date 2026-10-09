@@ -239,11 +239,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 let ext = app
                     .editor
                     .current_path
-                    .as_ref()
-                    .and_then(|p| p.extension())
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-                match app.lsp.get(ext) {
+                    .as_deref()
+                    .and_then(crate::language::language_key)
+                    .unwrap_or_default();
+                match app.lsp.get(&ext) {
                     None => LspStatus::Inactive,
                     Some(c) if !c.is_connected => LspStatus::Connecting,
                     Some(c) if c.is_busy() => LspStatus::Loading,

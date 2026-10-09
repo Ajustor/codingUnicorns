@@ -8,6 +8,19 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Update all** button in the Extensions panel (*Installed*), next to *Check for updates*: updates every module that has a newer version in one click.
+- New **Dockerfile** module (`Dockerfile`, `Containerfile`, `Dockerfile.*`, `.dockerfile`): highlighting of instructions, flags, variables, parser directives and heredocs, hover docs for every instruction, and docker-langserver for validation, completion and formatting.
+- New **Docker Compose** module (`compose.yaml`, `docker-compose.yml` and their `*.override.yml` variants): YAML highlighting with `${VAR}` interpolation, anchors and block scalars, hover docs for Compose keys, and Microsoft's compose-language-service for validation, completion and hover.
+- Modules can claim files by name rather than extension (`file_names` in `manifest.toml`, `*` wildcards). The language server, status bar and debugger now follow it, so a `Dockerfile` gets its language server.
+
+### Fixed
+
+- Uninstalling a module whose npm dependency is scoped (`@scope/package`) now removes that package.
+
 ## [0.10.5] - 2026-10-08
 
 ### Added

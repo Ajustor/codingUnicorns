@@ -206,6 +206,11 @@ pub struct Capabilities {
     /// extension (e.g. `{ cs = "csharp" }`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub language_ids: std::collections::BTreeMap<String, String>,
+    /// Languages of files recognised by their name rather than their
+    /// extension, matched case-insensitively, `*` as a wildcard (e.g.
+    /// `{ "docker-compose.yml" = "compose", "Containerfile" = "dockerfile" }`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub file_names: std::collections::BTreeMap<String, String>,
 }
 
 #[cfg(test)]

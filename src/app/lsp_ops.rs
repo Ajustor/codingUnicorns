@@ -62,9 +62,10 @@ impl CodingUnicorns {
         };
         self.palette_doc_symbols_id = None;
         let Some(path) = path else { return };
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        let Some(ext) = crate::language::language_key(&path) else {
             return;
         };
+        let ext = ext.as_str();
         if let Some(client) = self.lsp.get_mut(ext) {
             if client.is_connected {
                 let uri = crate::lsp::client::path_to_uri(&path);
@@ -101,7 +102,7 @@ impl CodingUnicorns {
     }
 
     pub(crate) fn ensure_lsp_for_file(&mut self, path: &std::path::Path) {
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = crate::language::language_key(path).as_deref() {
             if let Some(workspace) = self.workspace_path.clone() {
                 // Prefer the plugin manager (covers installed FFI modules), then builtins.
                 if let Some((cmd, args)) = self.plugin_manager.lsp_server_for_ext(ext) {
@@ -117,7 +118,7 @@ impl CodingUnicorns {
 
     /// Notify the LSP server that the file content changed.
     pub fn notify_lsp_change(&mut self, path: &std::path::Path, content: &str, version: i32) {
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = crate::language::language_key(path).as_deref() {
             if let Some(client) = self.lsp.get_mut(ext) {
                 let uri = crate::lsp::client::path_to_uri(path);
                 client.did_change(&uri, version, content);
@@ -128,7 +129,8 @@ impl CodingUnicorns {
     /// Request hover information from the LSP server.
     /// Returns the request id, or `None` if no LSP is connected for this file.
     pub fn lsp_hover(&mut self, path: &std::path::Path, line: u32, col: u32) -> Option<u64> {
-        let ext = path.extension()?.to_str()?;
+        let ext = crate::language::language_key(path)?;
+        let ext = ext.as_str();
         let client = self.lsp.get_mut(ext)?;
         if !client.is_connected {
             return None;
@@ -143,7 +145,7 @@ impl CodingUnicorns {
         let mut lsp_sent = false;
         if let Some(path) = self.editor.current_path.clone() {
             let (row, col) = self.editor.cursor.position();
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(ext) = crate::language::language_key(&path).as_deref() {
                 if let Some(client) = self.lsp.get_mut(ext) {
                     if client.is_connected {
                         let uri = crate::lsp::client::path_to_uri(&path);
@@ -250,7 +252,7 @@ impl CodingUnicorns {
     pub fn request_find_references(&mut self) {
         if let Some(path) = self.editor.current_path.clone() {
             let (row, col) = self.editor.cursor.position();
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(ext) = crate::language::language_key(&path).as_deref() {
                 if let Some(client) = self.lsp.get_mut(ext) {
                     if client.is_connected {
                         let uri = crate::lsp::client::path_to_uri(&path);
@@ -321,7 +323,7 @@ impl CodingUnicorns {
     pub fn request_code_actions_at_cursor(&mut self) {
         if let Some(path) = self.editor.current_path.clone() {
             let (row, col) = self.editor.cursor.position();
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(ext) = crate::language::language_key(&path).as_deref() {
                 if let Some(client) = self.lsp.get_mut(ext) {
                     if client.is_connected {
                         let uri = crate::lsp::client::path_to_uri(&path);

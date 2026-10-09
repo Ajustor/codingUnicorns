@@ -128,6 +128,18 @@ impl ExtensionRegistry {
         }
     }
 
+    /// Publish the file name patterns of the enabled modules to
+    /// [`crate::language`], so files like `Dockerfile` get their language.
+    pub fn publish_file_names(&self) {
+        crate::language::set_file_names(
+            self.installed
+                .iter()
+                .filter(|e| e.enabled)
+                .flat_map(|e| e.manifest.capabilities.file_names.clone())
+                .collect(),
+        );
+    }
+
     /// LSP `languageId` of a file extension: the one an enabled module
     /// declares (`language_ids`), else the extension itself.
     pub fn lsp_language_id(&self, ext: &str) -> String {

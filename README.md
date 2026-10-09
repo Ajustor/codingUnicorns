@@ -244,6 +244,8 @@ Les modules officiels sont publiés par le dépôt [`coding-unicorns-modules`](h
 | **powershell-lang** | `.ps1` `.psm1` `.psd1` | — | PowerShell Editor Services | — |
 | **spd-lang** | `.spd` | speedster-language-server | — | — (à installer) |
 | **json-lang** | `.json` `.jsonc` `.json5` `.geojson` `.webmanifest` | vscode-json-language-server | — | npm |
+| **docker-lang** | `Dockerfile` `Containerfile` `Dockerfile.*` `.dockerfile` | docker-langserver | — | npm |
+| **docker-compose-lang** | `compose.yaml` `docker-compose.yml` (et `*.override.yml`…) | docker-compose-langserver | — | npm |
 
 Des binaires précompilés existent pour **Windows x86_64**, **Linux x86_64** et **macOS Apple Silicon**. Sur une autre plateforme, le registre affiche « Not available for this platform » : il faut alors compiler depuis les sources (voir ci-dessous).
 
@@ -307,6 +309,7 @@ lsp_server = "mylang-lsp"   # optionnel : binaire du serveur LSP
 lsp_args = ["--stdio"]
 language_ids = { mli = "mylang" }  # optionnel : languageId LSP quand il diffère de l'extension
 lsp_init_options = { provideFormatter = true }  # optionnel : initializationOptions du serveur
+file_names = { "MyLangfile" = "ml" }  # optionnel : fichiers reconnus par leur nom (motifs `*`, sans casse)
 
 [dependencies]              # optionnel, installé avec le module
 npm = ["mylang-lsp"]        # npm install -g

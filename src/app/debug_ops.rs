@@ -54,9 +54,9 @@ impl CodingUnicorns {
         workspace: &Path,
     ) -> Result<LaunchPlan, String> {
         let current_ext = current_file
-            .and_then(|p| p.extension())
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+            .and_then(crate::language::language_key)
+            .unwrap_or_default();
+        let current_ext = current_ext.as_str();
         let installed = &self.extension_registry.installed;
         let file_adapter = DebugAdapter::find(installed, None, current_ext);
         let debug = self.debug_launch(file_adapter.as_ref());

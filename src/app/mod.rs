@@ -201,6 +201,7 @@ impl CodingUnicorns {
         plugin_manager.register(Box::new(WordCountPlugin::new()));
         let mut extension_registry = crate::extension::registry::ExtensionRegistry::new();
         extension_registry.load_installed();
+        extension_registry.publish_file_names();
         // Load installed FFI language modules into the plugin manager.
         for ext in &extension_registry.installed {
             if let Some(lib_path) = &ext.lib_path {
@@ -401,7 +402,7 @@ impl CodingUnicorns {
                         // Start the LSP for the restored file (mirrors open_file).
                         // Without this, resuming a session leaves the LSP cold.
                         app.ensure_lsp_for_file(&file_path);
-                        if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
+                        if let Some(ext) = crate::language::language_key(&file_path).as_deref() {
                             let lang_id = app.extension_registry.lsp_language_id(ext);
                             let uri = crate::lsp::client::path_to_uri(&file_path);
                             if let Some(client) = app.lsp.get_mut(ext) {
@@ -730,11 +731,7 @@ impl eframe::App for CodingUnicorns {
         // Re-open the current file on any reconnected LSP server so it receives diagnostics.
         if !reconnected_exts.is_empty() {
             if let Some(ref path) = self.editor.current_path.clone() {
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
+                let ext = crate::language::language_key(path).unwrap_or_default();
                 if reconnected_exts.contains(&ext) {
                     let uri = crate::lsp::client::path_to_uri(path);
                     let content = self.editor.buffer.to_string();
@@ -877,7 +874,7 @@ impl eframe::App for CodingUnicorns {
 
         // Update diagnostics for the current file.
         if let Some(path) = self.editor.current_path.clone() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(ext) = crate::language::language_key(&path).as_deref() {
                 let uri = crate::lsp::client::path_to_uri(&path);
                 if let Some(client) = self.lsp.get(ext) {
                     self.editor.diagnostics = client.get_diagnostics(&uri);
@@ -892,7 +889,7 @@ impl eframe::App for CodingUnicorns {
             if let Some(path) = self.editor.current_path.clone() {
                 let row = self.editor.completion_trigger_row;
                 let col = self.editor.completion_trigger_col;
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if let Some(ext) = crate::language::language_key(&path).as_deref() {
                     if let Some(client) = self.lsp.get_mut(ext) {
                         if client.is_connected {
                             let uri = crate::lsp::client::path_to_uri(&path);
@@ -912,7 +909,7 @@ impl eframe::App for CodingUnicorns {
 
         // Trigger document symbol request for outline panel.
         if let Some(path) = self.editor.current_path.clone() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(ext) = crate::language::language_key(&path).as_deref() {
                 let supported = matches!(ext, "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go");
                 if supported && self.pending_symbols_id.is_none() {
                     let version_changed = self.editor.content_version != self.outline_last_version;
@@ -939,7 +936,7 @@ impl eframe::App for CodingUnicorns {
         if self.editor.format_request_pending && self.pending_format_id.is_none() {
             self.editor.format_request_pending = false;
             if let Some(path) = self.editor.current_path.clone() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if let Some(ext) = crate::language::language_key(&path).as_deref() {
                     if let Some(client) = self.lsp.get_mut(ext) {
                         if client.is_connected {
                             let uri = crate::lsp::client::path_to_uri(&path);
@@ -957,7 +954,7 @@ impl eframe::App for CodingUnicorns {
         // Trigger signature help request from editor.
         if self.editor.signature_help_request_pending && self.pending_signature_id.is_none() {
             if let Some(path) = self.editor.current_path.clone() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if let Some(ext) = crate::language::language_key(&path).as_deref() {
                     if let Some(client) = self.lsp.get_mut(ext) {
                         if client.is_connected {
                             let uri = crate::lsp::client::path_to_uri(&path);
@@ -1043,7 +1040,7 @@ impl eframe::App for CodingUnicorns {
                 self.rename_dialog_open = false;
                 if let Some(path) = self.editor.current_path.clone() {
                     let (row, col) = self.editor.cursor.position();
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if let Some(ext) = crate::language::language_key(&path).as_deref() {
                         if let Some(client) = self.lsp.get_mut(ext) {
                             if client.is_connected {
                                 let uri = crate::lsp::client::path_to_uri(&path);
@@ -1153,6 +1150,7 @@ impl eframe::App for CodingUnicorns {
         if self.extensions_panel.plugins_changed {
             self.extensions_panel.plugins_changed = false;
             self.extension_registry.load_installed();
+            self.extension_registry.publish_file_names();
             // Re-register all installed FFI language plugins.
             for ext in &self.extension_registry.installed {
                 if let Some(lib_path) = &ext.lib_path {
