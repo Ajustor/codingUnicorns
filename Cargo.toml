@@ -46,6 +46,12 @@ semver = "1"
 sha2 = "0.10"
 self-replace = "1"
 
+# Outside Windows, git2 needs OpenSSL (libssh2 and HTTPS) and links the build
+# machine's copy otherwise: the macOS binary then required Homebrew's
+# /opt/homebrew/opt/openssl@3. Build OpenSSL and libgit2 into the binary.
+[target.'cfg(not(windows))'.dependencies]
+git2 = { version = "0.20", features = ["vendored-openssl", "vendored-libgit2"] }
+
 [profile.release]
 opt-level = "s"
 lto = true

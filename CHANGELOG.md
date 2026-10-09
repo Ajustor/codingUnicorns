@@ -19,6 +19,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **macOS: the app starts again without Homebrew.** It required Homebrew's OpenSSL (`Library not loaded: /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib`) and aborted at launch on machines without it. OpenSSL and libgit2 are now built into the macOS and Linux binaries, and the release checks that no such library is linked.
 - The selected entry of the command palette is readable: it is drawn in the theme's contrast color on a solid accent background, instead of accent text on an accent tint.
 - On Linux and macOS, cancelling a debug launch also stops the command its `preLaunchTask` started, instead of leaving it running.
 
