@@ -11,6 +11,16 @@ struct UninstallPrompt {
     deps: Vec<String>,
 }
 
+impl UninstallPrompt {
+    fn for_extension(ext: &InstalledExtension) -> Self {
+        Self {
+            id: ext.manifest.extension.id.clone(),
+            name: ext.manifest.extension.name.clone(),
+            deps: super::installer::dependency_summary(&ext.manifest.dependencies),
+        }
+    }
+}
+
 /// Entry in the module picker modal.
 struct PickerEntry {
     member: String,
@@ -399,13 +409,21 @@ impl ExtensionsPanel {
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.set_max_width(ui.available_width());
-                    self.registry_browser.show(ui, registry, registry_url);
+                    if let Some(id) = self.registry_browser.show(ui, registry, registry_url) {
+                        if let Some(ext) =
+                            registry.installed.iter().find(|e| e.manifest.extension.id == id)
+                        {
+                            self.uninstall_prompt = Some(UninstallPrompt::for_extension(ext));
+                        }
+                    }
                 });
 
             ui.add_space(8.0);
 
             // ── INSTALLED ────────────────────────────────────────────────────
-            ui.collapsing("INSTALLED", |ui| {
+            egui::CollapsingHeader::new("INSTALLED")
+                .default_open(true)
+                .show(ui, |ui| {
                 // "Check for updates" button
                 ui.horizontal(|ui| {
                     if ui.small_button("⟳ Check for updates").clicked() {
@@ -521,21 +539,11 @@ impl ExtensionsPanel {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        let uninstall_btn = ui.add(
-                                            egui::Button::new(
-                                                egui::RichText::new("Uninstall")
-                                                    .color(egui::Color32::from_rgb(240, 80, 80)),
-                                            )
-                                            .frame(false),
-                                        );
+                                        let uninstall_btn = ui
+                                            .add(super::registry_ui::uninstall_button())
+                                            .on_hover_text("Uninstall this module");
                                         if uninstall_btn.clicked() {
-                                            to_uninstall = Some(UninstallPrompt {
-                                                id: ext.manifest.extension.id.clone(),
-                                                name: ext.manifest.extension.name.clone(),
-                                                deps: super::installer::dependency_summary(
-                                                    &ext.manifest.dependencies,
-                                                ),
-                                            });
+                                            to_uninstall = Some(UninstallPrompt::for_extension(ext));
                                         }
                                     },
                                 );

@@ -17,6 +17,46 @@ pub enum SidebarTab {
     Run,
     Outline,
     Debug,
+    /// Sidebar panel of an extension module (its `[[panels]]` id).
+    Module(String),
+}
+
+/// Activity bar button: hover/active background, active border, icon.
+fn activity_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    tooltip: &str,
+    is_active: bool,
+    hover_bg: Color32,
+    accent: Color32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::click());
+    let response = response.on_hover_text(tooltip);
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect_filled(rect, 0.0, hover_bg);
+    }
+    if is_active {
+        painter.line_segment(
+            [rect.left_top(), rect.left_bottom()],
+            Stroke::new(2.0_f32, accent),
+        );
+    }
+    let icon_color = if is_active {
+        Color32::WHITE
+    } else if response.hovered() {
+        Color32::from_gray(220)
+    } else {
+        Color32::from_gray(160)
+    };
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        egui::FontId::proportional(22.0),
+        icon_color,
+    );
+    response
 }
 
 pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
@@ -501,51 +541,36 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     },
                 ];
 
-                for item in &items {
-                    let is_active = app.show_sidebar && app.sidebar_tab == item.tab;
-
-                    // Allocate space first, then paint bg, then icon on top
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::click());
-                    let response = response.on_hover_text(item.tooltip);
-
-                    let painter = ui.painter();
-
-                    // Hover/active background (drawn first, under the icon)
-                    if response.hovered() {
-                        painter.rect_filled(rect, 0.0, hover_bg);
-                    }
-
-                    // Active left border
-                    if is_active {
-                        painter.line_segment(
-                            [rect.left_top(), rect.left_bottom()],
-                            Stroke::new(2.0_f32, accent),
-                        );
-                    }
-
-                    // Icon drawn on top
-                    let icon_color = if is_active {
-                        Color32::WHITE
-                    } else if response.hovered() {
-                        Color32::from_gray(220)
+                // Built-in views, then the sidebar panels of extension modules.
+                let module_items: Vec<(String, &'static str, String, SidebarTab)> = app
+                    .plugin_manager
+                    .ui_panels()
+                    .into_iter()
+                    .filter(|p| p.location == crate::extension::manifest::PanelLocation::Sidebar)
+                    .map(|p| {
+                        let icon = p.icon.as_deref().unwrap_or("puzzle");
+                        let icon = crate::extension::ui_host::icon_glyph(icon).to_string();
+                        (icon, "", p.title, SidebarTab::Module(p.id))
+                    })
+                    .collect();
+                let all_items = items
+                    .iter()
+                    .map(|i| (i.icon.to_string(), i.tooltip, String::new(), i.tab.clone()))
+                    .chain(module_items);
+                for (icon, tooltip, title, tab) in all_items {
+                    let is_active = app.show_sidebar && app.sidebar_tab == tab;
+                    let tooltip = if tooltip.is_empty() {
+                        title.as_str()
                     } else {
-                        Color32::from_gray(160)
+                        tooltip
                     };
-                    painter.text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        item.icon,
-                        egui::FontId::proportional(22.0),
-                        icon_color,
-                    );
-
+                    let response = activity_button(ui, &icon, tooltip, is_active, hover_bg, accent);
                     if response.clicked() {
-                        if app.show_sidebar && app.sidebar_tab == item.tab {
+                        if is_active {
                             app.show_sidebar = false;
                         } else {
                             app.show_sidebar = true;
-                            app.sidebar_tab = item.tab.clone();
+                            app.sidebar_tab = tab;
                         }
                     }
                 }
@@ -586,14 +611,21 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             .min_width(150.0)
             .default_width(app.sidebar_width)
             .show(ctx, |ui| {
-                let section_title = match app.sidebar_tab {
-                    SidebarTab::Explorer => "EXPLORER",
-                    SidebarTab::Search => "SEARCH",
-                    SidebarTab::Git => "GIT",
-                    SidebarTab::Extensions => "EXTENSIONS",
-                    SidebarTab::Run => "RUN",
-                    SidebarTab::Outline => "OUTLINE",
-                    SidebarTab::Debug => "DEBUG",
+                let section_title = match &app.sidebar_tab {
+                    SidebarTab::Explorer => "EXPLORER".to_string(),
+                    SidebarTab::Search => "SEARCH".to_string(),
+                    SidebarTab::Git => "GIT".to_string(),
+                    SidebarTab::Extensions => "EXTENSIONS".to_string(),
+                    SidebarTab::Run => "RUN".to_string(),
+                    SidebarTab::Outline => "OUTLINE".to_string(),
+                    SidebarTab::Debug => "DEBUG".to_string(),
+                    SidebarTab::Module(id) => app
+                        .plugin_manager
+                        .ui_panels()
+                        .into_iter()
+                        .find(|p| &p.id == id)
+                        .map(|p| p.title.to_uppercase())
+                        .unwrap_or_default(),
                 };
                 ui.horizontal(|ui| {
                     ui.add_space(4.0);
@@ -606,7 +638,14 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 });
                 ui.add_space(2.0);
 
-                match app.sidebar_tab {
+                match app.sidebar_tab.clone() {
+                    SidebarTab::Module(id) => {
+                        egui::ScrollArea::vertical()
+                            .id_salt(("module-panel", id.as_str()))
+                            .show(ui, |ui| {
+                                app.ext_ui.show(ui, &id, &app.plugin_manager, app.palette);
+                            });
+                    }
                     SidebarTab::Explorer => {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             if let Some(path) = app.file_tree.show(ui) {
@@ -1092,7 +1131,17 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .map(|t| t.is_settings)
                     .unwrap_or(false);
 
-                if active_is_settings {
+                if let Some(page) = app.tab_manager.active_page().map(str::to_string) {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(28, 12))
+                        .show(&mut left_ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt(("module-page", page.as_str()))
+                                .show(ui, |ui| {
+                                    app.ext_ui.show(ui, &page, &app.plugin_manager, app.palette);
+                                });
+                        });
+                } else if active_is_settings {
                     // Horizontal breathing room on the settings content.
                     let settings_changed = egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(28, 0))
@@ -1275,7 +1324,17 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .map(|t| t.is_settings)
                     .unwrap_or(false);
 
-                if active_is_settings {
+                if let Some(page) = app.tab_manager.active_page().map(str::to_string) {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(28, 12))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt(("module-page", page.as_str()))
+                                .show(ui, |ui| {
+                                    app.ext_ui.show(ui, &page, &app.plugin_manager, app.palette);
+                                });
+                        });
+                } else if active_is_settings {
                     let settings_changed = egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(28, 0))
                         .show(ui, |ui| app.settings_panel.show_inline(ui, &mut app.config))

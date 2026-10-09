@@ -2,7 +2,7 @@
 
 Coding Unicorns supports a lightweight plugin system inspired by VSCode extensions. This document covers **built-in plugins**: Rust types compiled into the editor that implement the `Plugin` trait and run in-process with the editor loop.
 
-> **Language extensions are different.** Syntax highlighting, hover and LSP for a language come from *extensions*: native modules (`cdylib`) described by a `manifest.toml`, installed from the online registry, git, a ZIP or a local folder, and loaded at runtime through `libloading`. Each one is wrapped in an `FfiLangPlugin` (`src/extension/ffi_plugin.rs`) that implements this same trait. Their manifest format, exported C functions and install methods are documented in the README, section *Extensions de langage*; the [official modules](https://github.com/Ajustor/coding-unicorns-modules) are working examples.
+> **Language extensions are different.** Syntax highlighting, hover and LSP for a language come from *extensions*: native modules (`cdylib`) described by a `manifest.toml`, installed from the online registry, git, a ZIP or a local folder, and loaded at runtime through `libloading`. Each one is wrapped in an `FfiLangPlugin` (`src/extension/ffi_plugin.rs`) that implements this same trait. Modules can also contribute sidebar panels and pages, described as JSON views and rendered by `src/extension/ui_host.rs`. Their manifest format, exported C functions, view format and install methods are documented in the README, section *Extensions de langage*; the [official modules](https://github.com/Ajustor/coding-unicorns-modules) are working examples.
 
 ---
 

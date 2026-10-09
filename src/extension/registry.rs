@@ -158,7 +158,7 @@ impl ExtensionRegistry {
             .iter()
             .filter(|e| e.enabled)
             .find(|e| e.manifest.capabilities.languages.iter().any(|l| l == ext))
-            .and_then(|e| e.manifest.capabilities.lsp_init_options.as_ref())
+            .and_then(|e| e.manifest.capabilities.lsp_init_options_for(ext))
             .and_then(|t| serde_json::to_value(t).ok())
     }
 

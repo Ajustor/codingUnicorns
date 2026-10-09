@@ -41,6 +41,47 @@ pub struct ExtensionManifest {
     /// Debug adapter (DAP) of the language, if the module ships one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debugger: Option<DebuggerSpec>,
+    /// Interfaces the module adds to the IDE (`[[panels]]`): sidebar panels
+    /// and pages, drawn from the views the module's library returns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panels: Vec<PanelSpec>,
+}
+
+/// `[[panels]]` entry: an interface contributed by a module.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanelSpec {
+    /// Unique id, passed to the module's `ui_view_ffi` / `ui_event_ffi`.
+    pub id: String,
+    pub title: String,
+    /// Phosphor icon name (`cube`, `package`, `database`…) or any text.
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub location: PanelLocation,
+}
+
+/// Where a module's panel is shown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelLocation {
+    /// Entry in the activity bar, shown in the sidebar.
+    #[default]
+    Sidebar,
+    /// Editor tab, opened by the module (`open_panel` action) or the
+    /// command palette.
+    Page,
+}
+
+/// Language server of one language, when a module's languages need
+/// different servers (`[capabilities.lsp_servers.<language>]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LanguageServer {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// `initializationOptions`, instead of the module's `lsp_init_options`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init_options: Option<toml::Table>,
 }
 
 /// `[debugger]` section: how to start the language's debug adapter (DAP
@@ -211,6 +252,30 @@ pub struct Capabilities {
     /// `{ "docker-compose.yml" = "compose", "Containerfile" = "dockerfile" }`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub file_names: std::collections::BTreeMap<String, String>,
+    /// Language server per language, overriding `lsp_server` / `lsp_args`
+    /// (e.g. a Docker module: docker-langserver for Dockerfiles,
+    /// docker-compose-langserver for Compose files).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub lsp_servers: std::collections::BTreeMap<String, LanguageServer>,
+}
+
+impl Capabilities {
+    /// Language server command for `language`: its own entry in
+    /// `lsp_servers`, else the module's `lsp_server`.
+    pub fn lsp_command(&self, language: &str) -> Option<(String, Vec<String>)> {
+        match self.lsp_servers.get(language) {
+            Some(s) => Some((s.command.clone(), s.args.clone())),
+            None => Some((self.lsp_server.clone()?, self.lsp_args.clone())),
+        }
+    }
+
+    /// `initializationOptions` for `language`'s server.
+    pub fn lsp_init_options_for(&self, language: &str) -> Option<&toml::Table> {
+        match self.lsp_servers.get(language) {
+            Some(s) => s.init_options.as_ref(),
+            None => self.lsp_init_options.as_ref(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -304,6 +369,57 @@ dotnet = ["csharp-ls@0.16.0"]
         assert_eq!(m.dependencies.cargo, vec!["ruff"]);
         assert_eq!(m.dependencies.go.len(), 1);
         assert_eq!(m.dependencies.dotnet, vec!["csharp-ls@0.16.0"]);
+    }
+
+    #[test]
+    fn per_language_servers_override_the_module_server() {
+        let m = ExtensionManifest::parse(&FULL.replace(
+            "lsp_args = [\"--stdio\"]",
+            "lsp_args = [\"--stdio\"]
+lsp_init_options = { a = 1 }
+             [capabilities.lsp_servers.pyw]
+command = \"other\"
+init_options = { b = 2 }",
+        ))
+        .unwrap();
+        let c = &m.capabilities;
+        assert_eq!(
+            c.lsp_command("py"),
+            Some(("pylsp".into(), vec!["--stdio".into()]))
+        );
+        assert_eq!(c.lsp_command("pyw"), Some(("other".into(), vec![])));
+        assert!(c.lsp_init_options_for("py").unwrap().contains_key("a"));
+        assert!(c.lsp_init_options_for("pyw").unwrap().contains_key("b"));
+        let none = ExtensionManifest::parse(&FULL.replace(
+            "lsp_server = \"pylsp\"
+",
+            "",
+        ))
+        .unwrap();
+        assert_eq!(none.capabilities.lsp_command("py"), None);
+    }
+
+    #[test]
+    fn parses_panels() {
+        let m = ExtensionManifest::parse(&format!(
+            "{FULL}
+[[panels]]
+id = \"a.side\"
+title = \"Side\"
+icon = \"cube\"
+
+             [[panels]]
+id = \"a.page\"
+title = \"Page\"
+location = \"page\"
+"
+        ))
+        .unwrap();
+        assert_eq!(m.panels.len(), 2);
+        assert_eq!(m.panels[0].location, PanelLocation::Sidebar);
+        assert_eq!(m.panels[0].icon.as_deref(), Some("cube"));
+        assert_eq!(m.panels[1].location, PanelLocation::Page);
+        assert!(ExtensionManifest::parse(FULL).unwrap().panels.is_empty());
     }
 
     #[test]
