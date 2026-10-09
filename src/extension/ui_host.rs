@@ -37,6 +37,10 @@ use crate::ui::theme::Palette;
 
 /// Default refresh interval of a shown panel whose view sets no `poll_ms`.
 const DEFAULT_POLL: Duration = Duration::from_millis(1000);
+/// A log without a height never gets shorter than this.
+const LOG_MIN_HEIGHT: f32 = 160.0;
+/// Room for the log's frame (margins and stroke) below its scrolled area.
+const LOG_FRAME_MARGIN: f32 = 16.0;
 
 /// Where views and events go: the plugins declaring the panels.
 pub trait UiBackend {
@@ -135,7 +139,8 @@ pub enum Node {
     /// (command output, logs).
     Log {
         text: String,
-        /// Height of the scrolled area in points (default 360).
+        /// Height of the scrolled area in points (default: down to the
+        /// bottom of the panel or page).
         #[serde(default)]
         height: Option<f32>,
     },
@@ -596,12 +601,19 @@ fn draw_node(ui: &mut egui::Ui, node: &Node, d: &mut Draw) {
                 });
         }
         Node::Log { text, height } => {
+            // Without a height, the log fills the visible space down to the
+            // bottom of its panel or page.
+            let fill = height.is_none();
+            let height = height.unwrap_or_else(|| {
+                (ui.clip_rect().bottom() - ui.cursor().top() - LOG_FRAME_MARGIN).max(LOG_MIN_HEIGHT)
+            });
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 egui::ScrollArea::both()
                     .id_salt("ext-ui-log")
-                    .max_height(height.unwrap_or(360.0))
+                    .max_height(height)
+                    .min_scrolled_height(if fill { height } else { 0.0 })
                     .stick_to_bottom(true)
-                    .auto_shrink([false, true])
+                    .auto_shrink([false, !fill])
                     .show(ui, |ui| {
                         // A `&str` buffer: selectable and copyable, not editable.
                         ui.add(
@@ -829,6 +841,43 @@ mod tests {
         ] {
             assert!(t.iter().any(|x| x == expected), "{expected} in {t:?}");
         }
+    }
+
+    /// Bottom of a page made of `view`, drawn like module pages (in a
+    /// vertical scroll area of a 600-point-high window).
+    fn page_bottom(view: &str) -> f32 {
+        let backend = Fake::new(view);
+        let mut host = UiHost::new();
+        let ctx = egui::Context::default();
+        let mut bottom = 0.0;
+        for _ in 0..2 {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        host.show(ui, "p", &backend, palette());
+                        bottom = ui.min_rect().bottom();
+                    });
+                });
+            });
+        }
+        bottom
+    }
+
+    #[test]
+    fn logs_fill_the_page_unless_given_a_height() {
+        let filled = page_bottom(
+            r#"{"children":[{"type":"heading","text":"Logs"},{"type":"log","text":"a\nb"}]}"#,
+        );
+        assert!(
+            (560.0..=600.0).contains(&filled),
+            "fills down to the bottom: {filled}"
+        );
+        let fixed = page_bottom(r#"{"children":[{"type":"log","text":"a\nb","height":100}]}"#);
+        assert!(fixed < 200.0, "explicit height kept: {fixed}");
     }
 
     #[test]

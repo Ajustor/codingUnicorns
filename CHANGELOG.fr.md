@@ -8,6 +8,16 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Non publié]
+
+### Nouveautés
+
+- La palette de commandes propose d'abord les dernières commandes lancées (les 5 dernières, conservées d'un démarrage à l'autre) : Entrée relance la plus récente.
+
+### Modifications
+
+- Les logs des modules (comme ceux des conteneurs Docker) occupent toute la hauteur de leur onglet ou panneau, au lieu d'un cadre fixe de 520 pixels.
+
 ## [0.10.9] - 2026-10-09
 
 ### Corrections
