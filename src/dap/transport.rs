@@ -26,8 +26,9 @@ pub struct DapTransport {
     child: Option<Child>,
 }
 
-/// How long a TCP adapter may take to start listening.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a TCP adapter may take to start listening. Longer in tests: on a busy CI
+/// runner (Windows above all) the first `node` start can take more than 15 s.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 60 } else { 15 });
 
 impl DapTransport {
     /// Start the adapter of `cfg` and connect to it. For a TCP adapter this
@@ -425,7 +426,7 @@ mod tests {
 const net = require('net');
 const srv = net.createServer(s => s.pipe(s));
 srv.listen(Number(process.argv[1]), '127.0.0.1');
-setTimeout(() => process.exit(0), 20000);
+setTimeout(() => process.exit(0), 90000);
 "#;
         super::super::adapters::find_on_path("node")?;
         Some((

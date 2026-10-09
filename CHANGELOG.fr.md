@@ -8,6 +8,14 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Non publié]
+
+### Ajouts
+
+- macOS : une vraie application, **Coding Unicorns.app**, installée depuis une image disque (`coding-unicorns-macos-arm64.dmg` : glissez-la dans Applications). Lancée depuis le Finder ou le Dock, elle reprend le `PATH` de votre shell de connexion : le terminal, les serveurs de langage et Claude trouvent vos outils (Homebrew, `~/.cargo/bin`…).
+- Linux : une AppImage (`coding-unicorns-linux-x64.AppImage`), avec son icône et son entrée de menu, qui se met à jour sur place.
+- L'app macOS et l'AppImage ajoutent la commande `cu` à votre `PATH` au lancement (un lien dans `/usr/local/bin` ou `~/.local/bin`, ajouté si besoin au fichier de démarrage de votre shell) : ouvrez un nouveau terminal et lancez `cu .`.
+
 ## [0.10.10] - 2026-10-09
 
 ### Nouveautés

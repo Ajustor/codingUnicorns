@@ -38,6 +38,8 @@ ICONS = {
 KINDS = [
     (".msi", "windows", "msi"),
     ("windows", "windows", "exe"),
+    (".AppImage", "linux", "appimage"),
+    (".dmg", "macos", "dmg"),
     ("linux-x64", "linux", "linux_x64"),
     ("linux", "linux", "linux"),
     ("macos-arm64", "macos", "macos_arm64"),
@@ -80,13 +82,15 @@ def card(asset, files_dir, t):
         </li>"""
 
 
-# Windows first, MSI before the portable exe, then Linux, then macOS.
+# Windows first, then Linux, then macOS; on each, the installer (the card
+# highlighted for the visitor's system) before the bare binary.
 ORDER = {"windows": 0, "linux": 1, "macos": 2, "autre": 3}
+INSTALLERS = (".msi", ".AppImage", ".dmg")
 
 
 def sort_key(asset):
     os_ = classify(asset["name"])[0]
-    return (ORDER[os_], ".msi" not in asset["name"], asset["name"])
+    return (ORDER[os_], not asset["name"].endswith(INSTALLERS), asset["name"])
 
 
 def inline(text):

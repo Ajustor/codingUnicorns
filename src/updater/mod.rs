@@ -6,7 +6,8 @@
 //! Flow: `check()` fetches the manifest on a background thread and compares its version with
 //! `CARGO_PKG_VERSION`. If newer, the UI offers to install. `install()` downloads the asset for
 //! this platform, verifies its SHA-256 against the manifest, then either:
-//! - replaces the running executable in place (portable binaries), or
+//! - replaces the running executable in place (portable binaries, the macOS `.app` bundle), or
+//! - replaces the `.AppImage` file the app runs from (Linux AppImage), or
 //! - on Windows MSI installs (Program Files, not writable), stages the `.msi` so it can be run
 //!   with `msiexec` once the app has exited.
 //!
@@ -39,6 +40,11 @@ const BINARY_ASSET: Option<&str> = Some("coding-unicorns-macos-arm64");
 const BINARY_ASSET: Option<&str> = None;
 
 const MSI_ASSET: &str = "coding-unicorns-setup.msi";
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const APPIMAGE_ASSET: Option<&str> = Some("coding-unicorns-linux-x64.AppImage");
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const APPIMAGE_ASSET: Option<&str> = None;
 
 /// `latest.json` on GitHub Pages.
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +81,8 @@ enum InstallKind {
     ReplaceBinary,
     /// Run the MSI installer after exit (Windows, installed under Program Files).
     Msi,
+    /// Overwrite the `.AppImage` file the app was started from (Linux).
+    AppImage,
 }
 
 #[derive(Debug, Clone)]
@@ -285,7 +293,7 @@ impl Updater {
 pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>) {
     log_step(&format!("on exit: {action:?}"));
     let result = match action {
-        ExitAction::Relaunch => std::env::current_exe().and_then(|exe| {
+        ExitAction::Relaunch => relaunch_exe().and_then(|exe| {
             let mut cmd = std::process::Command::new(exe);
             // We may still be listening while exiting: never forward to ourselves.
             cmd.arg(crate::single_instance::NEW_WINDOW_FLAG);
@@ -324,6 +332,15 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
             log::error!("failed to apply update on exit: {e}");
             log_step(&format!("on exit: failed to start: {e}"));
         }
+    }
+}
+
+/// What to start to relaunch the app: the AppImage file when running from one (the
+/// executable itself lives in the image's mount, gone once the app exits).
+fn relaunch_exe() -> std::io::Result<PathBuf> {
+    match running_appimage() {
+        Some(appimage) => Ok(appimage),
+        None => std::env::current_exe(),
     }
 }
 
@@ -455,6 +472,7 @@ fn select_update(
     let wanted = match kind {
         InstallKind::Msi => MSI_ASSET,
         InstallKind::ReplaceBinary => BINARY_ASSET.ok_or("no prebuilt binary for this platform")?,
+        InstallKind::AppImage => APPIMAGE_ASSET.ok_or("no AppImage for this platform")?,
     };
     let asset = manifest
         .assets
@@ -472,7 +490,8 @@ fn select_update(
 }
 
 /// MSI installs live under Program Files, which a normal user can't write to, so the
-/// installer must handle the upgrade. Everything else is a portable binary we replace.
+/// installer must handle the upgrade. An AppImage is replaced as a whole. Everything else
+/// is a binary we replace (portable, or inside the macOS `.app` bundle).
 fn install_kind() -> InstallKind {
     if cfg!(windows) {
         return kind_for_location(
@@ -480,7 +499,31 @@ fn install_kind() -> InstallKind {
             std::env::var_os("ProgramFiles"),
         );
     }
+    if running_appimage().is_some() {
+        return InstallKind::AppImage;
+    }
     InstallKind::ReplaceBinary
+}
+
+/// The `.AppImage` file this process runs from, if any.
+pub(crate) fn running_appimage() -> Option<PathBuf> {
+    appimage_of(
+        std::env::current_exe().ok()?,
+        std::env::var_os("APPIMAGE")?,
+        std::env::var_os("APPDIR")?,
+    )
+}
+
+/// The AppImage runtime sets `APPIMAGE` (the file) and `APPDIR` (where the image is
+/// mounted). Our children, the integrated terminal's shell included, inherit both: only
+/// trust them when `exe` really lives in `APPDIR`.
+fn appimage_of(
+    exe: PathBuf,
+    appimage: std::ffi::OsString,
+    appdir: std::ffi::OsString,
+) -> Option<PathBuf> {
+    let inside = !appdir.is_empty() && exe.starts_with(&appdir);
+    (inside && !appimage.is_empty()).then(|| PathBuf::from(appimage))
 }
 
 /// Windows: `Msi` when `exe` lives under `program_files`, else `ReplaceBinary`.
@@ -536,7 +579,43 @@ fn stage_and_apply(
             let _ = std::fs::remove_file(&path);
             res.map(|_| None)
         }
+        InstallKind::AppImage => {
+            let res = running_appimage()
+                .ok_or_else(|| "not running from an AppImage".to_string())
+                .and_then(|appimage| replace_file(&path, &appimage));
+            let _ = std::fs::remove_file(&path);
+            res.map(|_| None)
+        }
     }
+}
+
+/// Swap `target` for an executable copy of `source`. The copy is made next to `target` and
+/// renamed over it, so the swap is atomic and the running AppImage (mounted from the old
+/// file, still open) keeps working until the app exits.
+fn replace_file(source: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    let name = target
+        .file_name()
+        .ok_or_else(|| format!("bad AppImage path {}", target.display()))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(".update");
+    let tmp = target.with_file_name(tmp_name);
+    let res = std::fs::copy(source, &tmp)
+        .map_err(|e| format!("writing {}: {e}", tmp.display()))
+        .and_then(|_| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+                    .map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
+            }
+            std::fs::rename(&tmp, target)
+                .map_err(|e| format!("replacing {}: {e}", target.display()))
+        });
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
 }
 
 /// Refuse to install anything that doesn't match the manifest's checksum.
@@ -768,6 +847,68 @@ mod tests {
     fn test_binary_is_a_portable_install() {
         // The test executable lives under target/, never Program Files.
         assert_eq!(install_kind(), InstallKind::ReplaceBinary);
+    }
+
+    #[test]
+    fn appimage_is_trusted_only_from_inside_its_mount() {
+        let appimage = || std::ffi::OsString::from("/home/u/Apps/cu.AppImage");
+        let appdir = || std::ffi::OsString::from("/tmp/.mount_cuAbc");
+        let inside = PathBuf::from("/tmp/.mount_cuAbc/usr/bin/coding-unicorns");
+        assert_eq!(
+            appimage_of(inside.clone(), appimage(), appdir()),
+            Some(PathBuf::from("/home/u/Apps/cu.AppImage"))
+        );
+        // Variables inherited by another build started from the integrated terminal.
+        let elsewhere = PathBuf::from("/home/u/.cargo/bin/coding-unicorns");
+        assert_eq!(appimage_of(elsewhere, appimage(), appdir()), None);
+        // A component-wise prefix, not a string one.
+        let sibling = PathBuf::from("/tmp/.mount_cuAbcd/usr/bin/coding-unicorns");
+        assert_eq!(appimage_of(sibling, appimage(), appdir()), None);
+        assert_eq!(appimage_of(inside.clone(), appimage(), "".into()), None);
+        assert_eq!(appimage_of(inside, "".into(), appdir()), None);
+    }
+
+    #[test]
+    fn select_update_appimage_asset_for_this_platform() {
+        let cur = semver::Version::new(0, 1, 0);
+        let m = manifest("9.0.0", &[MSI_ASSET, "coding-unicorns-linux-x64.AppImage"]);
+        let res = select_update(m, &cur, InstallKind::AppImage);
+        match APPIMAGE_ASSET {
+            Some(name) => {
+                let info = res.unwrap().unwrap();
+                assert_eq!(info.asset.name, name);
+                assert_eq!(info.kind, InstallKind::AppImage);
+            }
+            None => assert!(res.is_err()),
+        }
+    }
+
+    #[test]
+    fn replace_file_swaps_in_an_executable_copy() {
+        let dir = scratch_dir("appimage");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("download");
+        let target = dir.join("cu.AppImage");
+        std::fs::write(&source, b"new").unwrap();
+        std::fs::write(&target, b"old").unwrap();
+        replace_file(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        // Only the source and the replaced file are left: no temporary copy.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_file_reports_missing_directory() {
+        let dir = scratch_dir("appimage-missing");
+        let err = replace_file(&dir.join("src"), &dir.join("cu.AppImage")).unwrap_err();
+        assert!(err.starts_with("writing"), "{err}");
     }
 
     // ---- stage_and_apply (MSI path only: never self-replace the test binary) ----

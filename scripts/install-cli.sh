@@ -11,11 +11,13 @@
 #   1. ~/.cargo/bin  (cargo install)
 #   2. /usr/local/bin
 #   3. Anywhere in PATH
+#   4. The macOS app (/Applications or ~/Applications, installed from the .dmg)
 #
 set -euo pipefail
 
 # --- Locate the binary -------------------------------------------------------
 BIN=""
+LINK_DIR=""
 for candidate in "$HOME/.cargo/bin/coding-unicorns" "/usr/local/bin/coding-unicorns"; do
   if [ -x "$candidate" ]; then
     BIN="$candidate"
@@ -28,11 +30,24 @@ if [ -z "$BIN" ]; then
 fi
 
 if [ -z "$BIN" ]; then
+  for app in "/Applications/Coding Unicorns.app" "$HOME/Applications/Coding Unicorns.app"; do
+    if [ -x "$app/Contents/MacOS/coding-unicorns" ]; then
+      BIN="$app/Contents/MacOS/coding-unicorns"
+      # Never inside the bundle (it would break its signature): /usr/local/bin
+      # when writable, else ~/.local/bin.
+      if [ -w /usr/local/bin ]; then LINK_DIR=/usr/local/bin; else LINK_DIR="$HOME/.local/bin"; fi
+      break
+    fi
+  done
+fi
+
+if [ -z "$BIN" ]; then
   echo "Error: coding-unicorns not found. Install the app first (cargo install --path .)." >&2
   exit 1
 fi
 
-BIN_DIR="$(dirname "$BIN")"
+BIN_DIR="${LINK_DIR:-$(dirname "$BIN")}"
+mkdir -p "$BIN_DIR"
 
 # --- Create symlink -----------------------------------------------------------
 LINK="$BIN_DIR/cu"
