@@ -247,7 +247,7 @@ Les modules officiels sont publiés par le dépôt [`coding-unicorns-modules`](h
 | **json-lang** | `.json` `.jsonc` `.json5` `.geojson` `.webmanifest` | vscode-json-language-server | — | npm |
 | **docker-lang** | `Dockerfile` `Containerfile` `Dockerfile.*`, `compose.yaml` `docker-compose.yml` (et `*.override.yml`…) | docker-langserver, docker-compose-langserver | — | npm |
 
-**docker-lang** ajoute aussi un panneau **Docker** dans la barre d'activité : liste des images locales, **Pull**, **Run** (dans un terminal), **Remove**, **Prune** des images sans tag, et **Full view** qui ouvre le tableau complet dans un onglet. Il faut le CLI `docker` dans le `PATH`.
+**docker-lang** ajoute aussi un panneau **Docker** dans la barre d'activité : liste des images locales, **Pull**, **Run** (dans un terminal), **Remove**, **Prune** des images sans tag, et **Full view** qui ouvre le tableau complet dans un onglet. **Containers & logs** ouvre en onglet la liste des conteneurs (**Start**, **Stop**, **Restart**, **Remove**, **Shell**) et leurs **Logs**, suivis en direct. Il faut le CLI `docker` dans le `PATH`.
 
 Des binaires précompilés existent pour **Windows x86_64**, **Linux x86_64** et **macOS Apple Silicon**. Sur une autre plateforme, le registre affiche « Not available for this platform » : il faut alors compiler depuis les sources (voir ci-dessous).
 
@@ -278,7 +278,7 @@ Ces méthodes compilent le module sur votre machine et demandent donc une toolch
 
 #### Mettre à jour et désinstaller
 
-- Section **INSTALLED** → **⟳ Check for updates** ; un module plus récent affiche **Update** (ou **Update to X** dans le registre), et **⬆ Update all** les met tous à jour d'un coup.
+- En haut du panneau, **⟳ Check for updates** ; un module plus récent affiche **Update** (ou **Update to X** dans le registre), et **⬆ Update all**, à côté, les met tous à jour d'un coup.
   - Modules du registre : comparés à l'index en ligne.
   - Modules installés depuis un dossier ou un workspace : comparés au `manifest.toml` source.
   - Modules installés depuis git ou un ZIP : pas de vérification automatique, il faut les réinstaller.
@@ -393,6 +393,7 @@ Un module ne dessine rien lui-même : `ui_view_ffi` renvoie une vue JSON que l'I
 | `row`, `group`, `collapsing` | `children` ; `title` pour `group` et `collapsing` (avec `id` et `open`) |
 | `list` | `items` : `id`, `title`, `subtitle`, `detail`, `actions` (boutons) ; `empty` |
 | `table` | `columns`, `rows` : `id`, `cells`, `actions` ; `empty` |
+| `log` | `text` (chasse fixe, sélectionnable, défile jusqu'à la fin), `height` |
 | `separator`, `spinner` (`text`), `space` (`size`) | — |
 
 Les éléments inconnus sont ignorés. Événements : `{"type":"click","id":…,"row":…}` (`row` = `id` de l'entrée de liste ou de tableau), `{"type":"submit","id":…,"value":…}`, `{"type":"toggle","id":…,"checked":…}` ; chacun porte `inputs`, le texte de tous les champs du panneau. Actions, renvoyées par `ui_event_ffi` ou dans `actions` d'une vue : `toast` (`text`), `terminal` (`command`, lancée dans un nouveau terminal), `open_panel` (`panel` : ouvre une page en onglet ou sélectionne un panneau latéral), `open_url` (`url`), `open_file` (`path`, relatif au workspace).
