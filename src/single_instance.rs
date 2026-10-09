@@ -194,6 +194,11 @@ mod tests {
         assert!(forward_with_lock(&lock, &file));
         let got = server.rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(got, file);
+        // The server wakes the UI right after sending the path: wait for it.
+        let start = std::time::Instant::now();
+        while woken.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(woken.load(Ordering::SeqCst), 1);
     }
 
