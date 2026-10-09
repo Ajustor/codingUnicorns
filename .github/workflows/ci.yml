@@ -55,6 +55,13 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+      # Same check as the release build (see scripts/check-linked-libs.sh).
+      - name: Check linked libraries
+        if: matrix.os != 'windows-latest'
+        run: |
+          cargo build
+          bash scripts/check-linked-libs.sh target/debug/coding-unicorns
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
