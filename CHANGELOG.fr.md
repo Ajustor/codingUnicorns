@@ -8,6 +8,19 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Non publié]
+
+### Nouveautés
+
+- Bouton **Update all** dans le panneau Extensions (*Installed*), à côté de *Check for updates* : met à jour d'un clic tous les modules qui ont une nouvelle version.
+- Nouveau module **Dockerfile** (`Dockerfile`, `Containerfile`, `Dockerfile.*`, `.dockerfile`) : coloration des instructions, options, variables, directives et heredocs, aide au survol de chaque instruction, et docker-langserver pour la validation, la complétion et le formatage.
+- Nouveau module **Docker Compose** (`compose.yaml`, `docker-compose.yml` et leurs variantes `*.override.yml`) : coloration YAML avec interpolation `${VAR}`, ancres et blocs, aide au survol des clés Compose, et compose-language-service de Microsoft pour la validation, la complétion et le survol.
+- Les modules peuvent reconnaître des fichiers par leur nom plutôt que leur extension (`file_names` dans `manifest.toml`, jokers `*`). Le serveur de langage, la barre d'état et le débogueur en tiennent compte : un `Dockerfile` obtient son serveur de langage.
+
+### Corrections
+
+- Désinstaller un module dont une dépendance npm est scopée (`@scope/paquet`) retire bien ce paquet.
+
 ## [0.10.5] - 2026-10-08
 
 ### Nouveautés

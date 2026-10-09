@@ -917,8 +917,10 @@ fn install_deps(
 /// Split a dependency spec of the form `name@version` into `(name, Some(version))`,
 /// or `(name, None)` when no version is pinned.
 fn split_pkg_version(pkg: &str) -> (&str, Option<&str>) {
-    match pkg.split_once('@') {
-        Some((n, v)) => (n, Some(v)),
+    // A leading `@` starts an npm scope (`@scope/pkg@1.0`), not a version.
+    let scope = usize::from(pkg.starts_with('@'));
+    match pkg[scope..].find('@') {
+        Some(i) => (&pkg[..scope + i], Some(&pkg[scope + i + 1..])),
         None => (pkg, None),
     }
 }
@@ -1502,6 +1504,14 @@ mod tests {
         );
         assert_eq!(split_pkg_version("pylsp"), ("pylsp", None));
         assert_eq!(split_pkg_version("a@b@c"), ("a", Some("b@c")));
+        assert_eq!(
+            split_pkg_version("@microsoft/compose-language-service"),
+            ("@microsoft/compose-language-service", None)
+        );
+        assert_eq!(
+            split_pkg_version("@scope/pkg@1.2"),
+            ("@scope/pkg", Some("1.2"))
+        );
     }
 
     #[test]

@@ -89,7 +89,7 @@ impl CodingUnicorns {
             self.ensure_lsp_for_file(&path);
             // Notify LSP server that a file was opened — with the normalized
             // (LF-only) buffer text, so later edits line up with it.
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(ext) = crate::language::language_key(&path).as_deref() {
                 let lang_id = self.extension_registry.lsp_language_id(ext);
                 let uri = crate::lsp::client::path_to_uri(&path);
                 if let Some(client) = self.lsp.get_mut(ext) {
