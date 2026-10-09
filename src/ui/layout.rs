@@ -21,6 +21,20 @@ pub enum SidebarTab {
     Module(String),
 }
 
+/// Icon button at the right end of a tab bar (`tab_rect`). True when clicked.
+fn tab_bar_button(ui: &mut egui::Ui, tab_rect: egui::Rect, icon: &str, tooltip: &str) -> bool {
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(tab_rect.right() - 30.0, tab_rect.top() + 3.0),
+        egui::vec2(26.0, 26.0),
+    );
+    ui.put(
+        rect,
+        egui::Button::new(RichText::new(icon).size(15.0)).frame(false),
+    )
+    .on_hover_text(tooltip)
+    .clicked()
+}
+
 /// Activity bar button: hover/active background, active border, icon.
 fn activity_button(
     ui: &mut egui::Ui,
@@ -1218,6 +1232,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
 
                 // Tab bar for right pane
                 let mut open_path_pane2: Option<std::path::PathBuf> = None;
+                let mut close_split = false;
                 if let Some(ref mut tm2) = app.tab_manager2 {
                     if !tm2.tabs.is_empty() {
                         let (tab_rect2, _) = right_ui.allocate_exact_size(
@@ -1243,7 +1258,16 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             app.active_pane = 1;
                             open_path_pane2 = Some(path);
                         }
+                        close_split = tab_bar_button(
+                            &mut right_ui,
+                            tab_rect2,
+                            egui_phosphor::regular::X_SQUARE,
+                            "Close split (Ctrl+\\)",
+                        );
                     }
+                }
+                if close_split {
+                    app.toggle_split();
                 }
                 // Load file into right editor if tab was clicked
                 if let Some(path) = open_path_pane2 {
@@ -1284,6 +1308,13 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         );
                     }
                 }
+                // The active pane is the one being typed in: clicks land on the
+                // editors, so the panes' own click sensors rarely see them.
+                if app.editor2.as_ref().is_some_and(|e| e.has_focus) {
+                    app.active_pane = 1;
+                } else if app.editor.has_focus {
+                    app.active_pane = 0;
+                }
             } else {
                 // ── Single pane (existing behavior) ────────────────────────
                 if !app.tab_manager.tabs.is_empty() {
@@ -1312,6 +1343,14 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     } else if app.tab_manager.tabs.is_empty() && app.editor.current_path.is_some() {
                         // Last tab was closed via × — clear the editor so the welcome screen appears.
                         app.load_active_tab();
+                    }
+                    if tab_bar_button(
+                        ui,
+                        tab_rect,
+                        egui_phosphor::regular::SQUARE_SPLIT_HORIZONTAL,
+                        "Split editor (Ctrl+\\)",
+                    ) {
+                        app.toggle_split();
                     }
                     // Keep settings_panel.open in sync with whether a settings tab exists
                     app.settings_panel.open = app.tab_manager.tabs.iter().any(|t| t.is_settings);

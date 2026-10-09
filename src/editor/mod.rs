@@ -58,6 +58,9 @@ pub struct Editor {
     pub scroll_to_cursor: bool,
     /// Set to true to request keyboard focus on the next frame (e.g. after opening a file).
     pub focus_requested: bool,
+    /// Whether the editor held the keyboard focus during the last `show()`
+    /// (tells which split pane is active).
+    pub has_focus: bool,
     /// Populated by Ctrl+click; consumed by the app to navigate to definition.
     pub go_to_definition_request: Option<String>,
     /// Word under the mouse when Ctrl is held: (row, start_col, end_col).
@@ -222,6 +225,7 @@ impl Editor {
             goto_line_input: String::new(),
             scroll_to_cursor: false,
             focus_requested: false,
+            has_focus: false,
             go_to_definition_request: None,
             ctrl_hover_word_bounds: None,
             hover_word: None,
@@ -932,6 +936,7 @@ impl Editor {
                 // Capture Tab + arrow keys so egui's directional focus navigation
                 // doesn't move focus out of the editor (into the file tree / terminal)
                 // when the user presses an arrow key.
+                self.has_focus = has_focus || response.has_focus();
                 if has_focus || response.has_focus() {
                     ui.memory_mut(|m| {
                         m.set_focus_lock_filter(
@@ -3810,6 +3815,51 @@ mod tests {
             })
         }
 
+        /// Two editors side by side, like the split view: `left` in the left
+        /// half of the window, `right` in the right half.
+        fn frame_split(
+            &mut self,
+            left: &mut Editor,
+            right: &mut Editor,
+            events: Vec<Event>,
+        ) -> egui::FullOutput {
+            self.time += 1.0 / 60.0;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                time: Some(self.time),
+                events,
+                focused: true,
+                ..Default::default()
+            };
+            let palette = crate::ui::theme::Palette::from_theme(&self.config.theme);
+            let (config, plugins, bps) = (&self.config, &self.plugins, &self.breakpoints);
+            self.ctx.run(raw, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        for (ed, x) in [(&mut *left, 0.0), (&mut *right, 400.0)] {
+                            let rect = egui::Rect::from_min_size(
+                                egui::pos2(x, 0.0),
+                                egui::vec2(400.0, 600.0),
+                            );
+                            let mut pane = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                            ed.show(
+                                &mut pane,
+                                config,
+                                plugins,
+                                None,
+                                bps,
+                                palette,
+                                crate::ui::theme::Spacing::default(),
+                            );
+                        }
+                    });
+            })
+        }
+
         fn idle(&mut self, ed: &mut Editor) -> egui::FullOutput {
             self.frame(ed, vec![], NONE)
         }
@@ -4286,6 +4336,61 @@ mod tests {
         ed.buffer = Buffer::from_str("  //a\n// b");
         h.press(&mut ed, Key::Slash, CTRL);
         assert_eq!(text(&ed), "  a\nb");
+    }
+
+    /// The split view's active pane is the editor holding the keyboard focus:
+    /// a click moves it there, and only that editor receives the typing.
+    #[test]
+    fn split_panes_take_focus_and_typing_on_click() {
+        let mut h = Harness::new();
+        let mut left = Editor::new();
+        let mut right = Editor::new();
+        left.set_content(
+            "left
+"
+            .into(),
+            None,
+        );
+        right.set_content(
+            "right
+"
+            .into(),
+            None,
+        );
+        h.frame_split(&mut left, &mut right, vec![]);
+        h.frame_split(&mut left, &mut right, vec![]);
+
+        let click = |x: f32| {
+            let pos = egui::pos2(x, 100.0);
+            vec![
+                Event::PointerMoved(pos),
+                Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: NONE,
+                },
+                Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: NONE,
+                },
+            ]
+        };
+        for (x, expect_right) in [(600.0, true), (200.0, false), (600.0, true)] {
+            h.frame_split(&mut left, &mut right, click(x));
+            h.frame_split(&mut left, &mut right, vec![]);
+            assert_eq!(right.has_focus, expect_right, "click at x={x}");
+            assert_eq!(left.has_focus, !expect_right, "click at x={x}");
+        }
+        h.frame_split(&mut left, &mut right, vec![Event::Text("Z".into())]);
+        assert!(
+            right.buffer.to_string().contains('Z'),
+            "{:?}",
+            right.buffer.to_string()
+        );
+        assert!(!left.buffer.to_string().contains('Z'));
     }
 
     #[test]

@@ -1313,6 +1313,7 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::ShowProblems => self.problems_panel.open = true,
                     PaletteCommand::GoToWorkspaceSymbol => self.command_palette.open_with("#"),
                     PaletteCommand::GoToFileSymbol => self.command_palette.open_with("@"),
+                    PaletteCommand::ToggleSplit => self.toggle_split(),
                     PaletteCommand::CheckForUpdates => {
                         if matches!(self.updater.state, crate::updater::UpdateState::Ready(_)) {
                             self.updater.dismissed = false;
