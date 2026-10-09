@@ -10,6 +10,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Modules can add interfaces to the IDE: sidebar panels with their own activity bar icon, and pages opened as editor tabs (`[[panels]]` in `manifest.toml`). The module returns JSON views (text, buttons, inputs, lists, tables…) that the IDE draws, receives the clicks, and can show toasts, run a command in a terminal or open a page.
+- The **Docker** module gets a **Docker** panel: list local images, pull, run in a terminal, remove and prune them, with a full table in a page.
+- One module can now use a different language server per language (`[capabilities.lsp_servers.<language>]`) and receive the file's language in its tokenizer and hover (`*_lang_ffi` exports). The Dockerfile and Docker Compose modules are merged into one **Docker** module.
+- **Uninstall** buttons are easier to find: a red button in the *Installed* section, now open by default, and on installed modules in the registry. A failed uninstall is reported instead of only being logged.
+
 ### Fixed
 
 - The selected entry of the command palette is readable: it is drawn in the theme's contrast color on a solid accent background, instead of accent text on an accent tint.

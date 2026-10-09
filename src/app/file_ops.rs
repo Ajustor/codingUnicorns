@@ -172,6 +172,9 @@ impl CodingUnicorns {
     pub fn load_active_tab(&mut self) {
         if let Some(id) = self.tab_manager.active_tab {
             if let Some(tab) = self.tab_manager.tabs.iter().find(|t| t.id == id) {
+                if tab.page.is_some() {
+                    return; // drawn by its module, no file to load
+                }
                 let path = tab.path.clone();
                 // Delegate to open_file so image state is handled correctly.
                 self.open_file(path);
