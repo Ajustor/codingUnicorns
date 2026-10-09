@@ -251,6 +251,10 @@ pub struct Config {
     /// at most [`MAX_RECENT_WORKSPACES`]).
     #[serde(default)]
     pub recent_workspaces: Vec<String>,
+    /// Labels of the palette commands last run, most recent first (at most
+    /// [`MAX_RECENT_COMMANDS`]).
+    #[serde(default)]
+    pub recent_commands: Vec<String>,
     #[serde(default)]
     pub extensions: ExtensionsConfig,
 }
@@ -291,6 +295,9 @@ fn deserialize_registry_url<'de, D: serde::Deserializer<'de>>(d: D) -> Result<St
 
 /// Maximum number of entries kept in [`Config::recent_workspaces`].
 pub const MAX_RECENT_WORKSPACES: usize = 10;
+
+/// Maximum number of entries kept in [`Config::recent_commands`].
+pub const MAX_RECENT_COMMANDS: usize = 5;
 
 /// Whether two workspace path strings designate the same folder. Ignores
 /// trailing separators and, on Windows, case and `/` vs `\`.
@@ -383,6 +390,7 @@ impl Default for Config {
             check_updates: true,
             skipped_update_version: None,
             recent_workspaces: Vec::new(),
+            recent_commands: Vec::new(),
             extensions: ExtensionsConfig::default(),
         }
     }
@@ -427,6 +435,14 @@ impl Config {
         self.recent_workspaces.retain(|p| !same_workspace(p, path));
         self.recent_workspaces.insert(0, path.to_string());
         self.recent_workspaces.truncate(MAX_RECENT_WORKSPACES);
+    }
+
+    /// Move the palette command `label` to the front of the recent commands
+    /// (deduplicated, capped at [`MAX_RECENT_COMMANDS`]).
+    pub fn push_recent_command(&mut self, label: &str) {
+        self.recent_commands.retain(|l| l != label);
+        self.recent_commands.insert(0, label.to_string());
+        self.recent_commands.truncate(MAX_RECENT_COMMANDS);
     }
 
     /// Drop recent workspaces whose folder no longer exists. Returns true if
@@ -782,6 +798,15 @@ mod tests {
         let c = Config::load_from(&corrupt);
         assert_eq!(c.font.size, 14.0);
         assert_eq!(c.claude_binary, "claude");
+    }
+
+    #[test]
+    fn push_recent_command_is_mru_deduplicated_and_capped() {
+        let mut c = Config::default();
+        for l in ["a", "b", "a", "c", "d", "e", "f"] {
+            c.push_recent_command(l);
+        }
+        assert_eq!(c.recent_commands, ["f", "e", "d", "c", "a"]);
     }
 
     #[test]

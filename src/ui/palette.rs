@@ -178,6 +178,9 @@ pub struct CommandPalette {
     doc_symbols_requested: bool,
     /// `(path, line, col)` picked from a symbol mode; taken by the app.
     pub picked_location: Option<(PathBuf, usize, usize)>,
+    /// Labels of the commands last run, most recent first: listed before the
+    /// others (kept by the app in the config).
+    pub recent_commands: Vec<String>,
 }
 
 impl CommandPalette {
@@ -198,7 +201,30 @@ impl CommandPalette {
             document_symbols_path: None,
             doc_symbols_requested: false,
             picked_location: None,
+            recent_commands: vec![],
         }
+    }
+
+    /// A palette listing the commands `recent` (labels, most recent first)
+    /// before the others.
+    pub fn with_recent(recent: Vec<String>) -> Self {
+        Self {
+            recent_commands: recent,
+            ..Self::new()
+        }
+    }
+
+    /// Every command, the recently run ones first (most recent first).
+    fn commands(&self) -> Vec<&'static PaletteCommand> {
+        let all = PaletteCommand::all();
+        let recent = self
+            .recent_commands
+            .iter()
+            .filter_map(|label| all.iter().find(|c| c.label() == label));
+        let rest = all
+            .iter()
+            .filter(|c| !self.recent_commands.iter().any(|l| l == c.label()));
+        recent.chain(rest).collect()
     }
 
     fn reset(&mut self, query: &str) {
@@ -384,7 +410,7 @@ impl CommandPalette {
                 );
             }
         } else if commands_only {
-            for cmd in PaletteCommand::all() {
+            for cmd in self.commands() {
                 let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
                     || self
@@ -418,7 +444,7 @@ impl CommandPalette {
                 }
             }
             // Commands at the bottom
-            for cmd in PaletteCommand::all() {
+            for cmd in self.commands() {
                 let haystack = format!("{} {}", cmd.label(), cmd.description());
                 if effective_query.is_empty()
                     || self
@@ -1008,6 +1034,36 @@ mod tests {
         assert_eq!(h.commands(), [PaletteCommand::RestartLsp]);
         h.query(">qqqzzz");
         assert!(h.p.entries.is_empty());
+    }
+
+    #[test]
+    fn recent_commands_come_first() {
+        let mut h = Harness::new(&["a.rs"]);
+        h.p.recent_commands = vec![
+            PaletteCommand::ToggleSplit.label().into(),
+            PaletteCommand::OpenSettings.label().into(),
+            "A command that no longer exists".into(),
+        ];
+        h.query(">");
+        let cmds = h.commands();
+        assert_eq!(
+            cmds[..3],
+            [
+                PaletteCommand::ToggleSplit,
+                PaletteCommand::OpenSettings,
+                PaletteCommand::ToggleTerminal
+            ]
+        );
+        assert_eq!(cmds.len(), PaletteCommand::all().len(), "each command once");
+        // Also first among the matches, and after the files in file mode.
+        h.query(">toggle");
+        assert_eq!(h.commands()[0], PaletteCommand::ToggleSplit);
+        h.query("");
+        assert_eq!(h.files(), ["a.rs"]);
+        assert_eq!(h.commands()[0], PaletteCommand::ToggleSplit);
+        // Enter runs the most recent one.
+        h.query(">");
+        assert_eq!(h.key(Key::Enter).1, Some(PaletteCommand::ToggleSplit));
     }
 
     #[test]

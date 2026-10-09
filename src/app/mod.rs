@@ -199,6 +199,7 @@ pub struct ImageData {
 impl CodingUnicorns {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
         let config = Config::load();
+        let command_palette = CommandPalette::with_recent(config.recent_commands.clone());
         let mut plugin_manager = PluginManager::new();
         plugin_manager.register(Box::new(WordCountPlugin::new()));
         let mut extension_registry = crate::extension::registry::ExtensionRegistry::new();
@@ -279,7 +280,7 @@ impl CodingUnicorns {
             status_bar: StatusBar::new(),
             palette,
             spacing: crate::ui::theme::Spacing::default(),
-            command_palette: CommandPalette::new(),
+            command_palette,
             shortcuts_help: ShortcutsHelp::new(),
             settings_panel: SettingsPanel::new(),
             sidebar_tab: SidebarTab::default(),
@@ -1282,6 +1283,9 @@ impl eframe::App for CodingUnicorns {
             self.drive_palette_symbols(ctx);
             if let Some(cmd) = cmd {
                 use crate::ui::palette::PaletteCommand;
+                self.config.push_recent_command(cmd.label());
+                self.config.save();
+                self.command_palette.recent_commands = self.config.recent_commands.clone();
                 match cmd {
                     PaletteCommand::ToggleTerminal => self.show_terminal = !self.show_terminal,
                     PaletteCommand::ToggleClaude => self.show_claude = !self.show_claude,
