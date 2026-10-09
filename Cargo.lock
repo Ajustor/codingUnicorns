@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "coding-unicorns"
-version = "0.10.7"
+version = "0.10.8"
 dependencies = [
  "anyhow",
  "claude",
