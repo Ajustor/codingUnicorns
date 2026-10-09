@@ -101,6 +101,12 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
+      # The binary must start on a bare system: no Homebrew library on macOS,
+      # no OpenSSL / libgit2 / libssh2 from the build machine on Linux.
+      - name: Check linked libraries
+        if: matrix.os != 'windows-latest'
+        run: bash scripts/check-linked-libs.sh target/${{ matrix.target }}/release/coding-unicorns
+
       # ── Windows code signing (optional) ────────────────────────────────────
       # The exe is signed in place right after the build, so every copy made
       # below (the uploaded .exe and the one packed into the MSI) is signed, and
