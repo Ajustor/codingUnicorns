@@ -14,6 +14,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 - macOS: a real app, **Coding Unicorns.app**, installed from a disk image (`coding-unicorns-macos-arm64.dmg`: drag it into Applications). Started from the Finder or the Dock, it takes the `PATH` of your login shell, so the terminal, the language servers and Claude find your tools (Homebrew, `~/.cargo/bin`...).
 - Linux: an AppImage (`coding-unicorns-linux-x64.AppImage`), with its icon and menu entry, which updates itself in place.
+- The macOS app and the AppImage put the `cu` command on your `PATH` when they start (a link in `/usr/local/bin` or `~/.local/bin`, added to your shell's startup file if needed): open a new terminal and run `cu .`.
 
 ## [0.10.10] - 2026-10-09
 

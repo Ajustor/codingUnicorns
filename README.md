@@ -136,7 +136,7 @@ cu chemin/fichier # ouvre un fichier ou un dossier
 
 Elle rend la main tout de suite : l'IDE continue en arrière-plan, détaché du terminal. Sur Linux et macOS, `--wait` le garde au premier plan. Si l'IDE est déjà ouvert, le chemin est envoyé à la fenêtre existante. Le chemin est toujours converti en chemin absolu, donc `${workspaceFolder}` vaut le dossier complet dans les configurations de lancement.
 
-L'installateur MSI ajoute `cu` au `PATH` sous Windows ; ailleurs, lancez `scripts/install-cli.sh` (il trouve aussi l'app macOS installée dans `/Applications`) (ou `scripts/install-cli.ps1` pour une installation via `cargo install` sous Windows).
+L'installateur MSI ajoute `cu` au `PATH` sous Windows. L'app macOS et l'AppImage le font elles-mêmes à chaque lancement : un lien `cu` dans `/usr/local/bin` (macOS, s'il est accessible en écriture) ou `~/.local/bin`, ajouté si besoin au `PATH` dans le fichier de démarrage du shell (`~/.zshrc`, `~/.bashrc` — `~/.bash_profile` sur macOS —, ou `~/.config/fish/conf.d/`) ; ouvrez un nouveau terminal ensuite. Un `cu` existant qui ne pointe pas vers l'app n'est jamais remplacé. Pour les autres installations, lancez `scripts/install-cli.sh` (il trouve aussi l'app macOS installée dans `/Applications`) (ou `scripts/install-cli.ps1` pour une installation via `cargo install` sous Windows).
 
 ### Interface
 

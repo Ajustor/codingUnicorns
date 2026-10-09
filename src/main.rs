@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod cli_link;
 mod config;
 pub mod dap;
 mod editor;
@@ -191,6 +192,8 @@ fn main() -> eframe::Result<()> {
     if detach_from_terminal(&args) {
         return Ok(());
     }
+    // The .app / AppImage puts `cu` on the PATH (after login_path::import).
+    cli_link::install_in_background();
 
     let icon = load_icon();
     let mut viewport = egui::ViewportBuilder::default()
