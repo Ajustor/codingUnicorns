@@ -19,6 +19,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 
 ### Corrections
 
+- **macOS : l'application redémarre sans Homebrew.** Elle exigeait l'OpenSSL de Homebrew (`Library not loaded: /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib`) et s'arrêtait au lancement sur les machines qui ne l'ont pas. OpenSSL et libgit2 sont désormais intégrés aux binaires macOS et Linux, et la publication vérifie qu'aucune de ces bibliothèques n'est liée.
 - L'entrée sélectionnée de la palette de commandes est lisible : elle s'affiche dans la couleur de contraste du thème sur un fond d'accent plein, au lieu d'un texte couleur accent sur une teinte d'accent.
 - Sous Linux et macOS, annuler le lancement d'un débogage arrête aussi la commande lancée par sa `preLaunchTask`, au lieu de la laisser tourner.
 
