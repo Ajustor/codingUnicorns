@@ -24,7 +24,7 @@
 
   "download_title": "Télécharger la",
   "download_intro": "Choisissez le fichier de votre système. Une fois installé, Coding Unicorns se met à jour tout seul : il vérifie au démarrage si une nouvelle version existe et contrôle chaque téléchargement par son empreinte SHA-256.",
-  "download_tip": "<strong>Linux / macOS :</strong> rendez le binaire exécutable avec <code>chmod +x coding-unicorns-*</code> puis lancez-le. <strong>Windows :</strong> l'installateur <code>.msi</code> est recommandé ; le <code>.exe</code> est une version portable, sans installation.",
+  "download_tip": "<strong>macOS :</strong> ouvrez le <code>.dmg</code> et glissez Coding Unicorns dans Applications. L'app n'est pas notarisée par Apple : au premier lancement, faites clic droit › <em>Ouvrir</em> (ou Réglages Système › Confidentialité et sécurité › <em>Ouvrir quand même</em>). <strong>Linux :</strong> rendez l'AppImage exécutable avec <code>chmod +x coding-unicorns-linux-x64.AppImage</code> puis lancez-la (FUSE est nécessaire : paquet <code>libfuse2</code> ou <code>fuse</code>). Les binaires seuls servent en ligne de commande. <strong>Windows :</strong> l'installateur <code>.msi</code> est recommandé ; le <code>.exe</code> est une version portable, sans installation.",
   "your_system": "Votre système",
   "sha256": "Empreinte SHA-256",
   "size_units": ["o", "Ko", "Mo", "Go"],
@@ -32,9 +32,11 @@
   "cards": {
     "msi": ["Windows", "Installateur .msi — recommandé"],
     "exe": ["Windows", "Version portable .exe, sans installation"],
-    "linux_x64": ["Linux", "Binaire x86_64"],
+    "appimage": ["Linux", "AppImage — recommandé, x86_64"],
+    "linux_x64": ["Linux", "Binaire x86_64 seul"],
     "linux": ["Linux", "Binaire"],
-    "macos_arm64": ["macOS", "Apple Silicon (M1 et suivants)"],
+    "dmg": ["macOS", "Image disque .dmg — recommandé, Apple Silicon"],
+    "macos_arm64": ["macOS", "Binaire seul, Apple Silicon (M1 et suivants)"],
     "macos_x64": ["macOS", "Intel"],
     "macos": ["macOS", "Binaire"],
     "other": ["", "Fichier"]

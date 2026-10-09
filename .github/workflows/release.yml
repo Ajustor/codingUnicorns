@@ -96,7 +96,8 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libxkbcommon-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            desktop-file-utils
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
@@ -150,6 +151,18 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           cp target/${{ matrix.target }}/release/coding-unicorns.exe ${{ matrix.artifact }}
+
+      # ── Linux / macOS packages ─────────────────────────────────────────────
+      # The bare binaries above stay published: installs from them (and older
+      # versions) keep updating themselves from them.
+
+      - name: Build AppImage (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash scripts/build-appimage.sh target/${{ matrix.target }}/release/coding-unicorns coding-unicorns-linux-x64.AppImage
+
+      - name: Build app and disk image (macOS)
+        if: matrix.os == 'macos-latest'
+        run: bash scripts/build-macos-app.sh target/${{ matrix.target }}/release/coding-unicorns coding-unicorns-macos-arm64.dmg
 
       # ── Windows extras ─────────────────────────────────────────────────────
 
@@ -217,6 +230,20 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
+
+      - name: Upload AppImage (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v5
+        with:
+          name: coding-unicorns-linux-x64-appimage
+          path: coding-unicorns-linux-x64.AppImage
+
+      - name: Upload disk image (macOS)
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v5
+        with:
+          name: coding-unicorns-macos-arm64-dmg
+          path: coding-unicorns-macos-arm64.dmg
 
       - name: Upload Windows installer (MSI)
         if: matrix.os == 'windows-latest'

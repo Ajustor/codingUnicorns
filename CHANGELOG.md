@@ -8,6 +8,13 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- macOS: a real app, **Coding Unicorns.app**, installed from a disk image (`coding-unicorns-macos-arm64.dmg`: drag it into Applications). Started from the Finder or the Dock, it takes the `PATH` of your login shell, so the terminal, the language servers and Claude find your tools (Homebrew, `~/.cargo/bin`...).
+- Linux: an AppImage (`coding-unicorns-linux-x64.AppImage`), with its icon and menu entry, which updates itself in place.
+
 ## [0.10.10] - 2026-10-09
 
 ### Added

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Coding Unicorns
+GenericName=Code Editor
+Comment=Lightweight IDE with an integrated terminal, Git and Claude
+Exec=coding-unicorns %F
+Icon=coding-unicorns
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=coding-unicorns

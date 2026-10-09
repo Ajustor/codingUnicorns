@@ -91,6 +91,18 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 
 ## Installation
 
+Depuis la [page de téléchargement](https://ajustor.github.io/codingUnicorns/fr/) :
+
+- **macOS** (Apple Silicon) : ouvrez `coding-unicorns-macos-arm64.dmg` et glissez **Coding Unicorns** dans **Applications**. L'app est signée ad hoc, sans notarisation Apple : au premier lancement, clic droit → **Ouvrir** (ou Réglages Système → Confidentialité et sécurité → **Ouvrir quand même**).
+- **Linux** (x86_64) : `chmod +x coding-unicorns-linux-x64.AppImage` puis lancez-la (FUSE requis : paquet `libfuse2` ou `fuse`). Un intégrateur comme AppImageLauncher ou Gear Lever l'ajoute au menu des applications.
+- **Windows** : installateur `coding-unicorns-setup.msi`.
+
+Les binaires seuls (`coding-unicorns-linux-x64`, `coding-unicorns-macos-arm64`, `.exe`) restent publiés pour un usage en ligne de commande.
+
+Les paquets sont produits par `scripts/build-macos-app.sh` (`.app` + `.dmg`, à lancer sur macOS) et `scripts/build-appimage.sh` (Linux), à partir du binaire release et des fichiers de `packaging/`.
+
+### Depuis les sources
+
 ```bash
 git clone https://github.com/votre-utilisateur/codingUnicorns
 cd codingUnicorns
@@ -124,7 +136,7 @@ cu chemin/fichier # ouvre un fichier ou un dossier
 
 Elle rend la main tout de suite : l'IDE continue en arrière-plan, détaché du terminal. Sur Linux et macOS, `--wait` le garde au premier plan. Si l'IDE est déjà ouvert, le chemin est envoyé à la fenêtre existante. Le chemin est toujours converti en chemin absolu, donc `${workspaceFolder}` vaut le dossier complet dans les configurations de lancement.
 
-L'installateur MSI ajoute `cu` au `PATH` sous Windows ; ailleurs, lancez `scripts/install-cli.sh` (ou `scripts/install-cli.ps1` pour une installation via `cargo install` sous Windows).
+L'installateur MSI ajoute `cu` au `PATH` sous Windows ; ailleurs, lancez `scripts/install-cli.sh` (il trouve aussi l'app macOS installée dans `/Applications`) (ou `scripts/install-cli.ps1` pour une installation via `cargo install` sous Windows).
 
 ### Interface
 
@@ -414,7 +426,8 @@ Le fichier de configuration est stocké dans :
 
 Au démarrage (builds release uniquement), l'IDE lit le manifeste [`latest.json`](https://ajustor.github.io/codingUnicorns/latest.json) publié sur GitHub Pages par le workflow de release (le dépôt étant privé, l'API des releases n'est pas accessible aux clients). Si une version plus récente existe, une fenêtre propose de l'installer ; le fichier téléchargé est vérifié avec le SHA-256 du manifeste.
 
-- **Binaire portable** (Linux, macOS, `.exe` Windows) : l'exécutable est remplacé sur place, puis l'IDE redémarre.
+- **Binaire portable** (Linux, macOS, `.exe` Windows) et **app macOS** : l'exécutable est remplacé sur place (dans `Coding Unicorns.app/Contents/MacOS/` pour l'app), puis l'IDE redémarre.
+- **AppImage** (Linux) : le fichier `.AppImage` lancé (`$APPIMAGE`) est remplacé par celui de la nouvelle version, puis l'IDE redémarre.
 - **Installation MSI** (Windows, dans `Program Files`) : le `.msi` est téléchargé et lancé via `msiexec` à la fermeture de l'IDE.
 
 Vérification manuelle : palette de commandes → **Check for Updates**. Désactivable dans Settings → Updates (`check_updates = false`).

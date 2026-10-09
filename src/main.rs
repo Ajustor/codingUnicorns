@@ -10,6 +10,7 @@ mod filetree;
 mod git;
 mod keybinds;
 mod language;
+mod login_path;
 mod lsp;
 mod nav_history;
 pub mod plugin;
@@ -165,6 +166,8 @@ fn main() -> eframe::Result<()> {
 
     install_panic_logger();
     env_logger::init();
+    // Before any thread: it sets PATH.
+    login_path::import();
 
     // SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
     #[cfg(windows)]
@@ -192,6 +195,9 @@ fn main() -> eframe::Result<()> {
     let icon = load_icon();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Coding Unicorns")
+        // Wayland app id / X11 WM_CLASS: matches the AppImage's coding-unicorns.desktop,
+        // so the desktop shows its icon and name for the window.
+        .with_app_id("coding-unicorns")
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([600.0, 400.0]);
     if let Some(icon_data) = icon {

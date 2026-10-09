@@ -41,7 +41,8 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libxkbcommon-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            desktop-file-utils
 
       - name: cargo check
         run: cargo check --workspace --all-targets
@@ -61,6 +62,16 @@ jobs:
         run: |
           cargo build
           bash scripts/check-linked-libs.sh target/debug/coding-unicorns
+
+      # Same packaging as the release (from the debug build), so a PR that
+      # breaks it fails here.
+      - name: Build AppImage
+        if: matrix.os == 'ubuntu-latest'
+        run: bash scripts/build-appimage.sh target/debug/coding-unicorns coding-unicorns-linux-x64.AppImage
+
+      - name: Build app and disk image
+        if: matrix.os == 'macos-latest'
+        run: bash scripts/build-macos-app.sh target/debug/coding-unicorns coding-unicorns-macos-arm64.dmg
 
   coverage:
     name: Coverage
