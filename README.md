@@ -11,7 +11,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 
 ### Éditeur
 - ✏️ Éditeur de texte avec undo/redo, sélection, word wrap
-- 🔀 Split editor (Ctrl+\\) — vue côte à côte
+- 🔀 Split editor — vue côte à côte : bouton à droite des onglets, commande « Split Editor: Toggle » ou Ctrl+\\
 - 🔢 Multi-curseurs (Ctrl+D, Ctrl+Shift+L, Alt+↑/↓, Ctrl+Clic)
 - 📋 Multi-cursor paste — colle une ligne par curseur quand le nombre correspond
 - 🔍 Highlight des occurrences du mot sélectionné
@@ -137,7 +137,7 @@ L'installateur MSI ajoute `cu` au `PATH` sous Windows ; ailleurs, lancez `script
 |------|-------------|
 | **Barre d'activité** | Explorer, Recherche, Git, Extensions, Run, Outline, Debug |
 | **Sidebar** | Arbre de fichiers, recherche workspace, git panel, extensions |
-| **Éditeur** | Zone principale avec onglets, split possible (Ctrl+\\) |
+| **Éditeur** | Zone principale avec onglets, split possible (bouton à droite des onglets, palette ou Ctrl+\\) |
 | **Terminal** | Terminal intégré multi-onglets |
 | **Status bar** | Branche git, type fichier, position curseur, statut LSP |
 

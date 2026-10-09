@@ -74,6 +74,9 @@ impl CodingUnicorns {
             self.editor2 = None;
             self.tab_manager2 = None;
             self.active_pane = 0;
+        } else if self.editor.current_path.is_none() {
+            // The right pane needs a file: an empty one closes on the next frame.
+            self.toast("Open a file to split the editor");
         } else {
             // Open split with current file
             let mut editor2 = Editor::new();

@@ -13,6 +13,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - The Settings page opens instantly: listing the available shells no longer starts a `where` / `which` process per shell (about 100 ms each, more with an antivirus), which froze the window the first time the page opened. New terminals start faster for the same reason.
+- **The split editor can be opened again.** Its only way in was Ctrl+\, which AZERTY and other layouts type with AltGr (Ctrl+Alt): it never matched there. A split button now sits at the right of the tab bar (a close button in the right pane), and the palette has *Split Editor: Toggle*.
+- In the split view, the active pane is the one you type in: files opened from the explorer go to that pane. Before, clicking into an editor did not change it, so files opened in the wrong pane.
+- Splitting without an open file says so, instead of opening and closing the split at once.
 
 ## [0.10.8] - 2026-10-09
 
