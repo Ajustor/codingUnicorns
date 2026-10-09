@@ -7,6 +7,8 @@ pub struct Tab {
     pub title: String,
     pub is_modified: bool,
     pub is_settings: bool,
+    /// Module page shown in this tab (a `[[panels]]` id), instead of a file.
+    pub page: Option<String>,
     /// The file was deleted on disk; the buffer is kept and the title shows it.
     pub is_deleted: bool,
 }
@@ -44,6 +46,7 @@ impl TabManager {
             title,
             is_modified: false,
             is_settings: false,
+            page: None,
             is_deleted: false,
         });
         self.active_tab = Some(id);
@@ -61,6 +64,7 @@ impl TabManager {
             title,
             is_modified: true,
             is_settings: false,
+            page: None,
             is_deleted: false,
         });
         self.active_tab = Some(id);
@@ -81,10 +85,56 @@ impl TabManager {
             title: "Settings".to_string(),
             is_modified: false,
             is_settings: true,
+            page: None,
             is_deleted: false,
         });
         self.active_tab = Some(id);
         id
+    }
+
+    /// Open (or focus) the tab of module page `panel_id`.
+    pub fn open_page(&mut self, panel_id: &str, title: &str) -> usize {
+        if let Some(existing) = self
+            .tabs
+            .iter()
+            .find(|t| t.page.as_deref() == Some(panel_id))
+        {
+            let id = existing.id;
+            self.active_tab = Some(id);
+            return id;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.tabs.push(Tab {
+            id,
+            path: PathBuf::from(format!("__page__{panel_id}")),
+            title: title.to_string(),
+            is_modified: false,
+            is_settings: false,
+            page: Some(panel_id.to_string()),
+            is_deleted: false,
+        });
+        self.active_tab = Some(id);
+        id
+    }
+
+    /// Module page of the active tab, if it shows one.
+    pub fn active_page(&self) -> Option<&str> {
+        let id = self.active_tab?;
+        self.tabs.iter().find(|t| t.id == id)?.page.as_deref()
+    }
+
+    /// Close the page tabs whose panel is not in `panels` any more.
+    pub fn retain_pages(&mut self, panels: &[String]) {
+        let gone: Vec<usize> = self
+            .tabs
+            .iter()
+            .filter(|t| t.page.as_ref().is_some_and(|p| !panels.contains(p)))
+            .map(|t| t.id)
+            .collect();
+        for id in gone {
+            self.close(id);
+        }
     }
 
     /// Mark (or unmark) the tab of `path` as deleted on disk. Returns true if
@@ -124,7 +174,7 @@ impl TabManager {
                         t.title.clone()
                     },
                     t.is_modified,
-                    t.is_settings,
+                    t.is_settings || t.page.is_some(),
                 )
             })
             .collect();
@@ -141,8 +191,13 @@ impl TabManager {
                 let frame_resp = egui::Frame::new().fill(bg).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if *tab_is_settings {
+                            let icon = if tab_path.starts_with("__page__") {
+                                egui_phosphor::regular::PUZZLE_PIECE
+                            } else {
+                                egui_phosphor::regular::GEAR
+                            };
                             ui.label(
-                                egui::RichText::new(egui_phosphor::regular::GEAR)
+                                egui::RichText::new(icon)
                                     .color(egui::Color32::from_gray(160))
                                     .size(14.0),
                             );
@@ -209,6 +264,7 @@ impl TabManager {
                 to_open = self
                     .active_tab
                     .and_then(|new_id| self.tabs.iter().find(|t| t.id == new_id))
+                    .filter(|t| !t.is_settings && t.page.is_none())
                     .map(|t| t.path.clone());
             }
         }
@@ -352,6 +408,21 @@ mod tests {
         assert_ne!(tm.tabs[0].path, tm.tabs[1].path);
         assert!(tm.tabs.iter().all(|t| t.is_modified && !t.is_settings));
         assert_eq!(tm.active_tab, Some(b));
+    }
+
+    #[test]
+    fn pages_are_singletons_and_closed_when_their_panel_goes() {
+        let mut tm = TabManager::new();
+        tm.open(PathBuf::from("/a.rs"), String::new());
+        let p = tm.open_page("docker.images", "Docker");
+        assert_eq!(tm.active_page(), Some("docker.images"));
+        assert_eq!(tm.open_page("docker.images", "Docker"), p);
+        assert_eq!(tm.tabs.len(), 2);
+        tm.retain_pages(&["docker.images".to_string()]);
+        assert_eq!(tm.tabs.len(), 2);
+        tm.retain_pages(&[]);
+        assert_eq!(tm.tabs.len(), 1);
+        assert_eq!(tm.active_page(), None);
     }
 
     #[test]
