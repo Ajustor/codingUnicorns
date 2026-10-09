@@ -19,7 +19,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - **Les mises à jour s'installent de nouveau.** Après *Install*, la mise à jour ne s'appliquait que si l'on cliquait *Restart now* ou *When I quit* ; fermer la fenêtre autrement laissait l'installeur téléchargé inutilisé. Elle s'installe désormais dès que l'application se ferme (*Restart now* installe et relance tout de suite). Chaque étape est écrite dans `update.log` du dossier de mise à jour, et le journal de l'installeur dans `install.log`.
-- Les requêtes HTTPS (registre des modules, téléchargements, mises à jour) font confiance aux certificats du système. Derrière un proxy d'entreprise ou un antivirus qui inspecte le HTTPS, le registre échouait avec « invalid peer certificate: UnknownIssuer ».
+- Les requêtes HTTPS (registre des modules, téléchargements, mises à jour) font confiance aux certificats du système. Derrière un proxy d'entreprise ou un antivirus qui inspecte le HTTPS, le registre échouait avec « invalid peer certificate: UnknownIssuer ». Les installations de serveurs de langage via npm utilisent aussi les certificats du système (Node 22.15+ / 23.8+) ; git, pip, cargo, go et dotnet le faisaient déjà.
 
 ## [0.10.7] - 2026-10-09
 
