@@ -60,6 +60,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 - 🧩 Modules natifs (`cdylib`) décrits par un `manifest.toml` : coloration, hover et serveur LSP
 - 📦 Installation aussi depuis git, une archive ZIP, un dossier local ou un workspace Cargo
 - 🔧 Dépendances du serveur de langage (npm, pip, cargo, go, dotnet) installées automatiquement, et retirables à la désinstallation
+- 🪟 Interfaces fournies par les modules : panneaux dans la barre latérale et pages en onglet (ex. gestion des images Docker)
 
 ### Configuration
 - ⚙️ Thèmes personnalisables (Dark, Monokai, Solarized Dark, One Dark + custom RGB)
@@ -244,8 +245,9 @@ Les modules officiels sont publiés par le dépôt [`coding-unicorns-modules`](h
 | **powershell-lang** | `.ps1` `.psm1` `.psd1` | — | PowerShell Editor Services | — |
 | **spd-lang** | `.spd` | speedster-language-server | — | — (à installer) |
 | **json-lang** | `.json` `.jsonc` `.json5` `.geojson` `.webmanifest` | vscode-json-language-server | — | npm |
-| **docker-lang** | `Dockerfile` `Containerfile` `Dockerfile.*` `.dockerfile` | docker-langserver | — | npm |
-| **docker-compose-lang** | `compose.yaml` `docker-compose.yml` (et `*.override.yml`…) | docker-compose-langserver | — | npm |
+| **docker-lang** | `Dockerfile` `Containerfile` `Dockerfile.*`, `compose.yaml` `docker-compose.yml` (et `*.override.yml`…) | docker-langserver, docker-compose-langserver | — | npm |
+
+**docker-lang** ajoute aussi un panneau **Docker** dans la barre d'activité : liste des images locales, **Pull**, **Run** (dans un terminal), **Remove**, **Prune** des images sans tag, et **Full view** qui ouvre le tableau complet dans un onglet. Il faut le CLI `docker` dans le `PATH`.
 
 Des binaires précompilés existent pour **Windows x86_64**, **Linux x86_64** et **macOS Apple Silicon**. Sur une autre plateforme, le registre affiche « Not available for this platform » : il faut alors compiler depuis les sources (voir ci-dessous).
 
@@ -276,11 +278,11 @@ Ces méthodes compilent le module sur votre machine et demandent donc une toolch
 
 #### Mettre à jour et désinstaller
 
-- Section **INSTALLED** → **⟳ Check for updates** ; un module plus récent affiche **Update** (ou **Update to X** dans le registre).
+- Section **INSTALLED** → **⟳ Check for updates** ; un module plus récent affiche **Update** (ou **Update to X** dans le registre), et **⬆ Update all** les met tous à jour d'un coup.
   - Modules du registre : comparés à l'index en ligne.
   - Modules installés depuis un dossier ou un workspace : comparés au `manifest.toml` source.
   - Modules installés depuis git ou un ZIP : pas de vérification automatique, il faut les réinstaller.
-- **Uninstall** décharge le module puis propose **Module only** ou **Module + dependencies** (désinstalle les paquets npm, pip, cargo et dotnet déclarés ; les outils Go sont conservés).
+- **🗑 Uninstall**, dans la section **INSTALLED** comme dans le registre pour un module installé, décharge le module puis propose **Module only** ou **Module + dependencies** (désinstalle les paquets npm, pip, cargo et dotnet déclarés ; les outils Go sont conservés).
 
 Les extensions sont installées dans :
 
@@ -311,6 +313,11 @@ language_ids = { mli = "mylang" }  # optionnel : languageId LSP quand il diffèr
 lsp_init_options = { provideFormatter = true }  # optionnel : initializationOptions du serveur
 file_names = { "MyLangfile" = "ml" }  # optionnel : fichiers reconnus par leur nom (motifs `*`, sans casse)
 
+[capabilities.lsp_servers.mli]  # optionnel : un autre serveur pour un des langages
+command = "mylang-iface-lsp"
+args = ["--stdio"]
+init_options = {}               # optionnel, remplace lsp_init_options pour ce langage
+
 [dependencies]              # optionnel, installé avec le module
 npm = ["mylang-lsp"]        # npm install -g
 pip = []                    # pip3 install
@@ -334,6 +341,12 @@ binary = "mylang-dap/mylang-dap"            # fichier qui atteste l'installation
 [debugger.download.urls]    # .zip ou .tar.gz par plateforme
 windows-x86_64 = "https://example.com/mylang-dap-win64.zip"
 linux-x86_64 = "https://example.com/mylang-dap-linux.tar.gz"
+
+[[panels]]                  # optionnel : interfaces du module (voir plus bas)
+id = "mylang.tools"         # unique, passé à ui_view_ffi / ui_event_ffi
+title = "MyLang"
+icon = "cube"               # nom Phosphor (cube, package, container, database, terminal…) ou texte
+location = "sidebar"        # "sidebar" (barre d'activité) ou "page" (onglet)
 ```
 
 Le crate exporte des fonctions C :
@@ -347,9 +360,42 @@ Le crate exporte des fonctions C :
 | `tokenize_document_tsx_ffi(text)` | Variante utilisée pour `.tsx` / `.jsx` |
 | `reset_tokenizer()` | Réinitialise l'état du tokenizer |
 | `hover_info_ffi(word, content)` | Texte de survol |
+| `tokenize_line_lang_ffi(lang, line)`, `tokenize_document_lang_ffi(lang, text)`, `hover_info_lang_ffi(lang, word, content)` | Variantes qui reçoivent le langage du fichier, utilisées en priorité : un module qui gère plusieurs langages (Dockerfile et Compose) choisit ainsi son tokenizer |
+| `ui_view_ffi(panel_id)` | Vue JSON d'un panneau déclaré dans `[[panels]]` |
+| `ui_event_ffi(panel_id, event)` | Reçoit un événement JSON du panneau, renvoie un tableau JSON d'actions (ou null) |
 | `free_string(ptr)` | Libère **toute** chaîne renvoyée par les fonctions ci-dessus |
 
 Le serveur LSP et le débogueur sont déclarés dans le manifeste, pas exportés : un module peut fournir un débogueur sans bibliothèque. Au lancement (F5), l'IDE prend le module dont `types` contient le `type` de la configuration de debug, sinon celui du langage du fichier ouvert ; sans `default_launch`, une configuration dans `launch.toml` ou `.vscode/launch.json` est nécessaire. L'archive est téléchargée au premier lancement quand `args` utilise `${debuggerDir}`, ou quand `command` n'est pas dans le `PATH` (le binaire téléchargé sert alors de commande). En TCP, les sessions enfants demandées par l'adaptateur (`startDebugging`, utilisé par vscode-js-debug) sont ouvertes automatiquement. Les [modules officiels](https://github.com/Ajustor/coding-unicorns-modules) sont les meilleurs exemples à copier.
+
+#### Panneaux et pages
+
+Un module ne dessine rien lui-même : `ui_view_ffi` renvoie une vue JSON que l'IDE affiche, et les actions de l'utilisateur lui reviennent par `ui_event_ffi`. La vue est redemandée après chaque événement et toutes les `poll_ms` millisecondes tant que le panneau est visible (1 s par défaut) : un module lance ses tâches longues sur ses propres threads et en montre l'avancement dans la vue suivante.
+
+```json
+{ "poll_ms": 3000,
+  "actions": [{ "type": "toast", "text": "Image téléchargée" }],
+  "children": [
+    { "type": "heading", "text": "Images" },
+    { "type": "row", "children": [
+        { "type": "input", "id": "image", "hint": "nginx:latest", "revision": 0, "submit": "pull" },
+        { "type": "button", "id": "pull", "label": "Pull", "icon": "download", "style": "primary" } ] },
+    { "type": "list", "empty": "Aucune image", "items": [
+        { "id": "a1b2c3", "title": "nginx:latest", "subtitle": "187MB", "actions": [
+            { "id": "remove", "label": "Remove", "style": "danger", "confirm": "Supprimer nginx:latest ?" } ] } ] } ] }
+```
+
+| Élément | Champs |
+|---------|--------|
+| `heading`, `text` | `text` ; `style` de `text` : `muted`, `strong`, `code`, `error`, `warning`, `success` |
+| `button` | `id`, `label`, `icon`, `style` (`primary`, `danger`), `enabled`, `tooltip`, `confirm` (question posée avant l'envoi) |
+| `input` | `id`, `hint`, `value` ; le texte reprend `value` quand `revision` change ; `submit` = bouton cliqué par Entrée |
+| `checkbox` | `id`, `label`, `checked` |
+| `row`, `group`, `collapsing` | `children` ; `title` pour `group` et `collapsing` (avec `id` et `open`) |
+| `list` | `items` : `id`, `title`, `subtitle`, `detail`, `actions` (boutons) ; `empty` |
+| `table` | `columns`, `rows` : `id`, `cells`, `actions` ; `empty` |
+| `separator`, `spinner` (`text`), `space` (`size`) | — |
+
+Les éléments inconnus sont ignorés. Événements : `{"type":"click","id":…,"row":…}` (`row` = `id` de l'entrée de liste ou de tableau), `{"type":"submit","id":…,"value":…}`, `{"type":"toggle","id":…,"checked":…}` ; chacun porte `inputs`, le texte de tous les champs du panneau. Actions, renvoyées par `ui_event_ffi` ou dans `actions` d'une vue : `toast` (`text`), `terminal` (`command`, lancée dans un nouveau terminal), `open_panel` (`panel` : ouvre une page en onglet ou sélectionne un panneau latéral), `open_url` (`url`), `open_file` (`path`, relatif au workspace).
 
 ---
 
