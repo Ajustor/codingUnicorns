@@ -8,6 +8,13 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Non publié]
+
+### Corrections
+
+- L'entrée sélectionnée de la palette de commandes est lisible : elle s'affiche dans la couleur de contraste du thème sur un fond d'accent plein, au lieu d'un texte couleur accent sur une teinte d'accent.
+- Sous Linux et macOS, annuler le lancement d'un débogage arrête aussi la commande lancée par sa `preLaunchTask`, au lieu de la laisser tourner.
+
 ## [0.10.6] - 2026-10-09
 
 ### Nouveautés
