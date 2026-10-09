@@ -19,7 +19,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **Updates install again.** After *Install*, the update only applied if *Restart now* or *When I quit* was clicked; closing the window otherwise left the downloaded installer unused. It now installs whenever the app quits (*Restart now* still installs and reopens right away). Each step is written to `update.log` in the update folder, and the installer's own log to `install.log`.
-- HTTPS requests (module registry, downloads, updates) trust the system's certificates. Behind a corporate proxy or an antivirus that inspects HTTPS, the registry failed with "invalid peer certificate: UnknownIssuer".
+- HTTPS requests (module registry, downloads, updates) trust the system's certificates. Behind a corporate proxy or an antivirus that inspects HTTPS, the registry failed with "invalid peer certificate: UnknownIssuer". Language server installs through npm use the system's certificates too (Node 22.15+ / 23.8+); git, pip, cargo, go and dotnet already did.
 
 ## [0.10.7] - 2026-10-09
 
