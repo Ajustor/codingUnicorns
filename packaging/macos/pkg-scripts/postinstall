@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+BUNDLE="Coding Unicorns.app"
+STAGED="/Applications/$BUNDLE"
+
+# Running as root: strip quarantine from the staged bundle.
+xattr -dr com.apple.quarantine "$STAGED" 2>/dev/null || true
+
+# macOS 26 (Tahoe, Darwin 25+) blocks ad-hoc-signed apps placed in any folder
+# named "Applications". Move the app to the current user's Desktop instead,
+# where ad-hoc signing works without restrictions.
+DARWIN_MAJOR=$(uname -r | cut -d. -f1)
+if [ "${DARWIN_MAJOR:-0}" -ge 25 ] 2>/dev/null; then
+  CURRENT_USER=$(stat -f "%Su" /dev/console 2>/dev/null || true)
+  if [ -n "$CURRENT_USER" ] && [ "$CURRENT_USER" != "root" ]; then
+    USER_HOME=$(eval echo ~"$CURRENT_USER")
+    DEST="$USER_HOME/Desktop/$BUNDLE"
+    rm -rf "$DEST"
+    cp -R "$STAGED" "$DEST"
+    xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+    chown -R "$CURRENT_USER" "$DEST"
+    rm -rf "$STAGED"
+  fi
+fi

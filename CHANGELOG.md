@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.11.5] - 2026-10-10
+
+### Fixed
+
+- macOS 26 (Tahoe): added a `.pkg` installer that handles the security restrictions automatically. The installer runs with admin rights, strips the quarantine attribute (which macOS 26 prevents removing otherwise), and places the app on the Desktop on macOS 26 or in `/Applications` on macOS 15 and earlier. The `.dmg` is still available for users who prefer it.
+
 ## [0.11.4] - 2026-10-10
 
 ### Fixed

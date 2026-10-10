@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.11.5] - 2026-10-10
+
+### Corrections
+
+- macOS 26 (Tahoe) : ajout d'un installateur `.pkg` qui gère automatiquement les restrictions de sécurité. L'installateur s'exécute avec les droits administrateur, supprime l'attribut quarantine (que macOS 26 empêche de supprimer autrement), et place l'app sur le Bureau sous macOS 26 ou dans `/Applications` sous macOS 15 et antérieur. Le `.dmg` reste disponible pour ceux qui le préfèrent.
+
 ## [0.11.4] - 2026-10-10
 
 ### Corrections

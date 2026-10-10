@@ -39,6 +39,7 @@ KINDS = [
     (".msi", "windows", "msi"),
     ("windows", "windows", "exe"),
     (".AppImage", "linux", "appimage"),
+    (".pkg", "macos", "pkg"),
     (".dmg", "macos", "dmg"),
     ("linux-x64", "linux", "linux_x64"),
     ("linux", "linux", "linux"),
@@ -85,7 +86,7 @@ def card(asset, files_dir, t):
 # Windows first, then Linux, then macOS; on each, the installer (the card
 # highlighted for the visitor's system) before the bare binary.
 ORDER = {"windows": 0, "linux": 1, "macos": 2, "autre": 3}
-INSTALLERS = (".msi", ".AppImage", ".dmg")
+INSTALLERS = (".msi", ".AppImage", ".pkg", ".dmg")
 
 
 def sort_key(asset):
