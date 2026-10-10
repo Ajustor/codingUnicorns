@@ -8,6 +8,14 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.11.3] - 2026-10-10
+
+### Fixed
+
+- macOS 26 (Tahoe): the app bundle is now signed with the Hardened Runtime (`--options runtime`), a requirement Apple added in Tahoe for apps distributed outside the App Store. Without it, the process was suspended in the dynamic linker before any code ran, with no error or dialog shown.
+  **macOS 26 note:** even with the Hardened Runtime, ad-hoc-signed apps (no Apple Developer ID) are still blocked by `syspolicyd` when installed in `/Applications`. Install in `~/Applications` instead — macOS 26 does not apply the same restriction there. The disk image now shows a link to both locations.
+- Build: added minimum Rust version (`rust-version = "1.85"` in `Cargo.toml`) so a build with an older toolchain fails with a clear message instead of a cryptic dependency error (`edition2024` not stabilised before Rust 1.85).
+
 ## [0.11.2] - 2026-10-10
 
 ### Fixed

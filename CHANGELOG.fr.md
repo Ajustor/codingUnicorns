@@ -8,6 +8,14 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.11.3] - 2026-10-10
+
+### Corrections
+
+- macOS 26 (Tahoe) : le bundle est désormais signé avec le Hardened Runtime (`--options runtime`), une exigence ajoutée par Apple sous Tahoe pour les apps distribuées hors de l'App Store. Sans cela, le processus restait suspendu dans le linker dynamique avant l'exécution de tout code, sans message ni dialogue.
+  **Note macOS 26 :** même avec le Hardened Runtime, les apps signées ad hoc (sans Developer ID Apple) sont toujours bloquées par `syspolicyd` dans `/Applications`. Installez dans `~/Applications` — macOS 26 n'applique pas la même restriction à cet emplacement. L'image disque propose désormais un lien vers les deux emplacements.
+- Build : ajout de la version Rust minimale (`rust-version = "1.85"` dans `Cargo.toml`) afin qu'une compilation avec un toolchain trop ancien échoue immédiatement avec un message clair au lieu d'une erreur de dépendance cryptique (`edition2024` non stabilisée avant Rust 1.85).
+
 ## [0.11.2] - 2026-10-10
 
 ### Corrections
