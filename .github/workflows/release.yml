@@ -166,7 +166,7 @@ jobs:
 
       - name: Open the app (macOS)
         if: matrix.os == 'macos-latest'
-        run: bash scripts/smoke-test-macos-app.sh coding-unicorns-macos-arm64.dmg "Coding Unicorns" coding-unicorns "$HOME/Library/Application Support/coding-unicorns/crash.log"
+        run: bash scripts/smoke-test-macos-app.sh coding-unicorns-macos-arm64.dmg "Coding Unicorns" coding-unicorns "$HOME/Library/Logs/Coding Unicorns/launch.log" "$HOME/Library/Application Support/coding-unicorns/crash.log"
 
       # ── Windows extras ─────────────────────────────────────────────────────
 

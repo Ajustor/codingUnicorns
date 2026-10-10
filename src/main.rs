@@ -11,6 +11,7 @@ mod filetree;
 mod git;
 mod keybinds;
 mod language;
+mod launch_log;
 mod login_path;
 mod lsp;
 mod nav_history;
@@ -86,6 +87,15 @@ fn install_panic_logger() {
 
         // Preserve default behavior (stderr) for debug builds / when a console exists.
         default_hook(info);
+
+        // Before the window: the app would just vanish. Say why (dialogs need the main
+        // thread on macOS).
+        if launch_log::is_started()
+            && !launch_log::is_window_open()
+            && std::thread::current().name() == Some("main")
+        {
+            launch_log::fatal(&format!("It crashed: {message} ({location})"));
+        }
     }));
 }
 
@@ -130,7 +140,7 @@ fn detach_from_terminal(args: &[String]) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    Command::new(exe)
+    let spawned = Command::new(exe)
         .args(args)
         .env(DETACHED_ENV, "1")
         .stdin(Stdio::null())
@@ -139,8 +149,37 @@ fn detach_from_terminal(args: &[String]) -> bool {
         // Its own process group: closing the terminal or Ctrl+C there no
         // longer reaches the IDE.
         .process_group(0)
-        .spawn()
-        .is_ok()
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            launch_log::step(&format!(
+                "could not start in the background ({e}): staying here"
+            ));
+            return false;
+        }
+    };
+    launch_log::step(&format!(
+        "continues in the background as pid {}",
+        child.id()
+    ));
+    // The background copy has no terminal: if it dies right away, say it here rather
+    // than leave the user with a prompt and no window.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            eprintln!(
+                "Coding Unicorns stopped during startup ({status}):\n{}",
+                launch_log::tail(15)
+            );
+            if let Some(log) = launch_log::path() {
+                eprintln!("Full log: {}", log.display());
+            }
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    true
 }
 
 #[cfg(not(unix))]
@@ -167,8 +206,16 @@ fn main() -> eframe::Result<()> {
 
     install_panic_logger();
     env_logger::init();
+    // The copy started in the background by `cu` continues its parent's log.
+    launch_log::start(std::env::var_os("CODING_UNICORNS_DETACHED").is_some());
     // Before any thread: it sets PATH.
+    let started = std::time::Instant::now();
     login_path::import();
+    launch_log::step(&format!(
+        "PATH ({} ms): {}",
+        started.elapsed().as_millis(),
+        std::env::var("PATH").unwrap_or_default()
+    ));
 
     // SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
     #[cfg(windows)]
@@ -190,6 +237,10 @@ fn main() -> eframe::Result<()> {
     // Opening a file/folder while the IDE already runs: hand it over and quit.
     if let Some(path) = initial_path.as_deref() {
         if !new_window && single_instance::forward(path) {
+            launch_log::step(&format!(
+                "{} handed to the running instance",
+                path.display()
+            ));
             return Ok(());
         }
     }
@@ -217,17 +268,31 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(
+    launch_log::step("opening the window");
+    let result = eframe::run_native(
         "Coding Unicorns",
         options,
         Box::new(|cc| {
+            launch_log::step("window created, loading the app");
             cc.egui_ctx.set_fonts(ui::theme::app_fonts());
             // Before the app creates its first terminal.
             terminal::set_output_waker(cc.egui_ctx.clone());
 
-            Ok(Box::new(CodingUnicorns::new(cc, initial_path)))
+            let app = CodingUnicorns::new(cc, initial_path);
+            // Only now: a panic while loading the config or the workspace must still
+            // show the dialog.
+            launch_log::window_opened();
+            Ok(Box::new(app))
         }),
-    )
+    );
+    match &result {
+        Ok(()) => launch_log::step("closed"),
+        Err(e) if !launch_log::is_window_open() => {
+            launch_log::fatal(&format!("Its window could not be opened: {e}"));
+        }
+        Err(e) => launch_log::step(&format!("stopped: {e}")),
+    }
+    result
 }
 
 #[cfg(test)]
