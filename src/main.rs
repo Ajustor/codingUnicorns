@@ -176,7 +176,12 @@ fn main() -> eframe::Result<()> {
         SetErrorMode(0x0001 | 0x0002 | 0x8000);
     }
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `-psn_0_…`: the process serial number macOS may pass to an app started from the
+    // Finder (first launch after download); not a path to open.
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| !a.starts_with("-psn_"))
+        .collect();
     let new_window = args.iter().any(|a| a == single_instance::NEW_WINDOW_FLAG);
     let initial_path = args
         .iter()
