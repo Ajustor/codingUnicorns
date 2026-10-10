@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.11.2] - 2026-10-10
+
+### Fixed
+
+- macOS: when the app cannot start, it no longer vanishes without a word. A dialog shows the error (a crash, or a window that cannot be opened), and every launch is logged step by step in `~/Library/Logs/Coding Unicorns/launch.log` (also listed in Console.app). Started from a terminal (`cu`), the app prints the error there if it stops within its first seconds.
+
 ## [0.11.1] - 2026-10-10
 
 ### Fixed

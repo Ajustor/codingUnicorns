@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.11.2] - 2026-10-10
+
+### Corrections
+
+- macOS : quand l'app ne peut pas démarrer, elle ne disparaît plus sans rien dire. Une boîte de dialogue affiche l'erreur (plantage, fenêtre impossible à ouvrir), et chaque lancement est consigné étape par étape dans `~/Library/Logs/Coding Unicorns/launch.log` (visible aussi dans Console.app). Lancée depuis un terminal (`cu`), l'app y affiche l'erreur si elle s'arrête dans ses premières secondes.
+
 ## [0.11.1] - 2026-10-10
 
 ### Corrections

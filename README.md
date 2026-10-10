@@ -93,7 +93,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 
 Depuis la [page de téléchargement](https://ajustor.github.io/codingUnicorns/fr/) :
 
-- **macOS** (Apple Silicon) : ouvrez `coding-unicorns-macos-arm64.dmg` et glissez **Coding Unicorns** dans **Applications**. L'app est signée ad hoc, sans notarisation Apple : au premier lancement, clic droit → **Ouvrir** (ou Réglages Système → Confidentialité et sécurité → **Ouvrir quand même**).
+- **macOS** (Apple Silicon) : ouvrez `coding-unicorns-macos-arm64.dmg` et glissez **Coding Unicorns** dans **Applications**. L'app est signée ad hoc, sans notarisation Apple : au premier lancement, clic droit → **Ouvrir** (ou Réglages Système → Confidentialité et sécurité → **Ouvrir quand même**). Si elle ne s'ouvre pas, son journal de lancement est dans `~/Library/Logs/Coding Unicorns/launch.log`.
 - **Linux** (x86_64) : `chmod +x coding-unicorns-linux-x64.AppImage` puis lancez-la (FUSE requis : paquet `libfuse2` ou `fuse`). Un intégrateur comme AppImageLauncher ou Gear Lever l'ajoute au menu des applications.
 - **Windows** : installateur `coding-unicorns-setup.msi`.
 

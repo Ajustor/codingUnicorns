@@ -82,7 +82,7 @@ jobs:
           # Apps opened from the Finder get launchd's minimal PATH (the runner sets a
           # fuller one), so the app reads the login shell's.
           launchctl setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
-          bash scripts/smoke-test-macos-app.sh coding-unicorns-macos-arm64.dmg "Coding Unicorns" coding-unicorns "$HOME/Library/Application Support/coding-unicorns/crash.log"
+          bash scripts/smoke-test-macos-app.sh coding-unicorns-macos-arm64.dmg "Coding Unicorns" coding-unicorns "$HOME/Library/Logs/Coding Unicorns/launch.log" "$HOME/Library/Application Support/coding-unicorns/crash.log"
 
   coverage:
     name: Coverage
