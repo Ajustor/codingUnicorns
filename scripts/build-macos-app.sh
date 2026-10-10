@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Package the macOS binary as "Coding Unicorns.app" inside a drag-to-install
-# disk image (.dmg, with links to /Applications and ~/Applications).
+# disk image (.dmg, with a link to /Applications for macOS 15 and earlier).
 #
 # Usage: scripts/build-macos-app.sh <binary> <output.dmg>
 #
 # The bundle is signed ad hoc (no Apple Developer ID).
 #
-# macOS 26 (Tahoe) note: ad-hoc signed apps hang in the dynamic linker when
-# installed in /Applications (syspolicyd requires notarisation for that
-# location).  The DMG therefore also offers a link to ~/Applications, which
-# macOS 26 accepts without notarisation.  On macOS 15 and earlier both
-# locations work; the first-launch Gatekeeper prompt still appears (right-click
-# > Open, or System Settings > Privacy & Security > Open Anyway).
+# macOS 26 (Tahoe) note: syspolicyd blocks ad-hoc signed apps in any folder
+# named "Applications" (/Applications, ~/Applications) — the process hangs
+# in the dynamic linker before any code runs.  On macOS 26 users must drag
+# the app to any other location (e.g. ~/Desktop, ~/Apps).  On macOS 15 and
+# earlier both /Applications and ~/Applications work; the first-launch
+# Gatekeeper prompt still appears (right-click > Open, or System Settings
+# > Privacy & Security > Open Anyway).
 #
 # The in-app updater replaces Contents/MacOS/coding-unicorns in place
 # (src/updater/mod.rs).
@@ -48,13 +49,7 @@ for size in 16 32 128 256; do
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 
-# Hardened Runtime (--options runtime): required on macOS 26 (Tahoe) for apps
-# installed in /Applications — without it the app hangs in dyld before any
-# Rust code runs.  disable-library-validation lets unsigned plugins load.
-codesign --force --deep --sign - \
-  --options runtime \
-  --entitlements packaging/macos/entitlements.plist \
-  "$app"
+codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
 
 ln -s /Applications "$work/dmg/Applications"

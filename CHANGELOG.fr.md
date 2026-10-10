@@ -12,8 +12,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 
 ### Corrections
 
-- macOS 26 (Tahoe) : le bundle est désormais signé avec le Hardened Runtime (`--options runtime`), une exigence ajoutée par Apple sous Tahoe pour les apps distribuées hors de l'App Store. Sans cela, le processus restait suspendu dans le linker dynamique avant l'exécution de tout code, sans message ni dialogue.
-  **Note macOS 26 :** même avec le Hardened Runtime, les apps signées ad hoc (sans Developer ID Apple) sont toujours bloquées par `syspolicyd` dans `/Applications`. Installez dans `~/Applications` — macOS 26 n'applique pas la même restriction à cet emplacement. L'image disque propose désormais un lien vers les deux emplacements.
+- macOS 26 (Tahoe) : l'app ne reste plus bloquée silencieusement au lancement. `syspolicyd` sous macOS 26 bloque les apps signées ad hoc (sans Developer ID Apple) placées dans tout dossier appelé « Applications » — `/Applications` ou `~/Applications` — en suspendant le processus dans le linker dynamique avant l'exécution de tout code Rust. **Sous macOS 26, glissez l'app vers n'importe quel autre emplacement après avoir ouvert l'image disque** — par exemple `~/Desktop` (le bureau) ou un dossier `~/Apps` que vous créez. Sous macOS 15 et antérieur, `/Applications` et `~/Applications` fonctionnent toujours.
 - Build : ajout de la version Rust minimale (`rust-version = "1.85"` dans `Cargo.toml`) afin qu'une compilation avec un toolchain trop ancien échoue immédiatement avec un message clair au lieu d'une erreur de dépendance cryptique (`edition2024` non stabilisée avant Rust 1.85).
 
 ## [0.11.2] - 2026-10-10
