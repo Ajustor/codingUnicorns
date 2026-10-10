@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.11.4] - 2026-10-10
+
+### Fixed
+
+- macOS: the download page now prominently tells macOS 26 (Tahoe) users to drag the app to their Desktop or any folder **not** named Applications — both `/Applications` and `~/Applications` are blocked by `syspolicyd` for ad-hoc-signed apps on macOS 26. On macOS 15 and earlier, dragging to Applications still works.
+
 ## [0.11.3] - 2026-10-10
 
 ### Fixed

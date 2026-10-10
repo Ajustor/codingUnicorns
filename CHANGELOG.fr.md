@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.11.4] - 2026-10-10
+
+### Corrections
+
+- macOS : la page de téléchargement indique maintenant clairement aux utilisateurs de macOS 26 (Tahoe) de glisser l'app sur le Bureau ou dans n'importe quel dossier **pas nommé** Applications — `/Applications` et `~/Applications` sont tous deux bloqués par `syspolicyd` pour les apps non notarisées sous macOS 26. Sous macOS 15 et antérieur, glisser dans Applications fonctionne toujours.
+
 ## [0.11.3] - 2026-10-10
 
 ### Corrections
