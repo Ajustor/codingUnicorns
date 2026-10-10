@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- macOS: the app could stay stuck at startup without opening its window, when a shell startup file (`.zshrc`…) left a process running in the background (ssh-agent, gpg-agent, a plugin's update check...).
+
 ## [0.11.0] - 2026-10-09
 
 ### Added

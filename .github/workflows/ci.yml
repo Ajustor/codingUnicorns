@@ -73,6 +73,17 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: bash scripts/build-macos-app.sh target/debug/coding-unicorns coding-unicorns-macos-arm64.dmg
 
+      - name: Open the app
+        if: matrix.os == 'macos-latest'
+        # A startup file that leaves a process in the background (like ssh-agent or a
+        # plugin's update check) once kept the app from opening its window.
+        run: |
+          for rc in ~/.zshrc ~/.bash_profile; do echo '(sleep 300 &)' >> "$rc"; done
+          # Apps opened from the Finder get launchd's minimal PATH (the runner sets a
+          # fuller one), so the app reads the login shell's.
+          launchctl setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+          bash scripts/smoke-test-macos-app.sh coding-unicorns-macos-arm64.dmg "Coding Unicorns" coding-unicorns "$HOME/Library/Application Support/coding-unicorns/crash.log"
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
