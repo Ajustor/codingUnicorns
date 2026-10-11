@@ -231,18 +231,6 @@ impl CodingUnicorns {
         self.editor.scroll_to_cursor = true;
     }
 
-    pub fn open_file_in_pane2(&mut self, path: PathBuf) {
-        if let Ok((content, lossy)) = crate::editor::text_format::read_text_file(&path) {
-            if let Some(ref mut tm2) = self.tab_manager2 {
-                tm2.open(path.clone(), content.clone());
-            }
-            if let Some(ref mut e2) = self.editor2 {
-                e2.set_content(content, Some(path));
-                e2.decoded_lossy = lossy;
-            }
-        }
-    }
-
     pub fn open_folder(&mut self, path: PathBuf) {
         let path = absolute_path(path);
         // Persist the outgoing workspace's tabs before switching.

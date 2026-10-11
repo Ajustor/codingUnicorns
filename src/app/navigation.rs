@@ -70,6 +70,11 @@ impl CodingUnicorns {
     /// Toggle the split editor (Ctrl+\).
     pub fn toggle_split(&mut self) {
         if self.editor2.is_some() {
+            if self.pane2_modified() {
+                // Ask first; the dialog calls back here once it is settled.
+                self.pane2_close_pending = Some(super::pane2::Pane2Close::Split);
+                return;
+            }
             // Close split
             self.editor2 = None;
             self.tab_manager2 = None;
@@ -91,6 +96,7 @@ impl CodingUnicorns {
             self.editor2 = Some(editor2);
             self.tab_manager2 = Some(tab_manager2);
             self.active_pane = 1;
+            self.record_pane2_stamp();
         }
     }
 }

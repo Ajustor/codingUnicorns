@@ -221,7 +221,7 @@ pub fn normalize_text(s: &str) -> String {
 }
 
 /// Whether the file at `path` holds `text` (modulo BOM / line endings).
-fn disk_matches(path: &Path, text: &str) -> bool {
+pub(super) fn disk_matches(path: &Path, text: &str) -> bool {
     std::fs::read_to_string(path).is_ok_and(|disk| normalize_text(&disk) == normalize_text(text))
 }
 
@@ -511,10 +511,14 @@ impl CodingUnicorns {
     /// The editor saves itself on Ctrl+S; swallow that key when the save would
     /// overwrite external changes and ask instead.
     fn intercept_conflicting_save(&mut self, ctx: &egui::Context) {
-        if self.editor2.is_some() && self.active_pane == 1 {
+        if !ctx.input(|i| i.events.iter().any(is_ctrl_s)) {
             return;
         }
-        if !ctx.input(|i| i.events.iter().any(is_ctrl_s)) {
+        if self.editor2.is_some() && self.active_pane == 1 {
+            // The right pane saves on its own: never over a newer version.
+            if !self.pane2_save_allowed() {
+                ctx.input_mut(|i| i.events.retain(|e| !is_ctrl_s(e)));
+            }
             return;
         }
         let Some(path) = self.editor.current_path.clone() else {

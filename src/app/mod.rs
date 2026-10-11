@@ -28,6 +28,7 @@ pub mod file_ops;
 pub mod file_watch;
 mod lsp_ops;
 mod navigation;
+pub mod pane2;
 pub mod session;
 mod update_ops;
 mod workspace_search;
@@ -163,6 +164,10 @@ pub struct CodingUnicorns {
     /// Second editor pane (None = no split).
     pub editor2: Option<Editor>,
     pub tab_manager2: Option<TabManager>,
+    /// On-disk stamp of the right pane's file when it loaded or saved it.
+    pub pane2_stamp: Option<file_watch::FileStamp>,
+    /// Closing the right pane's unsaved file, waiting for the user's choice.
+    pub pane2_close_pending: Option<pane2::Pane2Close>,
     /// Which pane is active: 0 = left/main, 1 = right/split.
     pub active_pane: usize,
     /// Split ratio (0.0 - 1.0), default 0.5.
@@ -344,6 +349,8 @@ impl CodingUnicorns {
             merge_view: None,
             editor2: None,
             tab_manager2: None,
+            pane2_stamp: None,
+            pane2_close_pending: None,
             active_pane: 0,
             split_ratio: 0.5,
             pending_image: None,
@@ -503,7 +510,8 @@ impl eframe::App for CodingUnicorns {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle window close request — warn about unsaved files
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        let any_unsaved = self.tab_manager.tabs.iter().any(|t| t.is_modified);
+        let any_unsaved =
+            self.tab_manager.tabs.iter().any(|t| t.is_modified) || self.pane2_modified();
         if close_requested && any_unsaved && !self.confirmed_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.show_close_warning = true;
@@ -525,7 +533,10 @@ impl eframe::App for CodingUnicorns {
                         if ui.button("Save All & Quit").clicked() {
                             self.show_close_warning = false;
                             // A file changed on disk raises the overwrite prompt instead.
-                            if self.save_editor_guarded(true) && self.save_parked_docs() {
+                            if self.save_editor_guarded(true)
+                                && self.save_parked_docs()
+                                && self.save_pane2()
+                            {
                                 self.confirmed_close = true;
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
@@ -1141,6 +1152,7 @@ impl eframe::App for CodingUnicorns {
         }
 
         self.tick_file_watch(ctx);
+        self.tick_pane2(ctx);
         // Branch / ahead-behind / changed files, kept current without a
         // manual refresh (cheap when nothing changed: see `git::watch`).
         let now = std::time::Instant::now();

@@ -14,6 +14,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 - Switching tabs no longer throws away unsaved changes: a modified file is kept in memory, with its undo history and cursors, until you come back to it. Clicking the current tab again, or going to a definition in the same file, no longer reloads it from disk either. "Save All & Quit" saves these files too, and a file changed on disk meanwhile still raises the conflict prompt.
 - Closing a tab with unsaved changes with its × or a middle-click now asks to save, discard or cancel, like Ctrl+W, instead of closing it straight away.
+- Split view: the right pane's unsaved changes are now protected. Its tab shows the modified dot, closing its tab or the split asks to save, discard or cancel, quitting includes it in "Save All & Quit", opening another file there is refused until it is saved, and it no longer overwrites a version saved from the left pane (it reloads it when it has no changes of its own).
 
 ## [0.12.2] - 2026-10-11
 
