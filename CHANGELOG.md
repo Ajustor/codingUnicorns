@@ -33,6 +33,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Debugger: Continue and the step commands no longer leave the session shown as "Paused" with debuggers that don't announce it (lldb-dap, CodeLLDB…). The old call stack and variables are cleared until the next stop, and stepping again is no longer sent to a running thread.
 - Language servers and debuggers that send a `Content-Type` header after `Content-Length` no longer have every message dropped, which left them looking frozen.
 - Extensions: uninstalling or updating a module that only adds panels or commands now unloads it first, so its library is released on Windows. When its files can't be deleted, the module stays listed instead of disappearing half-removed.
+- Merge view: "Save & Resolve" no longer stages a file it failed to write (the error is shown and the view stays open), keeps the file's CRLF line endings and final line break, and works when the opened folder is a subfolder of the repository.
 
 ## [0.12.2] - 2026-10-11
 
