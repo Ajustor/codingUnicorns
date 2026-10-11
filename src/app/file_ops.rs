@@ -209,10 +209,16 @@ impl CodingUnicorns {
     pub fn run_active_config(&mut self) {
         let workspace = self.workspace_path.clone();
         let current_file = self.editor.current_path.clone();
+        // The command is typed into the active terminal: quote for its shell.
+        let shell = self
+            .terminals
+            .get(self.active_terminal)
+            .map(|t| crate::runner::ShellKind::from_shell_name(&t.shell_name))
+            .unwrap_or(crate::runner::ShellKind::Posix);
 
-        if let Some(cmd) = self
-            .runner
-            .build_command(workspace.as_deref(), current_file.as_deref())
+        if let Some(cmd) =
+            self.runner
+                .build_command(workspace.as_deref(), current_file.as_deref(), shell)
         {
             self.show_terminal = true;
             if self.terminal_height < 150.0 {
@@ -257,7 +263,7 @@ mod tests {
             args: vec![],
             debug: None,
         };
-        let r = cfg.resolve(Some(&ws), None);
+        let r = cfg.resolve(Some(&ws), None, crate::runner::ShellKind::Posix);
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(r.command, format!("echo {}", cwd.display()));
         assert!(Path::new(&r.cwd).is_absolute(), "cwd {:?}", r.cwd);

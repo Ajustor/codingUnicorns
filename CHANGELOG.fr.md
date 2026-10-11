@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Configurations d'exécution : leurs variables `env` (par exemple importées de launch.json) sont maintenant transmises à la commande, les chemins substitués pour `${file}`, `${workspaceFolder}`… et les arguments contenant des espaces sont mis entre guillemets selon le shell du terminal (PowerShell, cmd, bash/zsh, fish), et cmd change de lecteur si besoin. Nouvelles variables `${fileBasename}` (nom du fichier avec son extension) et `${fileExtname}`.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
