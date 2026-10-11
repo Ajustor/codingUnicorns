@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Switching tabs no longer throws away unsaved changes: a modified file is kept in memory, with its undo history and cursors, until you come back to it. Clicking the current tab again, or going to a definition in the same file, no longer reloads it from disk either. "Save All & Quit" saves these files too, and a file changed on disk meanwhile still raises the conflict prompt.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added

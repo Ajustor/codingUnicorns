@@ -30,6 +30,24 @@ use indent::detect_indent;
 use std::path::PathBuf;
 use utils::{find_next_occurrence, get_word_at};
 
+/// A modified file's editing state, kept in memory while another tab is shown
+/// (a tab holds no content of its own). Made by [`Editor::park`].
+pub struct ParkedDoc {
+    buffer: Buffer,
+    cursor: Cursor,
+    extra_cursors: Vec<Cursor>,
+    text_format: text_format::TextFormat,
+    decoded_lossy: bool,
+    scroll_offset: egui::Vec2,
+}
+
+impl ParkedDoc {
+    /// The bytes to write to disk: the buffer in the file's own line endings/BOM.
+    pub fn encoded(&self) -> Vec<u8> {
+        text_format::encode(&self.buffer.to_string(), self.text_format)
+    }
+}
+
 /// Editor state right after the last typed char: primary cursor position, whether
 /// it has a selection, extra cursor count and content version. Typing continues
 /// the current undo burst only while this is unchanged.
@@ -348,6 +366,39 @@ impl Editor {
         if let Some(name) = lang {
             self.highlighter.set_language_from_filename(&name);
         }
+    }
+
+    /// Take the open document out of the editor, to keep a modified file in
+    /// memory while another tab is shown (see [`Editor::unpark`]). The editor is
+    /// left on an empty buffer for the caller to load the next file into.
+    pub fn park(&mut self) -> ParkedDoc {
+        // The emptied buffer must never be saved over the parked file.
+        self.is_modified = false;
+        ParkedDoc {
+            buffer: std::mem::replace(&mut self.buffer, Buffer::new()),
+            cursor: std::mem::replace(&mut self.cursor, Cursor::new()),
+            extra_cursors: std::mem::take(&mut self.extra_cursors),
+            text_format: self.text_format,
+            decoded_lossy: self.decoded_lossy,
+            scroll_offset: self.scroll_offset,
+        }
+    }
+
+    /// Show a parked document again as `path`: its text, undo history, cursors
+    /// and scroll come back as they were, still modified.
+    pub fn unpark(&mut self, doc: ParkedDoc, path: PathBuf) {
+        // Reset every per-file cache and pick the language, as for a fresh load.
+        self.set_content(String::new(), Some(path));
+        let (spaces, size) = detect_indent(&doc.buffer.to_string());
+        self.detected_indent_spaces = spaces;
+        self.detected_indent_size = size;
+        self.buffer = doc.buffer;
+        self.cursor = doc.cursor;
+        self.extra_cursors = doc.extra_cursors;
+        self.text_format = doc.text_format;
+        self.decoded_lossy = doc.decoded_lossy;
+        self.scroll_offset = doc.scroll_offset;
+        self.is_modified = true;
     }
 
     /// Longest line length (chars), cached and recomputed only when the content
@@ -3724,6 +3775,32 @@ mod tests {
         assert_eq!(ed.cached_max_line_chars(), 7, "cached until version bumps");
         ed.content_version += 1;
         assert_eq!(ed.cached_max_line_chars(), 23);
+    }
+
+    #[test]
+    fn park_and_unpark_keep_text_cursor_undo_and_format() {
+        let mut ed = editor_with("");
+        let a = PathBuf::from("/w/a.rs");
+        ed.set_content("one\r\ntwo\r\n".to_string(), Some(a.clone()));
+        ed.cursor.set_position(1, 3);
+        ed.insert_char('!', false);
+        assert!(ed.is_modified);
+        let doc = ed.park();
+        assert_eq!(doc.encoded(), b"one\r\ntwo!\r\n", "CRLF kept for saving");
+        assert!(
+            !ed.is_modified,
+            "the emptied editor is never saved over a.rs"
+        );
+
+        // Another file is shown in between.
+        ed.set_content("other".to_string(), Some(PathBuf::from("/w/b.rs")));
+        ed.unpark(doc, a.clone());
+        assert_eq!(ed.current_path.as_deref(), Some(a.as_path()));
+        assert_eq!(ed.buffer.to_string(), "one\ntwo!\n");
+        assert_eq!(ed.cursor.position(), (1, 4));
+        assert!(ed.is_modified);
+        assert!(ed.buffer.undo(), "undo history came back too");
+        assert_eq!(ed.buffer.to_string(), "one\ntwo\n");
     }
 
     #[test]

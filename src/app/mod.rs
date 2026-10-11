@@ -53,6 +53,9 @@ pub struct CodingUnicorns {
     pub keybinds: crate::keybinds::KeybindingRegistry,
     pub tab_manager: TabManager,
     pub editor: Editor,
+    /// Modified files of inactive tabs, kept in memory (tabs hold no content):
+    /// switching tabs parks the editor's document here and restores it on return.
+    pub parked_docs: std::collections::HashMap<PathBuf, crate::editor::ParkedDoc>,
     pub file_tree: FileTree,
     pub git_status: GitStatus,
     pub git_panel: crate::ui::git_panel::GitPanel,
@@ -265,6 +268,7 @@ impl CodingUnicorns {
             config,
             keybinds,
             tab_manager: TabManager::new(),
+            parked_docs: std::collections::HashMap::new(),
             editor: Editor::new(),
             file_tree: FileTree::new(),
             git_status: GitStatus::new(),
@@ -521,7 +525,7 @@ impl eframe::App for CodingUnicorns {
                         if ui.button("Save All & Quit").clicked() {
                             self.show_close_warning = false;
                             // A file changed on disk raises the overwrite prompt instead.
-                            if self.save_editor_guarded(true) {
+                            if self.save_editor_guarded(true) && self.save_parked_docs() {
                                 self.confirmed_close = true;
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }

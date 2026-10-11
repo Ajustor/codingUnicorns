@@ -255,7 +255,8 @@ pub fn decide(
         None if was_deleted => DiskAction::None,
         None => DiskAction::MarkDeleted,
         Some(now) if recorded == Some(now) => DiskAction::None,
-        // Inactive tabs are re-read from disk when activated.
+        // Inactive tabs are re-read from disk when activated (unsaved ones are
+        // parked in memory and skipped by the caller).
         Some(_) if !is_active => DiskAction::AcceptStamp,
         Some(_) if same_content() => DiskAction::AcceptStamp,
         Some(_) if !modified => DiskAction::Reload,
@@ -402,6 +403,11 @@ impl CodingUnicorns {
                 self.tab_manager.set_deleted(&path, false);
             }
             let is_active = self.editor.current_path.as_deref() == Some(path.as_path());
+            if now.is_some() && !is_active && self.parked_docs.contains_key(&path) {
+                // Unsaved edits wait in memory: keep the old stamp so the change
+                // made on disk is raised once the tab is back (or on quit).
+                continue;
+            }
             let action = decide(
                 self.file_watch.stamps.get(&path).copied(),
                 now,
@@ -440,8 +446,15 @@ impl CodingUnicorns {
     /// and without stealing keyboard focus.
     fn reload_from_disk(&mut self, path: PathBuf) {
         let focus = self.editor.focus_requested;
-        self.open_file(path);
+        self.open_file_with(path, true);
         self.editor.focus_requested = focus;
+    }
+
+    /// True when a parked (unsaved, inactive) file changed on disk since it
+    /// was loaded or saved.
+    pub(super) fn parked_changed_on_disk(&self, path: &Path) -> bool {
+        FileStamp::of(path)
+            .is_some_and(|now| self.file_watch.stamps.get(path).is_some_and(|s| *s != now))
     }
 
     /// True when saving the editor to `path` would overwrite changes made on
