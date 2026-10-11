@@ -110,7 +110,9 @@ pub fn write_mcp_config(
             }
         }
     });
-    let path = dir.join("cu-claude-mcp.json");
+    // One file per port: two editor windows running a turn at the same time
+    // would otherwise point each other's `claude` at the wrong server.
+    let path = dir.join(format!("cu-claude-mcp-{port}.json"));
     std::fs::write(&path, serde_json::to_vec_pretty(&cfg)?)?;
     Ok(path)
 }
@@ -375,7 +377,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let exe = std::path::Path::new("/opt/editor/cu");
         let path = write_mcp_config(&dir, exe, 5151).unwrap();
-        assert_eq!(path, dir.join("cu-claude-mcp.json"));
+        assert_eq!(path, dir.join("cu-claude-mcp-5151.json"));
+        // Another window (another port) gets its own file.
+        let other = write_mcp_config(&dir, exe, 6262).unwrap();
+        assert_ne!(other, path);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("5151"));
         let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let server = &v["mcpServers"]["editor"];
         assert_eq!(server["command"], exe.to_string_lossy().as_ref());

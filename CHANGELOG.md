@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Claude panel: two editor windows running Claude at the same time no longer overwrite each other's permission server settings, which got tool permissions denied.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added

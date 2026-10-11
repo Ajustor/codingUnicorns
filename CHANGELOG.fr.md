@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Panneau Claude : deux fenêtres de l'éditeur qui lancent Claude en même temps n'écrasent plus mutuellement la configuration de leur serveur d'autorisations, ce qui faisait refuser les autorisations d'outils.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
