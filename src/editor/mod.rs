@@ -3967,6 +3967,8 @@ mod tests {
     const SHIFT: Modifiers = Modifiers::SHIFT;
     const ALT: Modifiers = Modifiers::ALT;
     const NONE: Modifiers = Modifiers::NONE;
+    /// The platform's move/delete-by-word modifier: Option on macOS, Ctrl elsewhere.
+    const WORD: Modifiers = if MAC { ALT } else { CTRL };
 
     fn mods(list: &[Modifiers]) -> Modifiers {
         list.iter().fold(NONE, |a, &b| a | b)
@@ -4683,29 +4685,29 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_arrows_jump_and_select_by_word() {
+    fn word_arrows_jump_and_select_by_word() {
         let (mut h, mut ed) = setup("let foo_bar = 1;\nnext");
         ed.cursor.set_position(0, 4);
-        h.press(&mut ed, Key::ArrowRight, CTRL);
+        h.press(&mut ed, Key::ArrowRight, WORD);
         assert_eq!(ed.cursor.position(), (0, 11), "crosses the whole word");
-        h.press(&mut ed, Key::ArrowLeft, CTRL);
+        h.press(&mut ed, Key::ArrowLeft, WORD);
         assert_eq!(ed.cursor.position(), (0, 4));
-        h.press(&mut ed, Key::ArrowRight, mods(&[CTRL, SHIFT]));
+        h.press(&mut ed, Key::ArrowRight, mods(&[WORD, SHIFT]));
         assert_eq!(ed.selected_text().as_deref(), Some("foo_bar"));
         ed.cursor.clear_selection();
         ed.cursor.set_position(0, 16);
-        h.press(&mut ed, Key::ArrowRight, CTRL);
+        h.press(&mut ed, Key::ArrowRight, WORD);
         assert_eq!(ed.cursor.position(), (1, 0), "line end wraps to next line");
     }
 
     #[test]
-    fn ctrl_backspace_and_delete_remove_a_word() {
+    fn word_backspace_and_delete_remove_a_word() {
         let (mut h, mut ed) = setup("foo bar baz");
         ed.cursor.set_position(0, 7);
-        h.press(&mut ed, Key::Backspace, CTRL);
+        h.press(&mut ed, Key::Backspace, WORD);
         assert_eq!(ed.buffer.to_string(), "foo  baz");
         assert_eq!(ed.cursor.position(), (0, 4));
-        h.press(&mut ed, Key::Delete, CTRL);
+        h.press(&mut ed, Key::Delete, WORD);
         assert_eq!(ed.buffer.to_string(), "foo ");
         // One undo step per word deletion.
         assert!(ed.buffer.undo());
@@ -4713,11 +4715,11 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_backspace_deletes_at_every_cursor() {
+    fn word_backspace_deletes_at_every_cursor() {
         let (mut h, mut ed) = setup("one two\nthree four");
         ed.cursor.set_position(0, 7);
         ed.extra_cursors.push(extra(1, 10));
-        h.press(&mut ed, Key::Backspace, CTRL);
+        h.press(&mut ed, Key::Backspace, WORD);
         assert_eq!(ed.buffer.to_string(), "one \nthree ");
         assert_eq!(ed.cursor.position(), (0, 4));
         assert_eq!(ed.extra_cursors[0].position(), (1, 6));
