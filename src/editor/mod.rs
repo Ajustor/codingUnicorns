@@ -61,6 +61,10 @@ pub struct Editor {
     /// Whether the editor held the keyboard focus during the last `show()`
     /// (tells which split pane is active).
     pub has_focus: bool,
+    /// Whether another widget (a text field…) held the keyboard focus during the
+    /// last `show()`. While set, the editor doesn't reclaim a free focus: a field
+    /// that just gave it up on Enter would otherwise hand that Enter to the editor.
+    other_had_focus: bool,
     /// Populated by Ctrl+click; consumed by the app to navigate to definition.
     pub go_to_definition_request: Option<String>,
     /// Word under the mouse when Ctrl is held: (row, start_col, end_col).
@@ -226,6 +230,7 @@ impl Editor {
             scroll_to_cursor: false,
             focus_requested: false,
             has_focus: false,
+            other_had_focus: false,
             go_to_definition_request: None,
             ctrl_hover_word_bounds: None,
             hover_word: None,
@@ -925,13 +930,19 @@ impl Editor {
                 // can leak focus away and break completion navigation).
                 // We only REQUEST focus when needed — never re-request when we
                 // already have it, to avoid disrupting egui's key event delivery.
+                // A free focus is only reclaimed once no other widget held it last
+                // frame: when a text field gives focus up on Enter, that same Enter
+                // is still in this frame's events and must not become a newline.
                 let has_focus = response.has_focus();
+                let focused = ui.memory(|m| m.focused());
                 if !has_focus && !self.show_find && !self.show_goto_line {
                     let explicit = std::mem::take(&mut self.focus_requested);
-                    if response.clicked() || explicit || ui.memory(|m| m.focused().is_none()) {
+                    let reclaim = focused.is_none() && !self.other_had_focus;
+                    if response.clicked() || explicit || reclaim {
                         ui.memory_mut(|m| m.request_focus(response.id));
                     }
                 }
+                self.other_had_focus = focused.is_some_and(|id| id != response.id);
 
                 // Capture Tab + arrow keys so egui's directional focus navigation
                 // doesn't move focus out of the editor (into the file tree / terminal)
@@ -1098,6 +1109,15 @@ impl Editor {
                                                 self.insert_newline();
                                             }
                                         }
+                                        // Ctrl+Backspace / Ctrl+Delete — delete a whole word.
+                                        egui::Key::Backspace if modifiers.ctrl => {
+                                            self.delete_word(false);
+                                            text_typed = true;
+                                        }
+                                        egui::Key::Delete if modifiers.ctrl => {
+                                            self.delete_word(true);
+                                            text_typed = true;
+                                        }
                                         // delete_char_before/after push their own checkpoint.
                                         egui::Key::Backspace => {
                                             self.delete_char_before();
@@ -1262,6 +1282,29 @@ impl Editor {
                                             ac_nav = true;
                                         }
 
+                                        // Ctrl(+Shift)+Left/Right — jump (select) by word.
+                                        egui::Key::ArrowLeft
+                                            if modifiers.ctrl && !modifiers.alt =>
+                                        {
+                                            let select = modifiers.shift;
+                                            self.cursor.move_word_left(&self.buffer, select);
+                                            for ec in &mut self.extra_cursors {
+                                                ec.move_word_left(&self.buffer, select);
+                                            }
+                                            self.dedup_cursors();
+                                            ac_dismiss = true;
+                                        }
+                                        egui::Key::ArrowRight
+                                            if modifiers.ctrl && !modifiers.alt =>
+                                        {
+                                            let select = modifiers.shift;
+                                            self.cursor.move_word_right(&self.buffer, select);
+                                            for ec in &mut self.extra_cursors {
+                                                ec.move_word_right(&self.buffer, select);
+                                            }
+                                            self.dedup_cursors();
+                                            ac_dismiss = true;
+                                        }
                                         egui::Key::ArrowLeft if modifiers.shift => {
                                             self.cursor.move_left_select(&self.buffer);
                                             for ec in &mut self.extra_cursors {
@@ -2775,22 +2818,26 @@ impl Editor {
                         // Blink: 530ms on / 530ms off, reset on any input event.
                         let blink_ms = self.cursor_blink_epoch.elapsed().as_millis() % 1060;
                         let cursor_visible = blink_ms < 530;
-                        if cursor_visible {
-                            painter.line_segment(
-                                [egui::pos2(cx, y), egui::pos2(cx, y + line_height)],
-                                egui::Stroke::new(2.0_f32, cursor_color),
-                            );
+                        // No caret (nor blink repaints) while another widget has
+                        // the focus.
+                        if self.has_focus {
+                            if cursor_visible {
+                                painter.line_segment(
+                                    [egui::pos2(cx, y), egui::pos2(cx, y + line_height)],
+                                    egui::Stroke::new(2.0_f32, cursor_color),
+                                );
+                            }
+                            // Request repaint at the next blink transition.
+                            let next_transition = if cursor_visible {
+                                530 - blink_ms
+                            } else {
+                                1060 - blink_ms
+                            };
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(
+                                    next_transition as u64 + 1,
+                                ));
                         }
-                        // Request repaint at the next blink transition.
-                        let next_transition = if cursor_visible {
-                            530 - blink_ms
-                        } else {
-                            1060 - blink_ms
-                        };
-                        ui.ctx()
-                            .request_repaint_after(std::time::Duration::from_millis(
-                                next_transition as u64 + 1,
-                            ));
                         // Update autocomplete popup anchor for this frame.
                         self.autocomplete.cursor_screen_pos = egui::pos2(cx, y + line_height);
                     }
@@ -4451,6 +4498,104 @@ mod tests {
         h.press(&mut ed, Key::ArrowLeft, SHIFT);
         assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (0, 1))));
         assert_eq!(ed.selected_text().as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn ctrl_arrows_jump_and_select_by_word() {
+        let (mut h, mut ed) = setup("let foo_bar = 1;\nnext");
+        ed.cursor.set_position(0, 4);
+        h.press(&mut ed, Key::ArrowRight, CTRL);
+        assert_eq!(ed.cursor.position(), (0, 11), "crosses the whole word");
+        h.press(&mut ed, Key::ArrowLeft, CTRL);
+        assert_eq!(ed.cursor.position(), (0, 4));
+        h.press(&mut ed, Key::ArrowRight, mods(&[CTRL, SHIFT]));
+        assert_eq!(ed.selected_text().as_deref(), Some("foo_bar"));
+        ed.cursor.clear_selection();
+        ed.cursor.set_position(0, 16);
+        h.press(&mut ed, Key::ArrowRight, CTRL);
+        assert_eq!(ed.cursor.position(), (1, 0), "line end wraps to next line");
+    }
+
+    #[test]
+    fn ctrl_backspace_and_delete_remove_a_word() {
+        let (mut h, mut ed) = setup("foo bar baz");
+        ed.cursor.set_position(0, 7);
+        h.press(&mut ed, Key::Backspace, CTRL);
+        assert_eq!(ed.buffer.to_string(), "foo  baz");
+        assert_eq!(ed.cursor.position(), (0, 4));
+        h.press(&mut ed, Key::Delete, CTRL);
+        assert_eq!(ed.buffer.to_string(), "foo ");
+        // One undo step per word deletion.
+        assert!(ed.buffer.undo());
+        assert_eq!(ed.buffer.to_string(), "foo  baz");
+    }
+
+    #[test]
+    fn ctrl_backspace_deletes_at_every_cursor() {
+        let (mut h, mut ed) = setup("one two\nthree four");
+        ed.cursor.set_position(0, 7);
+        ed.extra_cursors.push(extra(1, 10));
+        h.press(&mut ed, Key::Backspace, CTRL);
+        assert_eq!(ed.buffer.to_string(), "one \nthree ");
+        assert_eq!(ed.cursor.position(), (0, 4));
+        assert_eq!(ed.extra_cursors[0].position(), (1, 6));
+    }
+
+    #[test]
+    fn enter_in_another_text_field_does_not_reach_the_editor() {
+        let (mut h, mut ed) = setup("abc");
+        let mut field = String::new();
+        let field_id = egui::Id::new("other_field");
+        let palette = crate::ui::theme::Palette::from_theme(&h.config.theme);
+        let mut run = |h: &mut Harness, ed: &mut Editor, events: Vec<Event>, focus_field: bool| {
+            h.time += 1.0 / 60.0;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                time: Some(h.time),
+                events,
+                focused: true,
+                ..Default::default()
+            };
+            let (config, plugins, bps) = (&h.config, &h.plugins, &h.breakpoints);
+            let _ = h.ctx.run(raw, |ctx| {
+                egui::SidePanel::left("side").show(ctx, |ui| {
+                    let resp = ui.add(egui::TextEdit::singleline(&mut field).id(field_id));
+                    if focus_field {
+                        resp.request_focus();
+                    }
+                });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ed.show(
+                        ui,
+                        config,
+                        plugins,
+                        None,
+                        bps,
+                        palette,
+                        crate::ui::theme::Spacing::default(),
+                    );
+                });
+            });
+        };
+        run(&mut h, &mut ed, vec![], true);
+        run(&mut h, &mut ed, vec![], false);
+        assert!(!ed.has_focus, "the field holds the focus");
+        let enter = Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: NONE,
+        };
+        run(&mut h, &mut ed, vec![enter], false);
+        assert_eq!(ed.buffer.to_string(), "abc", "Enter stayed in the field");
+        // Once the field let go, the editor takes the free focus back.
+        run(&mut h, &mut ed, vec![], false);
+        run(&mut h, &mut ed, vec![], false);
+        assert!(ed.has_focus);
     }
 
     #[test]

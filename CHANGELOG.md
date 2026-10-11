@@ -8,6 +8,16 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-10-11
+
+### Added
+
+- Editor: word-by-word editing shortcuts. **Ctrl+Left / Ctrl+Right** jump over a whole word (`foo_bar` is one word, a punctuation run like `::` or `->` is one stop), **Ctrl+Shift+Left / Right** select word by word, and **Ctrl+Backspace / Ctrl+Delete** delete the word before / after the cursor. They work with multiple cursors, and each word deletion is a single undo step.
+
+### Fixed
+
+- Pressing Enter in a text field outside the editor (search, branch name, rename...) no longer also inserts a new line in the open file.
+- The editor's blinking cursor is hidden while another field has the keyboard focus, so it is clear where typing goes.
 ## [0.11.5] - 2026-10-10
 
 ### Fixed

@@ -410,6 +410,77 @@ impl Editor {
         self.cursor_blink_epoch = std::time::Instant::now();
     }
 
+    /// Ctrl+Backspace / Ctrl+Delete: delete the word before / after every cursor
+    /// (or its selection, when it has one), as one undo step.
+    pub fn delete_word(&mut self, forward: bool) {
+        let ranges: Vec<(usize, usize)> = std::iter::once(&self.cursor)
+            .chain(self.extra_cursors.iter())
+            .map(|c| {
+                let (a, b) = c.selection_range().unwrap_or_else(|| {
+                    let here = c.position();
+                    let to = if forward {
+                        super::cursor::word_right(&self.buffer, here.0, here.1)
+                    } else {
+                        super::cursor::word_left(&self.buffer, here.0, here.1)
+                    };
+                    (here.min(to), here.max(to))
+                });
+                (
+                    self.buffer.char_index(a.0, a.1),
+                    self.buffer.char_index(b.0, b.1),
+                )
+            })
+            .collect();
+        if ranges.iter().all(|(s, e)| s == e) {
+            return;
+        }
+        self.buffer.checkpoint();
+
+        // Delete back to front so earlier indices stay valid; overlapping ranges
+        // (two cursors in one word) are clamped to what's still there.
+        let mut order: Vec<usize> = (0..ranges.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(ranges[i].0));
+        let mut floor = usize::MAX;
+        for &i in &order {
+            let (s, e) = ranges[i];
+            self.buffer.delete_range(s, e.min(floor));
+            floor = floor.min(s);
+        }
+
+        // Each cursor lands at its range start, minus everything deleted before it.
+        let removed_before = |idx: usize| -> usize {
+            let mut spans: Vec<(usize, usize)> =
+                ranges.iter().copied().filter(|(s, _)| *s < idx).collect();
+            spans.sort();
+            let (mut total, mut reach) = (0, 0);
+            for (s, e) in spans {
+                let (s, e) = (s.max(reach), e.min(idx));
+                if e > s {
+                    total += e - s;
+                }
+                reach = reach.max(e);
+            }
+            total
+        };
+        let new_pos: Vec<(usize, usize)> = ranges
+            .iter()
+            .map(|(s, _)| self.buffer.position_of(s - removed_before(*s)))
+            .collect();
+        for (i, (row, col)) in new_pos.into_iter().enumerate() {
+            let c = if i == 0 {
+                &mut self.cursor
+            } else {
+                &mut self.extra_cursors[i - 1]
+            };
+            c.clear_selection();
+            c.set_position(row, col);
+        }
+        self.dedup_cursors();
+        self.is_modified = true;
+        self.content_version = self.content_version.wrapping_add(1);
+        self.cursor_blink_epoch = std::time::Instant::now();
+    }
+
     /// Enter: split the line at every cursor and auto-indent the new line (see
     /// `newline_text`).
     pub fn insert_newline(&mut self) {

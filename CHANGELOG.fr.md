@@ -8,6 +8,16 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.12.0] - 2026-10-11
+
+### Ajouts
+
+- Éditeur : raccourcis d'édition mot par mot. **Ctrl+Gauche / Ctrl+Droite** sautent un mot entier (`foo_bar` est un seul mot, une suite de ponctuation comme `::` ou `->` compte comme un seul arrêt), **Ctrl+Maj+Gauche / Droite** sélectionnent mot par mot, et **Ctrl+Retour arrière / Ctrl+Suppr** effacent le mot avant / après le curseur. Ils fonctionnent avec plusieurs curseurs, et chaque suppression de mot s'annule en une seule fois.
+
+### Corrections
+
+- Appuyer sur Entrée dans un champ texte hors de l'éditeur (recherche, nom de branche, renommage...) n'insère plus aussi une nouvelle ligne dans le fichier ouvert.
+- Le curseur clignotant de l'éditeur est masqué quand un autre champ a le focus clavier : on voit clairement où va la saisie.
 ## [0.11.5] - 2026-10-10
 
 ### Corrections

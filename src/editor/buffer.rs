@@ -70,6 +70,13 @@ impl Buffer {
         line_start + col
     }
 
+    /// Inverse of `char_index`: the (row, col) of a rope char index.
+    pub fn position_of(&self, idx: usize) -> (usize, usize) {
+        let idx = idx.min(self.rope.len_chars());
+        let row = self.rope.char_to_line(idx);
+        (row, idx - self.rope.line_to_char(row))
+    }
+
     pub fn checkpoint(&mut self) {
         self.history.push(self.rope.clone());
         self.future.clear();

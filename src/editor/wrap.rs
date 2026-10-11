@@ -348,21 +348,24 @@ impl Editor {
             let c = caret(cur_col);
             let blink_ms = self.cursor_blink_epoch.elapsed().as_millis() % 1060;
             let cursor_visible = blink_ms < 530;
-            if cursor_visible {
-                p.painter.line_segment(
-                    [c, egui::pos2(c.x, c.y + lh)],
-                    egui::Stroke::new(2.0_f32, p.cursor_color),
-                );
+            // No caret (nor blink repaints) while another widget has the focus.
+            if self.has_focus {
+                if cursor_visible {
+                    p.painter.line_segment(
+                        [c, egui::pos2(c.x, c.y + lh)],
+                        egui::Stroke::new(2.0_f32, p.cursor_color),
+                    );
+                }
+                let next_transition = if cursor_visible {
+                    530 - blink_ms
+                } else {
+                    1060 - blink_ms
+                };
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(
+                        next_transition as u64 + 1,
+                    ));
             }
-            let next_transition = if cursor_visible {
-                530 - blink_ms
-            } else {
-                1060 - blink_ms
-            };
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(
-                    next_transition as u64 + 1,
-                ));
             self.autocomplete.cursor_screen_pos = egui::pos2(c.x, c.y + lh);
         }
         for extra in &self.extra_cursors {
