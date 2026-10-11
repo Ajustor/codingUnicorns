@@ -133,6 +133,19 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             Err(_) => {}
         }
     }
+    if std::mem::take(&mut app.editor.save_as_requested) {
+        app.request_save_as();
+    }
+    if let Some(e) = app.editor.save_error.take() {
+        app.toast(format!("Could not save: {e}"));
+    }
+    if let Some(rx) = app.save_as_pending.take() {
+        match rx.try_recv() {
+            Ok(path) => app.finish_save_as(path),
+            Err(std::sync::mpsc::TryRecvError::Empty) => app.save_as_pending = Some(rx),
+            Err(_) => {} // dialog cancelled
+        }
+    }
 
     // Unsaved edits of a closed tab are discarded with it.
     app.prune_parked_docs();
@@ -686,11 +699,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                     app.pending_delete = Some(path);
                                 }
                                 FileTreeAction::Rename(old_path, new_name) => {
-                                    if let Some(parent) = old_path.parent() {
-                                        let new_path = parent.join(&new_name);
-                                        let _ = std::fs::rename(&old_path, &new_path);
-                                        app.file_tree.reload_children();
-                                    }
+                                    app.rename_path(&old_path, &new_name);
+                                    app.file_tree.reload_children();
                                 }
                                 FileTreeAction::NewFile(parent) => {
                                     // Create with a temp name then immediately enter inline rename

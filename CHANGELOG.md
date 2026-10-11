@@ -19,6 +19,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Language servers: hover, completion, outline, formatting and signature help no longer stop working until a restart when a server crashes or never answers a request (it is given up after 15 s or when the server restarts), and with several servers running, an answer from one is no longer taken for another's. Go to Definition no longer stays stuck after a "not found".
 - Formatting a document through its language server (rustfmt, prettier, gofmt…) no longer destroys text when an edit spans several lines: each edit now replaces exactly its range, and the whole format is a single undo step.
 - Renaming a symbol through the language server while the file has unsaved changes no longer loses them or lands the edits on the wrong lines: the open file is renamed in the editor (undoable, saved like any edit), other files on disk as before, and a file that can't be written is reported.
+- Saving an untitled file (Ctrl+N) now asks where to save it, and its tab takes the file's name. Before, Ctrl+S, "Save" and "Save All & Quit" reported success without writing anything, so quitting lost the text. A save that fails now says so instead of showing "Saved".
+- Renaming in the file tree no longer silently replaces an existing file of that name (a case-only rename is still allowed), refuses names with a path separator, and reports a failed rename. Open tabs follow the renamed file or folder, so saving no longer recreates the old name (e.g. New File, rename, Ctrl+S).
 
 ## [0.12.2] - 2026-10-11
 
