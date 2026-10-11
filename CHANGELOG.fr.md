@@ -13,6 +13,9 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - Git : fusionner depuis la liste des branches une branche en avance (fast-forward) n'efface plus les modifications non commitées. Les modifications sans rapport sont conservées, et la fusion est refusée avec un message clair si elle devait les écraser. Une fusion est aussi refusée pendant qu'une autre est en cours.
+- Changer d'onglet ne perd plus les modifications non enregistrées : un fichier modifié reste en mémoire, avec son historique d'annulation et ses curseurs, jusqu'à ce que vous y reveniez. Recliquer sur l'onglet actif ou aller à une définition dans le même fichier ne le recharge plus depuis le disque non plus. « Save All & Quit » enregistre aussi ces fichiers, et un fichier modifié sur disque entre-temps déclenche toujours la demande de conflit.
+- Fermer un onglet modifié avec son × ou un clic molette demande maintenant d'enregistrer, d'ignorer ou d'annuler, comme Ctrl+W, au lieu de le fermer directement.
+- Vue scindée : les modifications non enregistrées du volet droit sont maintenant protégées. Son onglet affiche le point de modification, fermer son onglet ou la vue scindée demande d'enregistrer, d'ignorer ou d'annuler, « Save All & Quit » l'inclut, ouvrir un autre fichier dans ce volet est refusé tant qu'il n'est pas enregistré, et il n'écrase plus une version enregistrée depuis le volet gauche (il la recharge s'il n'a pas de modifications).
 
 ## [0.12.2] - 2026-10-11
 

@@ -45,7 +45,21 @@ impl CodingUnicorns {
     }
 
     pub fn open_file(&mut self, path: PathBuf) {
+        self.open_file_with(path, false);
+    }
+
+    /// Open `path` in the editor. A modified file being left is parked (kept in
+    /// memory) and a parked file comes back as it was; only `reload` re-reads
+    /// the file already shown when it has unsaved changes (the user discarding
+    /// them for the disk version).
+    pub(super) fn open_file_with(&mut self, path: PathBuf, reload: bool) {
         let path = absolute_path(path);
+        if !reload && self.editor.is_modified && self.editor.current_path.as_ref() == Some(&path) {
+            // Already shown with unsaved changes (its tab clicked again, a
+            // go-to-definition in the same file): keep them.
+            self.tab_manager.open(path, String::new());
+            return;
+        }
         // Keep the outgoing file's cursor/scroll so returning to it restores them.
         self.remember_view_state();
         // Always clear any previous image state when opening a new file.
@@ -68,6 +82,7 @@ impl CodingUnicorns {
                 }
             }
             // Open a tab for the image (empty content — we won't edit it).
+            self.park_current_doc(Some(&path));
             self.tab_manager.open(path.clone(), String::new());
             self.editor.set_content(String::new(), Some(path.clone()));
             self.config.last_file = Some(path.to_string_lossy().to_string());
@@ -76,7 +91,24 @@ impl CodingUnicorns {
             return;
         }
 
+        if let Some(doc) = self.take_parked_doc(&path) {
+            self.park_current_doc(Some(&path));
+            self.tab_manager.open(path.clone(), String::new());
+            self.editor.unpark(doc, path.clone());
+            // Not record_file_stamp: the stamp from the last load/save must stay,
+            // so a change made on disk meanwhile still raises the conflict prompt.
+            self.config.last_file = Some(path.to_string_lossy().to_string());
+            self.config.save();
+            self.notify_lsp_opened(&path);
+            self.editor.refresh_line_diff();
+            self.editor.focus_requested = true;
+            return;
+        }
+
+        // Park only once the new content is in hand: a file that fails to load
+        // leaves the current one shown, untouched.
         if let Ok((content, lossy)) = crate::editor::text_format::read_text_file(&path) {
+            self.park_current_doc(Some(&path));
             self.tab_manager.open(path.clone(), content.clone());
             self.editor.set_content(content, Some(path.clone()));
             if lossy {
@@ -86,21 +118,109 @@ impl CodingUnicorns {
             }
             self.config.last_file = Some(path.to_string_lossy().to_string());
             self.config.save();
-            self.ensure_lsp_for_file(&path);
-            // Notify LSP server that a file was opened — with the normalized
-            // (LF-only) buffer text, so later edits line up with it.
-            if let Some(ext) = crate::language::language_key(&path).as_deref() {
-                let lang_id = self.extension_registry.lsp_language_id(ext);
-                let uri = crate::lsp::client::path_to_uri(&path);
-                if let Some(client) = self.lsp.get_mut(ext) {
-                    client.did_open(&uri, &lang_id, &self.editor.buffer.to_string());
-                }
-            }
-            self.last_lsp_content_version = 0;
+            self.notify_lsp_opened(&path);
             self.editor.refresh_line_diff();
             self.editor.focus_requested = true;
             self.apply_view_state(&path);
             self.record_file_stamp(&path);
+        }
+    }
+
+    /// Start the language server for `path` and send it the editor's text.
+    fn notify_lsp_opened(&mut self, path: &std::path::Path) {
+        self.ensure_lsp_for_file(path);
+        // Notify LSP server that a file was opened — with the normalized
+        // (LF-only) buffer text, so later edits line up with it.
+        if let Some(ext) = crate::language::language_key(path).as_deref() {
+            let lang_id = self.extension_registry.lsp_language_id(ext);
+            let uri = crate::lsp::client::path_to_uri(path);
+            if let Some(client) = self.lsp.get_mut(ext) {
+                client.did_open(&uri, &lang_id, &self.editor.buffer.to_string());
+            }
+        }
+        self.last_lsp_content_version = 0;
+    }
+
+    /// Park the editor's document if it has unsaved changes and another file
+    /// (`next`, or an untitled buffer for `None`) is about to replace it.
+    fn park_current_doc(&mut self, next: Option<&std::path::Path>) {
+        let Some(current) = self.editor.current_path.clone() else {
+            return;
+        };
+        let has_tab = self.tab_manager.tabs.iter().any(|t| t.path == current);
+        if self.editor.is_modified && has_tab && next != Some(current.as_path()) {
+            let doc = self.editor.park();
+            self.parked_docs.insert(current, doc);
+        }
+    }
+
+    /// The parked document of `path`, if its tab is still open (a closed tab's
+    /// edits were discarded with it).
+    fn take_parked_doc(&mut self, path: &std::path::Path) -> Option<crate::editor::ParkedDoc> {
+        let doc = self.parked_docs.remove(path)?;
+        self.tab_manager
+            .tabs
+            .iter()
+            .any(|t| t.path == path)
+            .then_some(doc)
+    }
+
+    /// Forget parked documents whose tab was closed.
+    pub fn prune_parked_docs(&mut self) {
+        let tabs = &self.tab_manager.tabs;
+        self.parked_docs
+            .retain(|path, _| tabs.iter().any(|t| &t.path == path));
+    }
+
+    /// Write every parked document to disk (quit's "Save All"). Stops at the
+    /// first file that changed on disk meanwhile or can't be written, and
+    /// returns false then: that file stays parked and modified.
+    pub fn save_parked_docs(&mut self) -> bool {
+        let paths: Vec<PathBuf> = self.parked_docs.keys().cloned().collect();
+        paths.iter().all(|path| self.save_parked_doc(path))
+    }
+
+    /// Write the parked document of `path`, if any. False (with a toast) when
+    /// the file changed on disk meanwhile or can't be written: it stays parked.
+    fn save_parked_doc(&mut self, path: &std::path::Path) -> bool {
+        let Some(doc) = self.parked_docs.get(path) else {
+            return true;
+        };
+        if self.parked_changed_on_disk(path) {
+            self.toast(format!(
+                "{} changed on disk: open its tab to resolve it",
+                path.display()
+            ));
+            return false;
+        }
+        if let Err(e) = std::fs::write(path, doc.encoded()) {
+            self.toast(format!("Could not save {}: {e}", path.display()));
+            return false;
+        }
+        self.parked_docs.remove(path);
+        self.record_file_stamp(path);
+        if let Some(tab) = self.tab_manager.tabs.iter_mut().find(|t| t.path == path) {
+            tab.is_modified = false;
+        }
+        true
+    }
+
+    /// Save the file of tab `id`: the editor's when it is the one shown, else
+    /// its parked document. False when nothing could be saved.
+    pub fn save_tab(&mut self, id: usize) -> bool {
+        let Some(path) = self
+            .tab_manager
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.path.clone())
+        else {
+            return false;
+        };
+        if self.editor.current_path.as_ref() == Some(&path) {
+            self.save_editor_guarded(true)
+        } else {
+            self.save_parked_doc(&path)
         }
     }
 
@@ -109,18 +229,6 @@ impl CodingUnicorns {
         let max = self.editor.buffer.num_lines().saturating_sub(1);
         self.editor.cursor.set_position(line.min(max), 0);
         self.editor.scroll_to_cursor = true;
-    }
-
-    pub fn open_file_in_pane2(&mut self, path: PathBuf) {
-        if let Ok((content, lossy)) = crate::editor::text_format::read_text_file(&path) {
-            if let Some(ref mut tm2) = self.tab_manager2 {
-                tm2.open(path.clone(), content.clone());
-            }
-            if let Some(ref mut e2) = self.editor2 {
-                e2.set_content(content, Some(path));
-                e2.decoded_lossy = lossy;
-            }
-        }
     }
 
     pub fn open_folder(&mut self, path: PathBuf) {
@@ -164,6 +272,7 @@ impl CodingUnicorns {
     }
 
     pub fn open_new_file(&mut self) {
+        self.park_current_doc(None);
         self.editor.set_content(String::new(), None);
         self.tab_manager.open_untitled();
     }

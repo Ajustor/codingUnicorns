@@ -134,6 +134,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
         }
     }
 
+    // Unsaved edits of a closed tab are discarded with it.
+    app.prune_parked_docs();
+
     // Sync editor modified state → active tab
     if let Some(active_id) = app.tab_manager.active_tab {
         if let Some(tab) = app.tab_manager.tabs.iter_mut().find(|t| t.id == active_id) {
