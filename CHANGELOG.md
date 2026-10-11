@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Settings: a config file with a missing section or field keeps everything else it sets instead of falling back to the defaults. A file that can't be read at all is kept as `config.toml.invalid` before it gets overwritten.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added

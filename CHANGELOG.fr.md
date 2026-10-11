@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Réglages : quand il manque une section ou un champ dans le fichier de configuration, tout le reste du fichier est conservé au lieu de revenir aux valeurs par défaut. Un fichier totalement illisible est sauvegardé sous `config.toml.invalid` avant d'être réécrit.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
