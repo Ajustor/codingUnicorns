@@ -29,6 +29,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - macOS : les raccourcis de mot suivent les conventions du Mac. Option+Gauche/Droite déplacent par mot (Maj pour sélectionner), Option+Retour arrière/Suppr effacent un mot, et Cmd+Gauche/Droite vont au début ou à la fin de la ligne. Dans l'éditeur, Option+flèches ne déclenchent plus la navigation arrière/avant sous macOS ; rien ne change sous Windows et Linux (Ctrl pour les mots, Alt+flèches pour naviguer).
 - Configurations d'exécution : leurs variables `env` (par exemple importées de launch.json) sont maintenant transmises à la commande, les chemins substitués pour `${file}`, `${workspaceFolder}`… et les arguments contenant des espaces sont mis entre guillemets selon le shell du terminal (PowerShell, cmd, bash/zsh, fish), et cmd change de lecteur si besoin. Nouvelles variables `${fileBasename}` (nom du fichier avec son extension) et `${fileExtname}`.
 - Git : Push, Pull et Fetch ne figent plus l'éditeur quand le réseau (ou une demande d'identifiants) est lent. Ils s'exécutent en arrière-plan avec un indicateur dans le panneau Git, les boutons attendent la fin de l'opération, et une erreur est signalée même si le panneau a été fermé entre-temps.
+- Extensions : un module sans tokenizer de document ne fuit plus de mémoire à chaque frappe (sa liste d'extensions de fichier était copiée sans jamais être libérée à chaque demande).
 
 ## [0.12.2] - 2026-10-11
 
