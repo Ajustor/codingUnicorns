@@ -122,7 +122,7 @@ impl GitStatus {
         let result = if analysis.is_up_to_date() {
             Ok(())
         } else if analysis.is_fast_forward() {
-            fast_forward(&repo, &branch_name, remote_oid)
+            fast_forward(&repo, &branch_name, remote_oid, "Pull")
         } else if analysis.is_normal() {
             merge_upstream(&repo, &branch_name, &annotated)
         } else {
@@ -134,21 +134,24 @@ impl GitStatus {
     }
 }
 
-/// Map a checkout/merge error caused by uncommitted local changes.
-fn local_changes_error(context: &str, e: git2::Error) -> String {
+/// Map a checkout/merge error caused by uncommitted local changes. `action`
+/// names the operation for the user ("Pull", "Merge").
+fn local_changes_error(action: &str, context: &str, e: git2::Error) -> String {
     if e.code() == git2::ErrorCode::Conflict {
-        format!("Pull would overwrite local changes: commit or stash them first ({e})")
+        format!("{action} would overwrite local changes: commit or stash them first ({e})")
     } else {
         format!("{context} error: {e}")
     }
 }
 
 /// Move `branch` to `target`, updating the working tree without discarding
-/// uncommitted changes (the checkout fails instead).
-fn fast_forward(
+/// uncommitted changes (the checkout fails instead). `action` names the
+/// operation in the error and the reflog ("Pull", "Merge").
+pub(super) fn fast_forward(
     repo: &git2::Repository,
     branch_name: &str,
     target: git2::Oid,
+    action: &str,
 ) -> Result<(), String> {
     let commit = repo
         .find_commit(target)
@@ -157,11 +160,11 @@ fn fast_forward(
         commit.as_object(),
         Some(git2::build::CheckoutBuilder::new().safe()),
     )
-    .map_err(|e| local_changes_error("Checkout", e))?;
+    .map_err(|e| local_changes_error(action, "Checkout", e))?;
     let refname = format!("refs/heads/{}", branch_name);
     repo.find_reference(&refname)
         .map_err(|e| format!("Branch ref error: {e}"))?
-        .set_target(target, "pull: fast-forward")
+        .set_target(target, &format!("{}: fast-forward", action.to_lowercase()))
         .map_err(|e| format!("Fast-forward error: {e}"))?;
     repo.set_head(&refname)
         .map_err(|e| format!("Set HEAD error: {e}"))?;
@@ -178,7 +181,7 @@ fn merge_upstream(
     upstream: &git2::AnnotatedCommit,
 ) -> Result<(), String> {
     repo.merge(&[upstream], None, None)
-        .map_err(|e| local_changes_error("Merge", e))?;
+        .map_err(|e| local_changes_error("Pull", "Merge", e))?;
     let mut index = repo.index().map_err(|e| format!("Index error: {e}"))?;
     if index.has_conflicts() {
         return Err("Merge conflicts: resolve them then commit".to_string());
