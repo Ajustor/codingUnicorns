@@ -24,6 +24,9 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Multi-curseurs : chaque édition s'applique maintenant à tous les curseurs et les déplace tous correctement. Retour arrière, Suppr et Couper avec des sélections n'agissent plus seulement sur le curseur principal ; taper à un curseur placé avant le principal, les paires auto-fermées et les jonctions de lignes ne laissent plus de curseurs mal placés ni de texte corrompu ; un collage réparti sur les curseurs remplace leurs sélections ; et copier avec plusieurs curseurs prend chaque sélection exacte, de haut en bas.
 - Coller plusieurs lignes s'annule de nouveau en une seule fois. Chaque ligne collée ajoutait deux étapes d'annulation, si bien qu'un grand collage pouvait chasser de l'historique tout ce qui précédait.
 - La gouttière git compare maintenant le fichier à HEAD ligne à ligne : insérer une ligne ne marque plus toutes les suivantes comme modifiées, les lignes modifiées et ajoutées sont distinguées, et les lignes supprimées affichent un petit repère rouge à leur emplacement.
+### Ajouts
+
+- macOS : les raccourcis de mot suivent les conventions du Mac. Option+Gauche/Droite déplacent par mot (Maj pour sélectionner), Option+Retour arrière/Suppr effacent un mot, et Cmd+Gauche/Droite vont au début ou à la fin de la ligne. Dans l'éditeur, Option+flèches ne déclenchent plus la navigation arrière/avant sous macOS ; rien ne change sous Windows et Linux (Ctrl pour les mots, Alt+flèches pour naviguer).
 
 ## [0.12.2] - 2026-10-11
 

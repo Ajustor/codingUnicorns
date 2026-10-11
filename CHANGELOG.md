@@ -24,6 +24,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Multiple cursors: every edit now applies at every cursor and moves all of them correctly. Backspace, Delete and Cut with selections no longer act on the main cursor only; typing at a cursor placed before the main one, auto-closed pairs and line joins no longer leave cursors at wrong positions or corrupt the text; a paste spread over the cursors replaces their selections; and copying with several cursors takes each exact selection, top to bottom.
 - Pasting several lines is a single undo step again. Each pasted line used to add two, so a large paste could push everything before it out of the undo history.
 - The git gutter now compares the file with HEAD line by line: inserting a line no longer marks every line below it as modified, changed lines and added lines are told apart, and removed lines show a small red marker where they were.
+### Added
+
+- macOS: word shortcuts follow the Mac conventions. Option+Left/Right move by word (with Shift to select), Option+Backspace/Delete delete a word, and Cmd+Left/Right jump to the start/end of the line. In the editor, Option+arrows no longer trigger back/forward navigation on macOS; Windows and Linux are unchanged (Ctrl for words, Alt+arrows to navigate).
 
 ## [0.12.2] - 2026-10-11
 
