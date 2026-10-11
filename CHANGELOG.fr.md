@@ -31,6 +31,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Git : Push, Pull et Fetch ne figent plus l'éditeur quand le réseau (ou une demande d'identifiants) est lent. Ils s'exécutent en arrière-plan avec un indicateur dans le panneau Git, les boutons attendent la fin de l'opération, et une erreur est signalée même si le panneau a été fermé entre-temps.
 - Extensions : un module sans tokenizer de document ne fuit plus de mémoire à chaque frappe (sa liste d'extensions de fichier était copiée sans jamais être libérée à chaque demande).
 - Débogueur : Continuer et les commandes de pas à pas ne laissent plus la session affichée « Paused » avec les débogueurs qui ne le signalent pas (lldb-dap, CodeLLDB…). L'ancienne pile d'appels et les variables sont effacées jusqu'au prochain arrêt, et un nouveau pas à pas n'est plus envoyé à un thread en cours d'exécution.
+- Les serveurs de langage et les débogueurs qui envoient un en-tête `Content-Type` après `Content-Length` ne voient plus tous leurs messages ignorés (ils semblaient figés).
 
 ## [0.12.2] - 2026-10-11
 
