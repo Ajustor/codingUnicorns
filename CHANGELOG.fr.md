@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Extensions : les mises à jour de modules comparent correctement les versions. Une pré-version comme `1.0.0-rc.1` passe avant `1.0.0`, et le préfixe `v` (`v1.3.0`) est reconnu.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts

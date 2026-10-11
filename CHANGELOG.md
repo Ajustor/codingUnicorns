@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Extensions: module updates compare versions properly: a pre-release such as `1.0.0-rc.1` comes before `1.0.0`, and a `v` prefix (`v1.3.0`) is understood.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added
