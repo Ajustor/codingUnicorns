@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Formatting a document through its language server (rustfmt, prettier, gofmt…) no longer destroys text when an edit spans several lines: each edit now replaces exactly its range, and the whole format is a single undo step.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added

@@ -350,6 +350,53 @@ impl Editor {
         }
     }
 
+    /// Apply language-server text edits (start line/col, end line/col, new
+    /// text), all expressed against the current text, as one undo step. Each
+    /// range is replaced exactly, whatever lines it spans; ranges past the end
+    /// of a line or of the document are clamped.
+    pub fn apply_text_edits(&mut self, mut edits: Vec<(u32, u32, u32, u32, String)>) {
+        if edits.is_empty() {
+            return;
+        }
+        // Bottom-to-top, so earlier ranges keep their positions.
+        edits.sort_by_key(|e| std::cmp::Reverse((e.0, e.1)));
+        self.buffer.checkpoint();
+        for (sl, sc, el, ec, new_text) in edits {
+            let start = self.clamped_char_index(sl as usize, sc as usize);
+            let end = self.clamped_char_index(el as usize, ec as usize).max(start);
+            self.buffer.delete_range(start, end);
+            // The buffer is LF-only (CRLF is re-applied on save).
+            let text = new_text.replace("\r\n", "\n");
+            let (row, col) = self.buffer.position_of(start);
+            self.buffer.insert_str(row, col, &text);
+        }
+        // Keep the cursors inside the new text.
+        let last = self.buffer.num_lines().saturating_sub(1);
+        let clamp = |c: &mut Cursor, buf: &Buffer| {
+            let row = c.row.min(last);
+            let col = c.col.min(buf.line_len(row));
+            c.clear_selection();
+            c.set_position(row, col);
+        };
+        clamp(&mut self.cursor, &self.buffer);
+        for c in &mut self.extra_cursors {
+            clamp(c, &self.buffer);
+        }
+        self.dedup_cursors();
+        self.is_modified = true;
+        self.content_version = self.content_version.wrapping_add(1);
+    }
+
+    /// Char index of (row, col), clamped to the line's length and to the end
+    /// of the document.
+    fn clamped_char_index(&self, row: usize, col: usize) -> usize {
+        if row >= self.buffer.num_lines() {
+            return self.buffer.rope_len();
+        }
+        self.buffer
+            .char_index(row, col.min(self.buffer.line_len(row)))
+    }
+
     /// Longest line length (chars), cached and recomputed only when the content
     /// changes — used to size the horizontal scrollbar and clamp horizontal scroll.
     /// Avoids an allocating O(file) scan every frame.
@@ -3724,6 +3771,43 @@ mod tests {
         assert_eq!(ed.cached_max_line_chars(), 7, "cached until version bumps");
         ed.content_version += 1;
         assert_eq!(ed.cached_max_line_chars(), 23);
+    }
+
+    #[test]
+    fn multi_line_text_edits_replace_exactly_their_range() {
+        let mut ed = editor_with("fn foo(\n    a: i32,\n) {}\n");
+        // rustfmt joining the parameter list: (0,7)-(1,4) and (1,11)-(2,0) -> "".
+        ed.apply_text_edits(vec![
+            (0, 7, 1, 4, String::new()),
+            (1, 11, 2, 0, String::new()),
+        ]);
+        assert_eq!(ed.buffer.to_string(), "fn foo(a: i32,) {}\n");
+        assert!(ed.is_modified);
+        assert!(ed.buffer.undo(), "one undo step for the whole format");
+        assert_eq!(ed.buffer.to_string(), "fn foo(\n    a: i32,\n) {}\n");
+    }
+
+    #[test]
+    fn whole_document_text_edit_keeps_nothing_of_the_old_text() {
+        let mut ed = editor_with("let  x=1;\nlet y =2;");
+        ed.cursor.set_position(1, 9);
+        // Range past the last line, as servers send for "whole document";
+        // CRLF in the new text becomes LF (re-applied on save).
+        let new = "let x = 1;\r\nlet y = 2;\n".to_string();
+        ed.apply_text_edits(vec![(0, 0, 5, 0, new)]);
+        assert_eq!(ed.buffer.to_string(), "let x = 1;\nlet y = 2;\n");
+        let (row, col) = ed.cursor.position();
+        assert!(
+            col <= ed.buffer.line_len(row),
+            "cursor stays inside the text"
+        );
+    }
+
+    #[test]
+    fn single_line_text_edits_apply_bottom_to_top() {
+        let mut ed = editor_with("a=1\nb=2");
+        ed.apply_text_edits(vec![(0, 1, 0, 2, " = ".into()), (1, 1, 1, 2, " = ".into())]);
+        assert_eq!(ed.buffer.to_string(), "a = 1\nb = 2");
     }
 
     #[test]
