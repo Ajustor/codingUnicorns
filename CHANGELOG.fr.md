@@ -13,6 +13,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - Formater un document via son serveur de langage (rustfmt, prettier, gofmt…) ne détruit plus de texte quand une modification couvre plusieurs lignes : chaque modification remplace exactement sa plage, et tout le formatage s'annule en une seule fois.
+- Renommer un symbole via le serveur de langage alors que le fichier a des modifications non enregistrées ne les perd plus et ne décale plus les modifications : le fichier ouvert est renommé dans l'éditeur (annulable, enregistré comme toute modification), les autres fichiers sur disque comme avant, et un fichier impossible à écrire est signalé.
 
 ## [0.12.2] - 2026-10-11
 

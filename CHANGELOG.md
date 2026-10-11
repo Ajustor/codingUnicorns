@@ -13,6 +13,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Formatting a document through its language server (rustfmt, prettier, gofmt…) no longer destroys text when an edit spans several lines: each edit now replaces exactly its range, and the whole format is a single undo step.
+- Renaming a symbol through the language server while the file has unsaved changes no longer loses them or lands the edits on the wrong lines: the open file is renamed in the editor (undoable, saved like any edit), other files on disk as before, and a file that can't be written is reported.
 
 ## [0.12.2] - 2026-10-11
 

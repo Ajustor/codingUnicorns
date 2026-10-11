@@ -274,11 +274,22 @@ impl CodingUnicorns {
         self.rename_dialog_open = true;
     }
 
-    /// Apply rename edits from LSP to files on disk.
+    /// Apply rename edits from LSP: to the editor's buffer for the file it shows
+    /// (the server computed them on that text, unsaved changes included), to
+    /// the files on disk for the others.
     #[allow(clippy::type_complexity)]
     pub fn apply_rename_edits(&mut self, edits: Vec<(PathBuf, Vec<(u32, u32, u32, String)>)>) {
         use crate::editor::text_format;
         for (path, file_edits) in edits {
+            if self.editor.current_path.as_deref() == Some(&path) {
+                // In memory, as one undo step; the user saves it like any edit.
+                let ranges = file_edits
+                    .into_iter()
+                    .map(|(line, sc, ec, text)| (line, sc, line, ec, text))
+                    .collect();
+                self.editor.apply_text_edits(ranges);
+                continue;
+            }
             let Ok((raw, lossy)) = text_format::read_text_file(&path) else {
                 continue;
             };
@@ -307,13 +318,8 @@ impl CodingUnicorns {
                     }
                 }
                 let new_content = lines.join("\n");
-                let _ = std::fs::write(&path, text_format::encode(&new_content, format));
-                // Reload if it's the current file
-                if self.editor.current_path.as_deref() == Some(&path) {
-                    if let Ok((c, _)) = text_format::read_text_file(&path) {
-                        let p = path.clone();
-                        self.editor.set_content(c, Some(p));
-                    }
+                if let Err(e) = std::fs::write(&path, text_format::encode(&new_content, format)) {
+                    self.toast(format!("Rename: could not write {}: {e}", path.display()));
                 }
             }
         }
