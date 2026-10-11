@@ -10,6 +10,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- macOS: word shortcuts follow the Mac conventions. Option+Left/Right move by word (with Shift to select), Option+Backspace/Delete delete a word, and Cmd+Left/Right jump to the start/end of the line. In the editor, Option+arrows no longer trigger back/forward navigation on macOS; Windows and Linux are unchanged (Ctrl for words, Alt+arrows to navigate).
+
 ### Fixed
 
 - Git: merging a branch that is ahead (fast-forward) from the branch list no longer discards uncommitted changes. Unrelated local edits are kept, and the merge is refused with a clear message when it would overwrite them. A merge is also refused while another one is in progress.
@@ -24,9 +28,6 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Multiple cursors: every edit now applies at every cursor and moves all of them correctly. Backspace, Delete and Cut with selections no longer act on the main cursor only; typing at a cursor placed before the main one, auto-closed pairs and line joins no longer leave cursors at wrong positions or corrupt the text; a paste spread over the cursors replaces their selections; and copying with several cursors takes each exact selection, top to bottom.
 - Pasting several lines is a single undo step again. Each pasted line used to add two, so a large paste could push everything before it out of the undo history.
 - The git gutter now compares the file with HEAD line by line: inserting a line no longer marks every line below it as modified, changed lines and added lines are told apart, and removed lines show a small red marker where they were.
-### Added
-
-- macOS: word shortcuts follow the Mac conventions. Option+Left/Right move by word (with Shift to select), Option+Backspace/Delete delete a word, and Cmd+Left/Right jump to the start/end of the line. In the editor, Option+arrows no longer trigger back/forward navigation on macOS; Windows and Linux are unchanged (Ctrl for words, Alt+arrows to navigate).
 - Run configurations: their `env` variables (e.g. imported from launch.json) are now passed to the command, paths substituted for `${file}`, `${workspaceFolder}`… and arguments containing spaces are quoted for the terminal's shell (PowerShell, cmd, bash/zsh, fish), and cmd changes drive when needed. New variables `${fileBasename}` (file name with its extension) and `${fileExtname}`.
 - Git: Push, Pull and Fetch no longer freeze the editor while the network (or a credential prompt) is slow. They run in the background with a spinner in the Git panel, the buttons wait until the operation ends, and an error is reported even if the panel was closed meanwhile.
 - Extensions: a module without its own document tokenizer no longer leaks memory on every keystroke (its list of file extensions was copied and never freed each time it was asked for).

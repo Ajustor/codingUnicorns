@@ -10,6 +10,10 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 
 ## [Unreleased]
 
+### Ajouts
+
+- macOS : les raccourcis de mot suivent les conventions du Mac. Option+Gauche/Droite déplacent par mot (Maj pour sélectionner), Option+Retour arrière/Suppr effacent un mot, et Cmd+Gauche/Droite vont au début ou à la fin de la ligne. Dans l'éditeur, Option+flèches ne déclenchent plus la navigation arrière/avant sous macOS ; rien ne change sous Windows et Linux (Ctrl pour les mots, Alt+flèches pour naviguer).
+
 ### Corrections
 
 - Git : fusionner depuis la liste des branches une branche en avance (fast-forward) n'efface plus les modifications non commitées. Les modifications sans rapport sont conservées, et la fusion est refusée avec un message clair si elle devait les écraser. Une fusion est aussi refusée pendant qu'une autre est en cours.
@@ -24,9 +28,6 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Multi-curseurs : chaque édition s'applique maintenant à tous les curseurs et les déplace tous correctement. Retour arrière, Suppr et Couper avec des sélections n'agissent plus seulement sur le curseur principal ; taper à un curseur placé avant le principal, les paires auto-fermées et les jonctions de lignes ne laissent plus de curseurs mal placés ni de texte corrompu ; un collage réparti sur les curseurs remplace leurs sélections ; et copier avec plusieurs curseurs prend chaque sélection exacte, de haut en bas.
 - Coller plusieurs lignes s'annule de nouveau en une seule fois. Chaque ligne collée ajoutait deux étapes d'annulation, si bien qu'un grand collage pouvait chasser de l'historique tout ce qui précédait.
 - La gouttière git compare maintenant le fichier à HEAD ligne à ligne : insérer une ligne ne marque plus toutes les suivantes comme modifiées, les lignes modifiées et ajoutées sont distinguées, et les lignes supprimées affichent un petit repère rouge à leur emplacement.
-### Ajouts
-
-- macOS : les raccourcis de mot suivent les conventions du Mac. Option+Gauche/Droite déplacent par mot (Maj pour sélectionner), Option+Retour arrière/Suppr effacent un mot, et Cmd+Gauche/Droite vont au début ou à la fin de la ligne. Dans l'éditeur, Option+flèches ne déclenchent plus la navigation arrière/avant sous macOS ; rien ne change sous Windows et Linux (Ctrl pour les mots, Alt+flèches pour naviguer).
 - Configurations d'exécution : leurs variables `env` (par exemple importées de launch.json) sont maintenant transmises à la commande, les chemins substitués pour `${file}`, `${workspaceFolder}`… et les arguments contenant des espaces sont mis entre guillemets selon le shell du terminal (PowerShell, cmd, bash/zsh, fish), et cmd change de lecteur si besoin. Nouvelles variables `${fileBasename}` (nom du fichier avec son extension) et `${fileExtname}`.
 - Git : Push, Pull et Fetch ne figent plus l'éditeur quand le réseau (ou une demande d'identifiants) est lent. Ils s'exécutent en arrière-plan avec un indicateur dans le panneau Git, les boutons attendent la fin de l'opération, et une erreur est signalée même si le panneau a été fermé entre-temps.
 - Extensions : un module sans tokenizer de document ne fuit plus de mémoire à chaque frappe (sa liste d'extensions de fichier était copiée sans jamais être libérée à chaque demande).
