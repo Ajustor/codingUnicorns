@@ -21,6 +21,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Renaming a symbol through the language server while the file has unsaved changes no longer loses them or lands the edits on the wrong lines: the open file is renamed in the editor (undoable, saved like any edit), other files on disk as before, and a file that can't be written is reported.
 - Saving an untitled file (Ctrl+N) now asks where to save it, and its tab takes the file's name. Before, Ctrl+S, "Save" and "Save All & Quit" reported success without writing anything, so quitting lost the text. A save that fails now says so instead of showing "Saved".
 - Renaming in the file tree no longer silently replaces an existing file of that name (a case-only rename is still allowed), refuses names with a path separator, and reports a failed rename. Open tabs follow the renamed file or folder, so saving no longer recreates the old name (e.g. New File, rename, Ctrl+S).
+- Multiple cursors: every edit now applies at every cursor and moves all of them correctly. Backspace, Delete and Cut with selections no longer act on the main cursor only; typing at a cursor placed before the main one, auto-closed pairs and line joins no longer leave cursors at wrong positions or corrupt the text; a paste spread over the cursors replaces their selections; and copying with several cursors takes each exact selection, top to bottom.
+- Pasting several lines is a single undo step again. Each pasted line used to add two, so a large paste could push everything before it out of the undo history.
 
 ## [0.12.2] - 2026-10-11
 
