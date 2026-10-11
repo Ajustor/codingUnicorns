@@ -367,6 +367,52 @@ mod tests {
         assert_eq!(remote_main(&bare_repo), tip);
     }
 
+    /// Wait for the background operation to finish (tests only).
+    fn finish_remote(s: &mut GitStatus) -> crate::git::RemoteOp {
+        for _ in 0..500 {
+            if let Some(op) = s.poll_remote() {
+                return op;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("remote operation did not finish");
+    }
+
+    #[test]
+    fn push_runs_off_the_ui_thread_and_reports_back() {
+        use crate::git::RemoteOp;
+        let (r, bare, _) = with_origin();
+        r.write("a.txt", "2");
+        let tip = r.commit_all("second");
+        let mut s = r.status();
+        assert!(s.start_remote(RemoteOp::Push));
+        assert_eq!(s.remote_busy(), Some(RemoteOp::Push));
+        assert!(!s.start_remote(RemoteOp::Fetch), "one at a time");
+        assert_eq!(finish_remote(&mut s), RemoteOp::Push);
+        assert!(s.remote_busy().is_none());
+        assert!(s.last_error.is_none());
+        let bare_repo = git2::Repository::open_bare(bare.path()).unwrap();
+        let main = bare_repo.find_reference("refs/heads/main").unwrap();
+        assert_eq!(main.target(), Some(tip));
+        assert_eq!(s.ahead, 0, "the status after the push is applied");
+    }
+
+    #[test]
+    fn a_failed_background_operation_sets_last_error() {
+        use crate::git::RemoteOp;
+        let r = TestRepo::new();
+        r.write("a", "1");
+        r.commit_all("c1");
+        let mut s = r.status(); // no origin
+        assert!(s.start_remote(RemoteOp::Fetch));
+        finish_remote(&mut s);
+        assert!(s.last_error.is_some());
+        assert!(
+            !GitStatus::new().start_remote(RemoteOp::Pull),
+            "no repository"
+        );
+    }
+
     #[test]
     fn push_errors() {
         let mut s = GitStatus::new();

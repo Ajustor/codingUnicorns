@@ -61,7 +61,32 @@ pub struct GitStatus {
     watch: Option<watch::RepoWatch>,
     /// Background refresh in flight (see [`Self::refresh_if_changed`]).
     refreshing: Option<std::sync::mpsc::Receiver<GitStatus>>,
+    /// Push / pull / fetch in flight (see [`Self::start_remote`]).
+    remote: Option<(RemoteOp, std::sync::mpsc::Receiver<RemoteDone>)>,
 }
+
+/// A network operation, run off the UI thread: it can take as long as the
+/// network or a credential prompt does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteOp {
+    Push,
+    Pull,
+    Fetch,
+}
+
+impl RemoteOp {
+    /// What the panel shows while it runs.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Push => "Pushing…",
+            Self::Pull => "Pulling…",
+            Self::Fetch => "Fetching…",
+        }
+    }
+}
+
+/// The outcome of a [`RemoteOp`] and the repository status after it.
+type RemoteDone = (Result<(), String>, GitStatus);
 
 impl GitStatus {
     pub fn new() -> Self {
@@ -77,7 +102,65 @@ impl GitStatus {
             stashes: vec![],
             watch: None,
             refreshing: None,
+            remote: None,
         }
+    }
+
+    /// Start `op` on its own thread. False when another one is running or
+    /// there is no repository. Its result arrives through [`Self::poll_remote`].
+    pub fn start_remote(&mut self, op: RemoteOp) -> bool {
+        let Some(path) = self.repo_path.clone() else {
+            return false;
+        };
+        if self.remote.is_some() {
+            return false;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("git-remote".into())
+            .spawn(move || {
+                let mut git = GitStatus::new();
+                git.repo_path = Some(path);
+                let result = match op {
+                    RemoteOp::Push => git.push(),
+                    RemoteOp::Pull => git.pull(),
+                    RemoteOp::Fetch => git.fetch(),
+                };
+                // The operations refresh on success; a failed pull may have
+                // left conflicts to show too.
+                git.refresh();
+                let _ = tx.send((result, git));
+            });
+        if spawned.is_err() {
+            return false;
+        }
+        self.remote = Some((op, rx));
+        true
+    }
+
+    /// The network operation in flight, if any.
+    pub fn remote_busy(&self) -> Option<RemoteOp> {
+        self.remote.as_ref().map(|(op, _)| *op)
+    }
+
+    /// Apply the finished network operation, if any: its status, and its error
+    /// in `last_error`. Returns the operation that finished.
+    pub fn poll_remote(&mut self) -> Option<RemoteOp> {
+        let (op, rx) = self.remote.as_ref()?;
+        let op = *op;
+        let (result, fresh) = match rx.try_recv() {
+            Ok(done) => done,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.remote = None;
+                self.last_error = Some(format!("{op:?} stopped unexpectedly"));
+                return Some(op);
+            }
+        };
+        self.remote = None;
+        self.adopt(fresh);
+        self.last_error = result.err();
+        Some(op)
     }
 
     /// Open the git repository. Centralizes the discover+error pattern.

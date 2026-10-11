@@ -1144,6 +1144,14 @@ impl eframe::App for CodingUnicorns {
         if let Some(delay) = self.git_status.refresh_pending_in(now) {
             ctx.request_repaint_after(delay);
         }
+        // A push / pull / fetch finishing while the Git panel is hidden.
+        if let Some(op) = self.git_status.poll_remote() {
+            if let Some(err) = self.git_status.last_error.clone() {
+                self.toast(format!("{op:?} failed: {err}"));
+            }
+        } else if self.git_status.remote_busy().is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
         crate::ui::layout::render(self, ctx);
         self.run_extension_actions(ctx);
         self.apply_gutter_breakpoint_clicks();

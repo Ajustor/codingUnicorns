@@ -28,6 +28,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 - macOS: word shortcuts follow the Mac conventions. Option+Left/Right move by word (with Shift to select), Option+Backspace/Delete delete a word, and Cmd+Left/Right jump to the start/end of the line. In the editor, Option+arrows no longer trigger back/forward navigation on macOS; Windows and Linux are unchanged (Ctrl for words, Alt+arrows to navigate).
 - Run configurations: their `env` variables (e.g. imported from launch.json) are now passed to the command, paths substituted for `${file}`, `${workspaceFolder}`… and arguments containing spaces are quoted for the terminal's shell (PowerShell, cmd, bash/zsh, fish), and cmd changes drive when needed. New variables `${fileBasename}` (file name with its extension) and `${fileExtname}`.
+- Git: Push, Pull and Fetch no longer freeze the editor while the network (or a credential prompt) is slow. They run in the background with a spinner in the Git panel, the buttons wait until the operation ends, and an error is reported even if the panel was closed meanwhile.
 
 ## [0.12.2] - 2026-10-11
 

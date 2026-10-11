@@ -1,4 +1,4 @@
-use crate::git::{BranchInfo, FileChangeKind, GitStatus};
+use crate::git::{BranchInfo, FileChangeKind, GitStatus, RemoteOp};
 use egui_phosphor::regular;
 
 /// The inline branch dialog shown under the BRANCHES header, if any.
@@ -77,30 +77,34 @@ impl GitPanel {
                     Err(e) => git.last_error = Some(e),
                 }
             }
-            if ui.button("Push").clicked() {
-                if let Err(e) = git.push() {
-                    git.last_error = Some(e);
-                } else {
-                    git.last_error = None;
-                }
+            // Network operations run on their own thread: the editor stays
+            // responsive however long the network or a credential prompt takes.
+            git.poll_remote();
+            let idle = git.remote_busy().is_none();
+            let mut start = None;
+            if ui.add_enabled(idle, egui::Button::new("Push")).clicked() {
+                start = Some(RemoteOp::Push);
             }
-            if ui.button("Pull").clicked() {
-                if let Err(e) = git.pull() {
-                    git.last_error = Some(e);
-                } else {
-                    git.last_error = None;
-                }
+            if ui.add_enabled(idle, egui::Button::new("Pull")).clicked() {
+                start = Some(RemoteOp::Pull);
             }
             if ui
-                .button("Fetch")
+                .add_enabled(idle, egui::Button::new("Fetch"))
                 .on_hover_text("Fetch origin and update ahead/behind counts")
                 .clicked()
             {
-                if let Err(e) = git.fetch() {
-                    git.last_error = Some(e);
-                } else {
-                    git.last_error = None;
-                }
+                start = Some(RemoteOp::Fetch);
+            }
+            if let Some(op) = start {
+                git.last_error = None;
+                git.start_remote(op);
+            }
+            if let Some(op) = git.remote_busy() {
+                ui.spinner();
+                ui.label(egui::RichText::new(op.label()).small());
+                // Keep polling for the result while nothing else repaints.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
             }
         });
 
