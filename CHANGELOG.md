@@ -17,6 +17,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Closing a tab with unsaved changes with its × or a middle-click now asks to save, discard or cancel, like Ctrl+W, instead of closing it straight away.
 - Split view: the right pane's unsaved changes are now protected. Its tab shows the modified dot, closing its tab or the split asks to save, discard or cancel, quitting includes it in "Save All & Quit", opening another file there is refused until it is saved, and it no longer overwrites a version saved from the left pane (it reloads it when it has no changes of its own).
 - Language servers: hover, completion, outline, formatting and signature help no longer stop working until a restart when a server crashes or never answers a request (it is given up after 15 s or when the server restarts), and with several servers running, an answer from one is no longer taken for another's. Go to Definition no longer stays stuck after a "not found".
+- Formatting a document through its language server (rustfmt, prettier, gofmt…) no longer destroys text when an edit spans several lines: each edit now replaces exactly its range, and the whole format is a single undo step.
+- Renaming a symbol through the language server while the file has unsaved changes no longer loses them or lands the edits on the wrong lines: the open file is renamed in the editor (undoable, saved like any edit), other files on disk as before, and a file that can't be written is reported.
 
 ## [0.12.2] - 2026-10-11
 

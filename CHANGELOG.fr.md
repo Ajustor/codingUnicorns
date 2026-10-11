@@ -17,6 +17,8 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Fermer un onglet modifié avec son × ou un clic molette demande maintenant d'enregistrer, d'ignorer ou d'annuler, comme Ctrl+W, au lieu de le fermer directement.
 - Vue scindée : les modifications non enregistrées du volet droit sont maintenant protégées. Son onglet affiche le point de modification, fermer son onglet ou la vue scindée demande d'enregistrer, d'ignorer ou d'annuler, « Save All & Quit » l'inclut, ouvrir un autre fichier dans ce volet est refusé tant qu'il n'est pas enregistré, et il n'écrase plus une version enregistrée depuis le volet gauche (il la recharge s'il n'a pas de modifications).
 - Serveurs de langage : le survol, la complétion, le plan, le formatage et l'aide de signature ne cessent plus de fonctionner jusqu'au redémarrage quand un serveur plante ou ne répond jamais (la requête est abandonnée après 15 s ou au redémarrage du serveur), et avec plusieurs serveurs actifs, la réponse de l'un n'est plus prise pour celle d'un autre. « Aller à la définition » ne reste plus bloqué après un « introuvable ».
+- Formater un document via son serveur de langage (rustfmt, prettier, gofmt…) ne détruit plus de texte quand une modification couvre plusieurs lignes : chaque modification remplace exactement sa plage, et tout le formatage s'annule en une seule fois.
+- Renommer un symbole via le serveur de langage alors que le fichier a des modifications non enregistrées ne les perd plus et ne décale plus les modifications : le fichier ouvert est renommé dans l'éditeur (annulable, enregistré comme toute modification), les autres fichiers sur disque comme avant, et un fichier impossible à écrire est signalé.
 
 ## [0.12.2] - 2026-10-11
 

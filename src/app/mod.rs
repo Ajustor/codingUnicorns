@@ -882,38 +882,7 @@ impl eframe::App for CodingUnicorns {
                 } else if lsp_ops::PendingLsp::answers(&self.pending_format_id, &ext, id) {
                     self.pending_format_id = None;
                     let edits = LspClient::parse_text_edits(&response);
-                    if !edits.is_empty() {
-                        // Apply edits in reverse order (bottom-to-top) to preserve positions.
-                        let mut sorted = edits;
-                        sorted.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-                        self.editor.buffer.checkpoint();
-                        for (sl, sc, el, ec, new_text) in sorted {
-                            let sl = sl as usize;
-                            let sc = sc as usize;
-                            let el = el as usize;
-                            let ec = ec as usize;
-                            // Delete range then insert
-                            if sl == el {
-                                let len = ec.saturating_sub(sc);
-                                for _ in 0..len {
-                                    self.editor.buffer.delete_char(sl, sc);
-                                }
-                                for (i, ch) in new_text.chars().enumerate() {
-                                    self.editor.buffer.insert_char(sl, sc + i, ch);
-                                }
-                            } else {
-                                // Multi-line edit: replace with new_text
-                                let mut row = el;
-                                while row > sl {
-                                    self.editor.buffer.delete_line(row);
-                                    row -= 1;
-                                }
-                                self.editor.buffer.replace_line(sl, &new_text);
-                            }
-                        }
-                        self.editor.is_modified = true;
-                        self.editor.content_version = self.editor.content_version.wrapping_add(1);
-                    }
+                    self.editor.apply_text_edits(edits);
                 }
             }
         }
