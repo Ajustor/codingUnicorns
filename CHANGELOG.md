@@ -30,6 +30,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Run configurations: their `env` variables (e.g. imported from launch.json) are now passed to the command, paths substituted for `${file}`, `${workspaceFolder}`… and arguments containing spaces are quoted for the terminal's shell (PowerShell, cmd, bash/zsh, fish), and cmd changes drive when needed. New variables `${fileBasename}` (file name with its extension) and `${fileExtname}`.
 - Git: Push, Pull and Fetch no longer freeze the editor while the network (or a credential prompt) is slow. They run in the background with a spinner in the Git panel, the buttons wait until the operation ends, and an error is reported even if the panel was closed meanwhile.
 - Extensions: a module without its own document tokenizer no longer leaks memory on every keystroke (its list of file extensions was copied and never freed each time it was asked for).
+- Debugger: Continue and the step commands no longer leave the session shown as "Paused" with debuggers that don't announce it (lldb-dap, CodeLLDB…). The old call stack and variables are cleared until the next stop, and stepping again is no longer sent to a running thread.
 
 ## [0.12.2] - 2026-10-11
 

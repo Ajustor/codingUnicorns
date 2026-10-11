@@ -30,6 +30,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Configurations d'exécution : leurs variables `env` (par exemple importées de launch.json) sont maintenant transmises à la commande, les chemins substitués pour `${file}`, `${workspaceFolder}`… et les arguments contenant des espaces sont mis entre guillemets selon le shell du terminal (PowerShell, cmd, bash/zsh, fish), et cmd change de lecteur si besoin. Nouvelles variables `${fileBasename}` (nom du fichier avec son extension) et `${fileExtname}`.
 - Git : Push, Pull et Fetch ne figent plus l'éditeur quand le réseau (ou une demande d'identifiants) est lent. Ils s'exécutent en arrière-plan avec un indicateur dans le panneau Git, les boutons attendent la fin de l'opération, et une erreur est signalée même si le panneau a été fermé entre-temps.
 - Extensions : un module sans tokenizer de document ne fuit plus de mémoire à chaque frappe (sa liste d'extensions de fichier était copiée sans jamais être libérée à chaque demande).
+- Débogueur : Continuer et les commandes de pas à pas ne laissent plus la session affichée « Paused » avec les débogueurs qui ne le signalent pas (lldb-dap, CodeLLDB…). L'ancienne pile d'appels et les variables sont effacées jusqu'au prochain arrêt, et un nouveau pas à pas n'est plus envoyé à un thread en cours d'exécution.
 
 ## [0.12.2] - 2026-10-11
 
