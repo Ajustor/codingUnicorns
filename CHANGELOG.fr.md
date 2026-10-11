@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Extensions : quand l'extraction d'un fichier échoue pendant une installation depuis un ZIP, le module est signalé en échec au lieu d'installer une bibliothèque tronquée. Si une mise à jour n'arrive pas à copier sa bibliothèque, l'ancienne est remise en place.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
