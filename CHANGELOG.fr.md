@@ -35,6 +35,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Extensions : désinstaller ou mettre à jour un module qui n'ajoute que des panneaux ou des commandes le décharge d'abord, ce qui libère sa bibliothèque sous Windows. Si ses fichiers ne peuvent pas être supprimés, le module reste dans la liste au lieu de disparaître à moitié supprimé.
 - Vue de merge : « Save & Resolve » n'indexe plus un fichier qu'il n'a pas réussi à écrire (l'erreur s'affiche et la vue reste ouverte). Il conserve les fins de ligne CRLF et le saut de ligne final du fichier, et fonctionne quand le dossier ouvert est un sous-dossier du dépôt.
 - Extensions : quand l'extraction d'un fichier échoue pendant une installation depuis un ZIP, le module est signalé en échec au lieu d'installer une bibliothèque tronquée. Si une mise à jour n'arrive pas à copier sa bibliothèque, l'ancienne est remise en place.
+- Panneau Git : la liste des conflits suit l'état de fusion de git. Elle se met à jour dès qu'un conflit est résolu et n'affiche plus les fichiers qui contiennent simplement `<<<<<<<`.
 
 ## [0.12.2] - 2026-10-11
 

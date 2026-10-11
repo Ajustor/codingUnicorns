@@ -341,6 +341,7 @@ mod tests {
             path: "a".into(),
             index_status: FileChangeKind::None,
             wt_status: FileChangeKind::Modified,
+            conflicted: false,
         }];
         s.stage_file("a");
         let err = s.last_error.take().unwrap();
@@ -405,6 +406,7 @@ mod tests {
             path: "vanished.txt".into(),
             index_status: FileChangeKind::None,
             wt_status: FileChangeKind::Untracked,
+            conflicted: false,
         });
         s.stage_all();
         let err = s.last_error.clone().unwrap();

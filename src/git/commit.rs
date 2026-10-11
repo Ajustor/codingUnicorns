@@ -527,10 +527,15 @@ mod tests {
         assert_eq!(parsed.hunks[0].ours, ["ours"]);
         assert_eq!(parsed.hunks[0].theirs, ["theirs"]);
         assert!(
-            s.files.iter().any(|f| f.path == "a.txt"),
+            s.files.iter().any(|f| f.path == "a.txt" && f.conflicted),
             "conflicted file listed: {:?}",
             s.files
         );
+        // Resolving and staging clears the state, markers or not.
+        r.write("a.txt", "<<<<<<< kept on purpose\n");
+        s.stage_file("a.txt");
+        s.refresh();
+        assert!(s.files.iter().all(|f| !f.conflicted), "{:?}", s.files);
 
         // A second pull refuses while the merge is in progress.
         assert!(s
