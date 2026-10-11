@@ -2568,8 +2568,8 @@ impl Editor {
                             DIFF_MODIFIED => Some(palette.git_modified),
                             _ => None,
                         };
+                        let bar_x = rect.min.x + blame_extra_width;
                         if let Some(color) = bar_color {
-                            let bar_x = rect.min.x + blame_extra_width;
                             painter.rect_filled(
                                 egui::Rect::from_min_size(
                                     egui::pos2(bar_x, y + 1.0),
@@ -2578,6 +2578,17 @@ impl Editor {
                                 0.0,
                                 color,
                             );
+                        } else if diff_status == diff::DIFF_DELETED_ABOVE {
+                            // Lines removed just above: a small wedge on the line's top edge.
+                            painter.add(egui::Shape::convex_polygon(
+                                vec![
+                                    egui::pos2(bar_x, y - 3.0),
+                                    egui::pos2(bar_x + 5.0, y),
+                                    egui::pos2(bar_x, y + 3.0),
+                                ],
+                                palette.git_removed,
+                                egui::Stroke::NONE,
+                            ));
                         }
                     }
 

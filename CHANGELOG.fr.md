@@ -23,6 +23,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Renommer dans l'arborescence ne remplace plus en silence un fichier existant du même nom (changer seulement la casse reste possible), refuse les noms contenant un séparateur de chemin et signale un renommage qui échoue. Les onglets ouverts suivent le fichier ou dossier renommé : enregistrer ne recrée plus l'ancien nom (par exemple Nouveau fichier, renommer, Ctrl+S).
 - Multi-curseurs : chaque édition s'applique maintenant à tous les curseurs et les déplace tous correctement. Retour arrière, Suppr et Couper avec des sélections n'agissent plus seulement sur le curseur principal ; taper à un curseur placé avant le principal, les paires auto-fermées et les jonctions de lignes ne laissent plus de curseurs mal placés ni de texte corrompu ; un collage réparti sur les curseurs remplace leurs sélections ; et copier avec plusieurs curseurs prend chaque sélection exacte, de haut en bas.
 - Coller plusieurs lignes s'annule de nouveau en une seule fois. Chaque ligne collée ajoutait deux étapes d'annulation, si bien qu'un grand collage pouvait chasser de l'historique tout ce qui précédait.
+- La gouttière git compare maintenant le fichier à HEAD ligne à ligne : insérer une ligne ne marque plus toutes les suivantes comme modifiées, les lignes modifiées et ajoutées sont distinguées, et les lignes supprimées affichent un petit repère rouge à leur emplacement.
 
 ## [0.12.2] - 2026-10-11
 

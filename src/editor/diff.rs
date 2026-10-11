@@ -48,25 +48,50 @@ pub(super) fn compute_line_diff(path: &std::path::Path, num_lines: usize) -> Vec
         Ok(s) => s.to_string(),
         Err(_) => return result,
     };
-    let old_lines: Vec<&str> = old_content.lines().collect();
     let current = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => return result,
     };
-    let new_lines: Vec<&str> = current.lines().collect();
-    let old_set: std::collections::HashSet<&str> = old_lines.iter().copied().collect();
-    for (i, &line) in new_lines.iter().enumerate() {
-        if i < result.len() {
-            if old_lines.get(i) == Some(&line) {
-                result[i] = DIFF_UNCHANGED;
-            } else if old_set.contains(line) {
-                result[i] = DIFF_MODIFIED;
-            } else {
-                result[i] = DIFF_ADDED;
+    diff_statuses(&old_content, &current, num_lines).unwrap_or(result)
+}
+
+/// Per-line status of `new` against `old` (`num_lines` entries), from a real
+/// line diff: a line inserted at the top doesn't mark the rest as modified.
+/// In each changed block, the first new lines pair with the removed ones
+/// (modified), the extra ones are added; a block that only removes lines marks
+/// the line below the gap as `DIFF_DELETED_ABOVE`.
+fn diff_statuses(old: &str, new: &str, num_lines: usize) -> Option<Vec<u8>> {
+    let mut result = vec![DIFF_UNCHANGED; num_lines];
+    // CRLF and LF compare equal: the buffer is LF-only.
+    let (old, new) = (old.replace("\r\n", "\n"), new.replace("\r\n", "\n"));
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(0);
+    let patch =
+        git2::Patch::from_buffers(old.as_bytes(), None, new.as_bytes(), None, Some(&mut opts))
+            .ok()?;
+    for h in 0..patch.num_hunks() {
+        let (hunk, _) = patch.hunk(h).ok()?;
+        let (removed, added) = (hunk.old_lines() as usize, hunk.new_lines() as usize);
+        if added == 0 {
+            // Pure deletion: `new_start` is the line before the gap (0 = top).
+            let below = (hunk.new_start() as usize).min(num_lines.saturating_sub(1));
+            if let Some(s) = result.get_mut(below) {
+                if *s == DIFF_UNCHANGED {
+                    *s = DIFF_DELETED_ABOVE;
+                }
             }
+            continue;
+        }
+        let first = (hunk.new_start() as usize).saturating_sub(1);
+        for (k, s) in result.iter_mut().skip(first).take(added).enumerate() {
+            *s = if k < removed {
+                DIFF_MODIFIED
+            } else {
+                DIFF_ADDED
+            };
         }
     }
-    result
+    Some(result)
 }
 
 #[cfg(test)]
@@ -96,15 +121,58 @@ mod tests {
     }
 
     #[test]
-    fn classifies_unchanged_moved_and_new_lines() {
+    fn classifies_unchanged_deleted_and_new_lines() {
         let dir = tempfile::tempdir().unwrap();
         commit(dir.path(), &[("f.txt", b"alpha\nbeta\ngamma\n")]);
         let path = dir.path().join("f.txt");
-        // line 0 same, line 1 is "gamma" (exists elsewhere in HEAD), line 2 brand new.
+        // "beta" removed (above "gamma", which is unchanged), "NEW" added.
         std::fs::write(&path, "alpha\ngamma\nNEW\n").unwrap();
         assert_eq!(
             compute_line_diff(&path, 3),
-            vec![DIFF_UNCHANGED, DIFF_MODIFIED, DIFF_ADDED]
+            vec![DIFF_UNCHANGED, DIFF_DELETED_ABOVE, DIFF_ADDED]
+        );
+    }
+
+    #[test]
+    fn a_line_inserted_at_the_top_marks_only_that_line() {
+        let old = "a\nb\nc\nd\n";
+        assert_eq!(
+            diff_statuses(old, "new\na\nb\nc\nd\n", 5).unwrap(),
+            vec![
+                DIFF_ADDED,
+                DIFF_UNCHANGED,
+                DIFF_UNCHANGED,
+                DIFF_UNCHANGED,
+                DIFF_UNCHANGED
+            ]
+        );
+    }
+
+    #[test]
+    fn changed_lines_are_modified_and_extra_ones_added() {
+        let old = "a\nb\nc\n";
+        assert_eq!(
+            diff_statuses(old, "a\nB\nB2\nc\n", 4).unwrap(),
+            vec![DIFF_UNCHANGED, DIFF_MODIFIED, DIFF_ADDED, DIFF_UNCHANGED]
+        );
+        // CRLF on disk vs LF in HEAD is not a change.
+        assert_eq!(
+            diff_statuses(old, "a\r\nb\r\nc\r\n", 3).unwrap(),
+            vec![DIFF_UNCHANGED; 3]
+        );
+    }
+
+    #[test]
+    fn removed_lines_mark_the_line_below_the_gap() {
+        assert_eq!(
+            diff_statuses("a\nb\nc\n", "b\nc\n", 2).unwrap(),
+            vec![DIFF_DELETED_ABOVE, DIFF_UNCHANGED],
+            "removed at the top"
+        );
+        assert_eq!(
+            diff_statuses("a\nb\nc\n", "a\nb\n", 2).unwrap(),
+            vec![DIFF_UNCHANGED, DIFF_DELETED_ABOVE],
+            "removed at the end: shown on the last line"
         );
     }
 
@@ -117,7 +185,7 @@ mod tests {
         assert_eq!(compute_line_diff(&path, 4), vec![DIFF_UNCHANGED; 4]);
         // Requested size smaller than the file: extra file lines are ignored.
         std::fs::write(&path, "x\ny\nz\n").unwrap();
-        assert_eq!(compute_line_diff(&path, 1), vec![DIFF_ADDED]);
+        assert_eq!(compute_line_diff(&path, 1), vec![DIFF_MODIFIED]);
     }
 
     #[test]
