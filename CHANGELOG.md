@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Git: merging a branch that is ahead (fast-forward) from the branch list no longer discards uncommitted changes. Unrelated local edits are kept, and the merge is refused with a clear message when it would overwrite them. A merge is also refused while another one is in progress.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added

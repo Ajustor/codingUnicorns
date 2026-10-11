@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Git : fusionner depuis la liste des branches une branche en avance (fast-forward) n'efface plus les modifications non commitées. Les modifications sans rapport sont conservées, et la fusion est refusée avec un message clair si elle devait les écraser. Une fusion est aussi refusée pendant qu'une autre est en cours.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
