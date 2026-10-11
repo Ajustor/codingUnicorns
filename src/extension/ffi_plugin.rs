@@ -18,6 +18,10 @@ pub struct FfiLangPlugin {
     _lib: libloading::Library,
     language_id: String,
     extensions: Vec<String>,
+    /// `extensions` as the `&[&str]` the `LanguagePlugin` trait returns. Leaked
+    /// once per load (a few bytes): `file_extensions` runs on every keystroke
+    /// for some modules and must not allocate.
+    extension_refs: &'static [&'static str],
     lsp_server: Option<String>,
     lsp_args: Vec<String>,
     /// Per-language servers (`[capabilities.lsp_servers]`).
@@ -155,10 +159,12 @@ impl FfiLangPlugin {
                 .map(|s| *s);
             let ui_event_fn = lib.get::<StrFn2>(b"ui_event_ffi\0").ok().map(|s| *s);
 
+            let extension_refs = leak_strs(&extensions);
             Ok(Self {
                 _lib: lib,
                 language_id,
                 extensions,
+                extension_refs,
                 lsp_server,
                 lsp_args,
                 lsp_servers,
@@ -315,16 +321,7 @@ impl Plugin for FfiLangPlugin {
     }
 
     fn file_extensions(&self) -> &[&str] {
-        // We can't return &[&str] from Vec<String> directly without a self-referential
-        // borrow, so we leak a small slice once. Extensions are loaded once per process.
-        // This is intentional — extension lifetimes match the process lifetime.
-        Box::leak(
-            self.extensions
-                .iter()
-                .map(|s| Box::leak(s.clone().into_boxed_str()) as &str)
-                .collect::<Vec<&str>>()
-                .into_boxed_slice(),
-        )
+        self.extension_refs
     }
 
     fn reset_tokenizer(&self) {
@@ -348,6 +345,15 @@ impl Plugin for FfiLangPlugin {
     fn update(&mut self, _ctx: &PluginContext) -> PluginResponse {
         PluginResponse::default()
     }
+}
+
+/// `strs` as a `'static` slice, leaked once (see `FfiLangPlugin::extension_refs`).
+fn leak_strs(strs: &[String]) -> &'static [&'static str] {
+    let refs: Vec<&'static str> = strs
+        .iter()
+        .map(|s| &*Box::leak(s.clone().into_boxed_str()))
+        .collect();
+    Box::leak(refs.into_boxed_slice())
 }
 
 // ── JSON token parser ─────────────────────────────────────────────────────────
@@ -506,6 +512,13 @@ fn extract_json_str(obj: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod token_parse_tests {
     use super::*;
+
+    #[test]
+    fn extension_refs_keep_the_extensions_in_order() {
+        let exts = vec!["rs".to_string(), "toml".to_string()];
+        assert_eq!(leak_strs(&exts), ["rs", "toml"]);
+        assert!(leak_strs(&[]).is_empty());
+    }
 
     #[test]
     fn token_text_with_braces_does_not_truncate_line() {
@@ -783,6 +796,7 @@ mod tests {
             _lib: this_lib(),
             language_id: "testlang".into(),
             extensions: vec!["tl".into(), "tsx".into(), "jsx".into()],
+            extension_refs: &["tl", "tsx", "jsx"],
             lsp_server: Some("tl-lsp".into()),
             lsp_args: vec!["--stdio".into()],
             lsp_servers: BTreeMap::from([("tsx".to_string(), ("tsx-lsp".to_string(), vec![]))]),
@@ -811,6 +825,7 @@ mod tests {
             _lib: this_lib(),
             language_id: "bare".into(),
             extensions: vec!["tl".into()],
+            extension_refs: &["tl"],
             lsp_server: None,
             lsp_args: vec![],
             lsp_servers: BTreeMap::new(),
