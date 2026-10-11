@@ -1009,23 +1009,36 @@ fn run_uninstall(errors: &mut Vec<String>, label: &str, program: &str, args: &[&
 /// Copy a library file to the destination, handling the case where the destination
 /// is locked by a running process (common on Windows when a DLL is loaded).
 /// Strategy: rename the old file out of the way first, then copy the new one.
+/// If the copy fails, the previous library is put back.
 fn copy_lib_safe(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    let old_path = dest.with_extension("old");
+    let mut moved = false;
     if dest.exists() {
-        // Try renaming the old file to .old — Windows allows renaming loaded DLLs
-        let old_path = dest.with_extension("old");
         // Remove any previous .old file
         let _ = std::fs::remove_file(&old_path);
         // Rename current DLL to .old (works even if loaded on Windows)
-        if std::fs::rename(dest, &old_path).is_err() {
+        moved = std::fs::rename(dest, &old_path).is_ok();
+        if !moved {
             // If rename fails too, try removing directly (will fail if locked)
             let _ = std::fs::remove_file(dest);
         }
     }
-    std::fs::copy(src, dest)?;
+    if let Err(e) = std::fs::copy(src, dest) {
+        if moved {
+            let _ = std::fs::rename(&old_path, dest);
+        }
+        return Err(e);
+    }
     // Clean up the .old file if possible
-    let old_path = dest.with_extension("old");
     let _ = std::fs::remove_file(&old_path);
     Ok(())
+}
+
+/// Write a ZIP entry's contents to `dest`.
+fn extract_to(entry: &mut impl std::io::Read, dest: &std::path::Path) -> std::io::Result<()> {
+    let mut out = std::fs::File::create(dest)?;
+    std::io::copy(entry, &mut out)?;
+    std::io::Write::flush(&mut out)
 }
 
 fn find_lib_file(release_dir: &std::path::Path) -> Option<PathBuf> {
@@ -1242,11 +1255,11 @@ pub(crate) fn zip_install_core(
             let dest_file = dest_dir.join(file_name);
             if is_lib {
                 // Use safe copy for DLLs (handles locked files on Windows)
+                // A truncated library must not replace the installed one.
                 let tmp_path = dest_dir.join(format!("{file_name}.tmp"));
-                if let Ok(mut out) = std::fs::File::create(&tmp_path) {
-                    let _ = std::io::copy(&mut entry, &mut out);
-                }
-                if let Err(e) = copy_lib_safe(&tmp_path, &dest_file) {
+                let result = extract_to(&mut entry, &tmp_path)
+                    .and_then(|()| copy_lib_safe(&tmp_path, &dest_file));
+                if let Err(e) = result {
                     emit(WorkspaceStatus::ModuleFailed {
                         name: dir_name.clone(),
                         reason: format!("Copy lib: {e}"),
@@ -1256,8 +1269,12 @@ pub(crate) fn zip_install_core(
                 let _ = std::fs::remove_file(&tmp_path);
                 has_lib = true;
             } else {
-                if let Ok(mut out) = std::fs::File::create(&dest_file) {
-                    let _ = std::io::copy(&mut entry, &mut out);
+                if let Err(e) = extract_to(&mut entry, &dest_file) {
+                    emit(WorkspaceStatus::ModuleFailed {
+                        name: dir_name.clone(),
+                        reason: format!("Copy manifest: {e}"),
+                    });
+                    lib_failed = true;
                 }
                 has_manifest = true;
             }
@@ -1579,6 +1596,30 @@ mod tests {
         );
         assert_eq!(errors.len(), 1);
         assert!(errors[0].starts_with("fakepm"), "{}", errors[0]);
+    }
+
+    #[test]
+    fn copy_lib_safe_restores_the_old_library_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("ext.dll");
+        write(&dest, b"installed");
+        assert!(copy_lib_safe(&tmp.path().join("missing.dll"), &dest).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"installed");
+    }
+
+    #[test]
+    fn extract_to_reports_read_errors() {
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("corrupt entry"))
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(extract_to(&mut Broken, &tmp.path().join("f")).is_err());
+        assert!(extract_to(&mut Broken, &tmp.path().join("no").join("f")).is_err());
+        extract_to(&mut &b"ok"[..], &tmp.path().join("g")).unwrap();
+        assert_eq!(std::fs::read(tmp.path().join("g")).unwrap(), b"ok");
     }
 
     #[test]

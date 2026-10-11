@@ -34,6 +34,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Language servers and debuggers that send a `Content-Type` header after `Content-Length` no longer have every message dropped, which left them looking frozen.
 - Extensions: uninstalling or updating a module that only adds panels or commands now unloads it first, so its library is released on Windows. When its files can't be deleted, the module stays listed instead of disappearing half-removed.
 - Merge view: "Save & Resolve" no longer stages a file it failed to write (the error is shown and the view stays open), keeps the file's CRLF line endings and final line break, and works when the opened folder is a subfolder of the repository.
+- Extensions: a ZIP install that fails to extract a file now reports the module as failed instead of installing a truncated library, and an update that fails to copy its library puts the previous one back.
 
 ## [0.12.2] - 2026-10-11
 
