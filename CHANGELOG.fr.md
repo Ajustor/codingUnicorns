@@ -13,6 +13,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - Multi-curseurs : chaque édition s'applique maintenant à tous les curseurs et les déplace tous correctement. Retour arrière, Suppr et Couper avec des sélections n'agissent plus seulement sur le curseur principal ; taper à un curseur placé avant le principal, les paires auto-fermées et les jonctions de lignes ne laissent plus de curseurs mal placés ni de texte corrompu ; un collage réparti sur les curseurs remplace leurs sélections ; et copier avec plusieurs curseurs prend chaque sélection exacte, de haut en bas.
+- Coller plusieurs lignes s'annule de nouveau en une seule fois. Chaque ligne collée ajoutait deux étapes d'annulation, si bien qu'un grand collage pouvait chasser de l'historique tout ce qui précédait.
 
 ## [0.12.2] - 2026-10-11
 

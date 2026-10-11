@@ -1002,30 +1002,14 @@ impl Editor {
                                     text_typed = true;
                                 }
                                 egui::Event::Paste(text) => {
-                                    self.buffer.checkpoint();
-                                    // The paste is its own undo step: let its chars
-                                    // join the checkpoint above, not open a new one.
-                                    self.typing_burst = Some(self.typing_burst_state());
+                                    // Each paste is a single undo step.
                                     let cursor_count = 1 + self.extra_cursors.len();
                                     let lines: Vec<&str> = text.lines().collect();
-
                                     if cursor_count > 1 && lines.len() == cursor_count {
                                         // One line per cursor, top to bottom.
                                         self.paste_lines_at_cursors(&lines);
                                     } else {
-                                        // Default: paste full text at each cursor. The
-                                        // buffer is LF-only (CRLF is re-applied on save),
-                                        // and pasted text keeps its own indentation.
-                                        for ch in text.chars() {
-                                            if ch == '\r' {
-                                                continue;
-                                            }
-                                            if ch == '\n' {
-                                                self.insert_newline_plain();
-                                            } else {
-                                                self.insert_pasted_char(ch);
-                                            }
-                                        }
+                                        self.paste_text_at_cursors(text);
                                     }
                                     // Typing after a paste starts a new undo step.
                                     self.typing_burst = None;

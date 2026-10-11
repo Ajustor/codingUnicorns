@@ -30,12 +30,6 @@ impl Editor {
         self.insert_char_with(ch, auto_close_enabled, true);
     }
 
-    /// Insert a pasted char: like `insert_char` without auto-close or the
-    /// closing-bracket dedent, since pasted text carries its own indentation.
-    pub(super) fn insert_pasted_char(&mut self, ch: char) {
-        self.insert_char_with(ch, false, false);
-    }
-
     fn insert_char_with(&mut self, ch: char, auto_close_enabled: bool, smart_indent: bool) {
         if self.typing_burst != Some(self.typing_burst_state()) {
             self.buffer.checkpoint();
@@ -229,12 +223,6 @@ impl Editor {
         self.insert_newline_impl(true);
     }
 
-    /// Split the line at every cursor without any auto-indent — used by paste,
-    /// whose text already carries its own indentation.
-    pub(super) fn insert_newline_plain(&mut self) {
-        self.insert_newline_impl(false);
-    }
-
     /// One indent level in the file's detected style.
     pub(super) fn indent_unit(&self) -> String {
         if self.detected_indent_spaces {
@@ -379,9 +367,28 @@ impl Editor {
         self.cursor_blink_epoch = std::time::Instant::now();
     }
 
+    /// Ctrl+V: `text` replaces every cursor's selection, as one undo step. It
+    /// goes in as is: no auto-indent, auto-close or dedent, since pasted text
+    /// carries its own indentation. The buffer is LF-only (CRLF is re-applied
+    /// on save).
+    pub(super) fn paste_text_at_cursors(&mut self, text: &str) {
+        self.buffer.checkpoint();
+        let text = text.replace('\r', "");
+        let caret = text.chars().count();
+        let edits = self
+            .all_cursors()
+            .map(|c| {
+                let (start, end) = self.span_of(c);
+                CursorEdit::new(start, end, text.clone(), caret)
+            })
+            .collect();
+        self.apply_cursor_edits(edits);
+    }
+
     /// Ctrl+V with as many lines as cursors: line k goes to the k-th cursor
-    /// from the top, replacing its selection.
+    /// from the top, replacing its selection (one undo step).
     pub(super) fn paste_lines_at_cursors(&mut self, lines: &[&str]) {
+        self.buffer.checkpoint();
         let spans: Vec<(usize, usize)> = self.all_cursors().map(|c| self.span_of(c)).collect();
         let mut by_position: Vec<usize> = (0..spans.len()).collect();
         by_position.sort_by_key(|&i| spans[i]);
@@ -986,11 +993,30 @@ mod tests {
     }
 
     #[test]
-    fn plain_newline_does_not_indent() {
+    fn pasted_newline_does_not_indent() {
         let mut ed = editor_with("    {", 0, 5);
-        ed.insert_newline_plain();
+        ed.paste_text_at_cursors("\n");
         assert_eq!(text(&ed), "    {\n");
         assert_eq!(ed.cursor.position(), (1, 0));
+    }
+
+    #[test]
+    fn a_multi_line_paste_is_one_undo_step() {
+        let mut ed = editor_with("x", 0, 1);
+        ed.paste_text_at_cursors("a\r\nb\nc");
+        assert_eq!(text(&ed), "xa\nb\nc");
+        assert_eq!(ed.cursor.position(), (2, 1));
+        assert!(ed.buffer.undo());
+        assert_eq!(text(&ed), "x", "a single undo restores the pre-paste text");
+    }
+
+    #[test]
+    fn paste_replaces_every_selection() {
+        let mut ed = editor_with("one two", 0, 0);
+        ed.cursor = selecting((0, 0), 0, 3);
+        ed.extra_cursors = vec![selecting((0, 4), 0, 7)];
+        ed.paste_text_at_cursors("1\n2\n3");
+        assert_eq!(text(&ed), "1\n2\n3 1\n2\n3");
     }
 
     #[test]
@@ -1022,7 +1048,7 @@ mod tests {
 
         // Pasted brackets keep the pasted indentation.
         let mut ed = editor_with("    ", 0, 4);
-        ed.insert_pasted_char('}');
+        ed.paste_text_at_cursors("}");
         assert_eq!(text(&ed), "    }");
     }
 

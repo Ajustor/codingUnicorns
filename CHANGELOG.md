@@ -13,6 +13,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Multiple cursors: every edit now applies at every cursor and moves all of them correctly. Backspace, Delete and Cut with selections no longer act on the main cursor only; typing at a cursor placed before the main one, auto-closed pairs and line joins no longer leave cursors at wrong positions or corrupt the text; a paste spread over the cursors replaces their selections; and copying with several cursors takes each exact selection, top to bottom.
+- Pasting several lines is a single undo step again. Each pasted line used to add two, so a large paste could push everything before it out of the undo history.
 
 ## [0.12.2] - 2026-10-11
 
