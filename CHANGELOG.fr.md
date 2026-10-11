@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Git : Push, Pull et Fetch ne figent plus l'éditeur quand le réseau (ou une demande d'identifiants) est lent. Ils s'exécutent en arrière-plan avec un indicateur dans le panneau Git, les boutons attendent la fin de l'opération, et une erreur est signalée même si le panneau a été fermé entre-temps.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
