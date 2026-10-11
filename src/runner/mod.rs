@@ -35,59 +35,221 @@ pub struct DebugLaunch {
 }
 
 impl RunConfig {
-    /// Resolve variables in command/cwd:
-    /// `${workspaceRoot}` / `${workspaceFolder}` → workspace path
-    /// `${file}` → current file path
-    /// `${fileDir}` / `${fileDirname}` → current file's directory
-    /// `${fileName}` / `${fileBasenameNoExtension}` → current file name without extension
-    pub fn resolve(&self, workspace: Option<&Path>, current_file: Option<&Path>) -> ResolvedRun {
-        let resolve_str = |s: &str| expand_variables(s, workspace, current_file);
-
-        let mut full_cmd = resolve_str(&self.command);
+    /// Resolve variables in command/args/cwd (see [`variable_value`] for the
+    /// list) into a command line for `shell`: substituted paths and arguments
+    /// are quoted when they need it, and `env` is set for the command.
+    pub fn resolve(
+        &self,
+        workspace: Option<&Path>,
+        current_file: Option<&Path>,
+        shell: ShellKind,
+    ) -> ResolvedRun {
+        let mut full_cmd = expand_with(&self.command, workspace, current_file, |v, quoted| {
+            // An empty value (no file open) stays empty rather than becoming `''`.
+            if quoted || v.is_empty() {
+                v.to_string()
+            } else {
+                shell.quote(v)
+            }
+        });
         for arg in &self.args {
             full_cmd.push(' ');
-            full_cmd.push_str(&resolve_str(arg));
+            full_cmd.push_str(&shell.quote(&expand_variables(arg, workspace, current_file)));
         }
+        // PowerShell runs a quoted program path only through the call operator.
+        if shell == ShellKind::PowerShell && full_cmd.starts_with(['\'', '"']) {
+            full_cmd.insert_str(0, "& ");
+        }
+        let command = shell.with_env(&self.env, full_cmd);
 
         ResolvedRun {
-            command: full_cmd,
-            cwd: resolve_str(&self.cwd),
+            command,
+            cwd: expand_variables(&self.cwd, workspace, current_file),
             env: self.env.clone(),
         }
     }
 }
 
+/// The shell a run command is typed into: quoting and environment syntax
+/// differ between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellKind {
+    PowerShell,
+    Cmd,
+    Fish,
+    /// sh, bash, zsh and the like.
+    Posix,
+}
+
+impl ShellKind {
+    /// From the terminal's shell executable name (`pwsh.exe`, `bash`…).
+    pub fn from_shell_name(name: &str) -> Self {
+        let name = name.to_lowercase();
+        if name.contains("pwsh") || name.contains("powershell") {
+            Self::PowerShell
+        } else if name.starts_with("cmd") {
+            Self::Cmd
+        } else if name.starts_with("fish") {
+            Self::Fish
+        } else {
+            Self::Posix
+        }
+    }
+
+    /// `s` as a single word of this shell, quoted only when it has to be.
+    pub fn quote(self, s: &str) -> String {
+        let special = |c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '"' | '\''
+                        | '`'
+                        | '$'
+                        | '&'
+                        | '|'
+                        | ';'
+                        | '<'
+                        | '>'
+                        | '('
+                        | ')'
+                        | '*'
+                        | '?'
+                        | '#'
+                        | '{'
+                        | '}'
+                        | '%'
+                        | '^'
+                        | '!'
+                )
+        };
+        if !s.is_empty() && !s.chars().any(special) {
+            return s.to_string();
+        }
+        match self {
+            Self::PowerShell => format!("'{}'", s.replace('\'', "''")),
+            Self::Cmd => format!("\"{}\"", s.replace('"', "\"\"")),
+            Self::Fish => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+            Self::Posix => format!("'{}'", s.replace('\'', "'\\''")),
+        }
+    }
+
+    /// `command` preceded by the assignments of `env`, in this shell's syntax.
+    fn with_env(self, env: &[(String, String)], command: String) -> String {
+        if env.is_empty() {
+            return command;
+        }
+        let assigns: Vec<String> = env
+            .iter()
+            .map(|(k, v)| match self {
+                Self::PowerShell => format!("$env:{k}={};", self.quote_always(v)),
+                Self::Cmd => format!("set \"{k}={v}\" &&"),
+                Self::Fish | Self::Posix => format!("{k}={}", self.quote(v)),
+            })
+            .collect();
+        let prefix = assigns.join(" ");
+        match self {
+            // fish only accepts `VAR=value cmd` since 3.1; `env` works everywhere.
+            Self::Fish => format!("env {prefix} {command}"),
+            _ => format!("{prefix} {command}"),
+        }
+    }
+
+    /// `s` quoted even when it needs no quoting (PowerShell string values).
+    fn quote_always(self, s: &str) -> String {
+        let q = self.quote(s);
+        if q == s {
+            format!("'{s}'")
+        } else {
+            q
+        }
+    }
+
+    /// The line changing directory to `dir`.
+    fn cd(self, dir: &str) -> String {
+        match self {
+            // `/d` also switches drive (`cd C:\x` from D: doesn't).
+            Self::Cmd => format!("cd /d {}", self.quote(dir)),
+            _ => format!("cd {}", self.quote(dir)),
+        }
+    }
+}
+
+/// The value of a VS Code-style variable, if it is one:
+/// `workspaceRoot` / `workspaceFolder` → workspace path,
+/// `file` → current file path,
+/// `fileDir` / `fileDirname` → current file's directory,
+/// `fileBasename` → current file name, `fileExtname` → its extension (`.rs`),
+/// `fileName` / `fileBasenameNoExtension` → current file name without extension.
+fn variable_value(
+    name: &str,
+    workspace: Option<&Path>,
+    current_file: Option<&Path>,
+) -> Option<String> {
+    let lossy = |p: &Path| p.to_string_lossy().to_string();
+    let os = |s: Option<&std::ffi::OsStr>| {
+        s.map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+    let ws = || workspace.map(lossy).unwrap_or_default();
+    Some(match name {
+        "workspaceRoot" | "workspaceFolder" => ws(),
+        "file" => current_file.map(lossy).unwrap_or_default(),
+        "fileDir" | "fileDirname" => current_file
+            .and_then(|p| p.parent())
+            .map(lossy)
+            .unwrap_or_else(ws),
+        "fileBasename" => os(current_file.and_then(|p| p.file_name())),
+        "fileExtname" => current_file
+            .and_then(|p| p.extension())
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default(),
+        "fileName" | "fileBasenameNoExtension" => os(current_file.and_then(|p| p.file_stem())),
+        _ => return None,
+    })
+}
+
+/// Replace every known `${variable}` of `s` with `render(value, quoted)`,
+/// where `quoted` tells whether the template already wraps it in quotes.
+/// Unknown variables are left as they are.
+fn expand_with(
+    s: &str,
+    workspace: Option<&Path>,
+    current_file: Option<&Path>,
+    render: impl Fn(&str, bool) -> String,
+) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("${") {
+        let Some(len) = rest[start..].find('}') else {
+            break;
+        };
+        let name = &rest[start + 2..start + len];
+        out.push_str(&rest[..start]);
+        match variable_value(name, workspace, current_file) {
+            Some(value) => {
+                let quoted = out.ends_with(['"', '\'']);
+                out.push_str(&render(&value, quoted));
+            }
+            None => out.push_str(&rest[start..=start + len]),
+        }
+        rest = &rest[start + len + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Expand the VS Code-style variables of run configurations, tasks and
-/// debug launch arguments (see [`RunConfig::resolve`] for the list).
+/// debug launch arguments (see [`variable_value`] for the list), unquoted.
 pub fn expand_variables(s: &str, workspace: Option<&Path>, current_file: Option<&Path>) -> String {
     if !s.contains("${") {
         return s.to_string();
     }
-    let ws = workspace
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let file = current_file
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let file_dir = current_file
-        .and_then(|p| p.parent())
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ws.clone());
-    let file_name = current_file
-        .and_then(|p| p.file_stem())
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    s.replace("${workspaceRoot}", &ws)
-        .replace("${workspaceFolder}", &ws)
-        .replace("${fileDirname}", &file_dir)
-        .replace("${fileBasenameNoExtension}", &file_name)
-        .replace("${file}", &file)
-        .replace("${fileDir}", &file_dir)
-        .replace("${fileName}", &file_name)
+    expand_with(s, workspace, current_file, |v, _| v.to_string())
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedRun {
+    /// The command line, `env` assignments included.
     pub command: String,
     pub cwd: String,
     pub env: Vec<(String, String)>,
@@ -169,9 +331,10 @@ impl RunManager {
         &self,
         workspace: Option<&Path>,
         current_file: Option<&Path>,
+        shell: ShellKind,
     ) -> Option<String> {
         let config = self.active_config()?;
-        let resolved = config.resolve(workspace, current_file);
+        let resolved = config.resolve(workspace, current_file, shell);
 
         // Terminate with `\r` (carriage return) — that's what the interactive
         // terminal sends for Enter; a bare `\n` does NOT submit in PowerShell.
@@ -181,8 +344,8 @@ impl RunManager {
             Some(format!("{}\r", resolved.command))
         } else {
             Some(format!(
-                "cd {}\r{}\r",
-                shell_escape(&resolved.cwd),
+                "{}\r{}\r",
+                shell.cd(&resolved.cwd),
                 resolved.command
             ))
         }
@@ -205,14 +368,6 @@ impl RunManager {
 impl Default for RunManager {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn shell_escape(s: &str) -> String {
-    if s.contains(' ') || s.contains('(') || s.contains(')') {
-        format!("\"{}\"", s.replace('"', "\\\""))
-    } else {
-        s.to_string()
     }
 }
 
@@ -405,12 +560,13 @@ mod tests {
         );
         c.args = vec!["--root=${workspaceRoot}".into(), "${fileName}".into()];
         c.env = vec![("K".into(), "V".into())];
-        let r = c.resolve(Some(&ws), Some(&file));
+        let r = c.resolve(Some(&ws), Some(&file), ShellKind::Posix);
         let file_s = file.to_string_lossy();
         let dir_s = file.parent().unwrap().to_string_lossy();
+        // `env` is set for the command itself.
         assert_eq!(
             r.command,
-            format!("run {file_s} in {dir_s} named app.test --root=ws app.test")
+            format!("K=V run {file_s} in {dir_s} named app.test --root=ws app.test")
         );
         assert_eq!(r.cwd, "ws");
         assert_eq!(r.env, vec![("K".to_string(), "V".to_string())]);
@@ -420,7 +576,7 @@ mod tests {
     fn resolve_without_file_falls_back_to_workspace_for_file_dir() {
         let ws = PathBuf::from("root");
         let c = cfg("x", "[${file}][${fileName}]", "${fileDir}");
-        let r = c.resolve(Some(&ws), None);
+        let r = c.resolve(Some(&ws), None, ShellKind::Posix);
         assert_eq!(r.command, "[][]");
         assert_eq!(r.cwd, "root");
     }
@@ -428,7 +584,7 @@ mod tests {
     #[test]
     fn resolve_without_anything_yields_empty_substitutions() {
         let c = cfg("x", "echo ${workspaceRoot}!", "${fileDir}");
-        let r = c.resolve(None, None);
+        let r = c.resolve(None, None, ShellKind::Posix);
         assert_eq!(r.command, "echo !");
         assert_eq!(r.cwd, "");
     }
@@ -436,7 +592,11 @@ mod tests {
     #[test]
     fn resolve_leaves_unknown_variables_and_plain_text_untouched() {
         let c = cfg("x", "echo ${HOME} $PATH", "/abs");
-        let r = c.resolve(Some(Path::new("w")), Some(Path::new("f.rs")));
+        let r = c.resolve(
+            Some(Path::new("w")),
+            Some(Path::new("f.rs")),
+            ShellKind::Posix,
+        );
         assert_eq!(r.command, "echo ${HOME} $PATH");
         assert_eq!(r.cwd, "/abs");
     }
@@ -447,14 +607,17 @@ mod tests {
     fn build_command_none_without_configs() {
         let rm = RunManager::new();
         assert!(rm.active_config().is_none());
-        assert!(rm.build_command(None, None).is_none());
+        assert!(rm.build_command(None, None, ShellKind::Posix).is_none());
     }
 
     #[test]
     fn build_command_with_empty_cwd_sends_only_command() {
         let mut rm = RunManager::default();
         rm.add_config(cfg("x", "cargo run", ""));
-        assert_eq!(rm.build_command(None, None).unwrap(), "cargo run\r");
+        assert_eq!(
+            rm.build_command(None, None, ShellKind::Posix).unwrap(),
+            "cargo run\r"
+        );
     }
 
     #[test]
@@ -462,7 +625,8 @@ mod tests {
         let mut rm = RunManager::new();
         rm.add_config(cfg("x", "make", "${workspaceRoot}"));
         assert_eq!(
-            rm.build_command(Some(Path::new("proj")), None).unwrap(),
+            rm.build_command(Some(Path::new("proj")), None, ShellKind::Posix)
+                .unwrap(),
             "cd proj\rmake\r"
         );
     }
@@ -472,20 +636,95 @@ mod tests {
         let mut rm = RunManager::new();
         rm.add_config(cfg("x", "make", "${workspaceRoot}"));
         assert_eq!(
-            rm.build_command(Some(Path::new("my proj")), None).unwrap(),
-            "cd \"my proj\"\rmake\r"
+            rm.build_command(Some(Path::new("my proj")), None, ShellKind::Posix)
+                .unwrap(),
+            "cd 'my proj'\rmake\r"
         );
         assert_eq!(
-            rm.build_command(Some(Path::new("x(86)")), None).unwrap(),
-            "cd \"x(86)\"\rmake\r"
+            rm.build_command(Some(Path::new("my proj")), None, ShellKind::PowerShell)
+                .unwrap(),
+            "cd 'my proj'\rmake\r"
+        );
+        assert_eq!(
+            rm.build_command(Some(Path::new("my proj")), None, ShellKind::Cmd)
+                .unwrap(),
+            "cd /d \"my proj\"\rmake\r"
+        );
+        assert_eq!(
+            rm.build_command(Some(Path::new("x(86)")), None, ShellKind::Posix)
+                .unwrap(),
+            "cd 'x(86)'\rmake\r"
         );
     }
 
     #[test]
-    fn shell_escape_escapes_embedded_quotes_only_when_quoting() {
-        assert_eq!(shell_escape("plain"), "plain");
-        assert_eq!(shell_escape("a\"b"), "a\"b");
-        assert_eq!(shell_escape("a \"b\""), "\"a \\\"b\\\"\"");
+    fn quote_follows_each_shell_and_leaves_plain_words_alone() {
+        use ShellKind::*;
+        assert_eq!(Posix.quote("plain-word.rs"), "plain-word.rs");
+        assert_eq!(Posix.quote("it's here"), "'it'\\''s here'");
+        assert_eq!(Fish.quote("it's here"), "'it\\'s here'");
+        assert_eq!(PowerShell.quote("it's here"), "'it''s here'");
+        assert_eq!(Cmd.quote("a \"b\""), "\"a \"\"b\"\"\"");
+        assert_eq!(Posix.quote(""), "''", "an empty argument stays an argument");
+        assert_eq!(ShellKind::from_shell_name("pwsh.exe"), PowerShell);
+        assert_eq!(ShellKind::from_shell_name("powershell.exe"), PowerShell);
+        assert_eq!(ShellKind::from_shell_name("cmd.exe"), Cmd);
+        assert_eq!(ShellKind::from_shell_name("fish"), Fish);
+        assert_eq!(ShellKind::from_shell_name("zsh"), Posix);
+    }
+
+    #[test]
+    fn paths_with_spaces_are_quoted_for_the_shell() {
+        let file = Path::new("C:/My Projects/a.py");
+        let c = cfg("x", "python ${file}", "");
+        assert_eq!(
+            c.resolve(None, Some(file), ShellKind::Posix).command,
+            "python 'C:/My Projects/a.py'"
+        );
+        assert_eq!(
+            c.resolve(None, Some(file), ShellKind::Cmd).command,
+            "python \"C:/My Projects/a.py\""
+        );
+        // Already quoted in the template: not quoted twice.
+        let c = cfg("x", "python \"${file}\"", "");
+        assert_eq!(
+            c.resolve(None, Some(file), ShellKind::Posix).command,
+            "python \"C:/My Projects/a.py\""
+        );
+        // A quoted program path needs PowerShell's call operator.
+        let c = cfg("x", "${file}", "");
+        assert_eq!(
+            c.resolve(None, Some(file), ShellKind::PowerShell).command,
+            "& 'C:/My Projects/a.py'"
+        );
+        // An argument with a space stays one argument.
+        let mut c = cfg("x", "run", "");
+        c.args = vec!["two words".into()];
+        assert_eq!(
+            c.resolve(None, None, ShellKind::Posix).command,
+            "run 'two words'"
+        );
+    }
+
+    #[test]
+    fn env_is_set_in_each_shells_syntax() {
+        let mut c = cfg("x", "app", "");
+        c.env = vec![("A".into(), "1".into()), ("B".into(), "x y".into())];
+        let r = |s| c.resolve(None, None, s).command;
+        assert_eq!(r(ShellKind::Posix), "A=1 B='x y' app");
+        assert_eq!(r(ShellKind::Fish), "env A=1 B='x y' app");
+        assert_eq!(r(ShellKind::PowerShell), "$env:A='1'; $env:B='x y'; app");
+        assert_eq!(r(ShellKind::Cmd), "set \"A=1\" && set \"B=x y\" && app");
+    }
+
+    #[test]
+    fn file_basename_and_extname_follow_vs_code() {
+        let file = Path::new("src/main.rs");
+        let c = cfg("x", "${fileBasename} ${fileExtname} ${fileName}", "");
+        assert_eq!(
+            c.resolve(None, Some(file), ShellKind::Posix).command,
+            "main.rs .rs main"
+        );
     }
 
     #[test]
@@ -495,9 +734,12 @@ mod tests {
         rm.add_config(cfg("b", "second", ""));
         rm.active_config = 1;
         assert_eq!(rm.active_config().unwrap().name, "b");
-        assert_eq!(rm.build_command(None, None).unwrap(), "second\r");
+        assert_eq!(
+            rm.build_command(None, None, ShellKind::Posix).unwrap(),
+            "second\r"
+        );
         rm.active_config = 5;
-        assert!(rm.build_command(None, None).is_none());
+        assert!(rm.build_command(None, None, ShellKind::Posix).is_none());
     }
 
     // ── add / remove ───────────────────────────────────────────────────────
@@ -763,8 +1005,8 @@ mod tests {
             d.launch_args["sourceLanguages"],
             serde_json::json!(["rust"])
         );
-        let r = c.resolve(Some(Path::new("ws")), None);
-        assert_eq!(r.command, "ws/target/debug/app -v");
+        let r = c.resolve(Some(Path::new("ws")), None, ShellKind::Posix);
+        assert_eq!(r.command, "RUST_LOG=debug ws/target/debug/app -v");
         assert_eq!(r.cwd, "ws");
         assert_eq!(r.env, vec![("RUST_LOG".to_string(), "debug".to_string())]);
     }
@@ -829,7 +1071,7 @@ mod tests {
             "${workspaceFolder}|${fileDirname}|${fileBasenameNoExtension}",
             "",
         );
-        let r = c.resolve(Some(Path::new("ws")), Some(&file));
+        let r = c.resolve(Some(Path::new("ws")), Some(&file), ShellKind::Posix);
         let dir_s = file.parent().unwrap().to_string_lossy();
         assert_eq!(r.command, format!("ws|{dir_s}|app"));
     }
