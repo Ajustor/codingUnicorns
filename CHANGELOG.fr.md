@@ -13,6 +13,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - Enregistrer un fichier sans nom (Ctrl+N) demande maintenant où l'enregistrer, et son onglet prend le nom du fichier. Avant, Ctrl+S, « Save » et « Save All & Quit » annonçaient un succès sans rien écrire, et quitter perdait le texte. Un enregistrement qui échoue le signale au lieu d'afficher « Saved ».
+- Renommer dans l'arborescence ne remplace plus en silence un fichier existant du même nom (changer seulement la casse reste possible), refuse les noms contenant un séparateur de chemin et signale un renommage qui échoue. Les onglets ouverts suivent le fichier ou dossier renommé : enregistrer ne recrée plus l'ancien nom (par exemple Nouveau fichier, renommer, Ctrl+S).
 
 ## [0.12.2] - 2026-10-11
 

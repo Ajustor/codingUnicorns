@@ -13,6 +13,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Saving an untitled file (Ctrl+N) now asks where to save it, and its tab takes the file's name. Before, Ctrl+S, "Save" and "Save All & Quit" reported success without writing anything, so quitting lost the text. A save that fails now says so instead of showing "Saved".
+- Renaming in the file tree no longer silently replaces an existing file of that name (a case-only rename is still allowed), refuses names with a path separator, and reports a failed rename. Open tabs follow the renamed file or folder, so saving no longer recreates the old name (e.g. New File, rename, Ctrl+S).
 
 ## [0.12.2] - 2026-10-11
 

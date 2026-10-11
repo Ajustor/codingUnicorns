@@ -20,7 +20,87 @@ pub(crate) fn absolute_path(path: PathBuf) -> PathBuf {
     std::path::absolute(&path).unwrap_or(path)
 }
 
+/// Why `name` can't be a new file/folder name, if it can't.
+fn invalid_file_name(name: &str) -> Option<&'static str> {
+    if name.trim().is_empty() {
+        Some("the name is empty")
+    } else if name == "." || name == ".." {
+        Some("the name is reserved")
+    } else if name.contains(['/', '\\']) {
+        Some("the name can't contain a path separator")
+    } else {
+        None
+    }
+}
+
+/// Where `path` is after `old` was renamed to `new`: itself, or a file inside
+/// a renamed folder. `None` when the rename doesn't concern it.
+fn renamed_path(
+    path: &std::path::Path,
+    old: &std::path::Path,
+    new: &std::path::Path,
+) -> Option<PathBuf> {
+    path.strip_prefix(old).ok().map(|rest| new.join(rest))
+}
+
+/// True when `to` is another entry than `from` (not merely `from` spelled with
+/// another case on a case-insensitive file system): renaming would replace it.
+fn would_replace(from: &std::path::Path, to: &std::path::Path) -> bool {
+    to.exists()
+        && match (std::fs::canonicalize(from), std::fs::canonicalize(to)) {
+            (Ok(a), Ok(b)) => a != b,
+            _ => true,
+        }
+}
+
 impl CodingUnicorns {
+    /// Rename `old` (file or folder) to `new_name` in the same folder, never
+    /// replacing another entry, then point open tabs and editors at the new path.
+    pub fn rename_path(&mut self, old: &std::path::Path, new_name: &str) {
+        if let Some(why) = invalid_file_name(new_name) {
+            self.toast(format!("Can't rename: {why}"));
+            return;
+        }
+        let Some(parent) = old.parent() else {
+            return;
+        };
+        let new = parent.join(new_name);
+        if new == old {
+            return;
+        }
+        if would_replace(old, &new) {
+            self.toast(format!("Can't rename: {new_name} already exists"));
+            return;
+        }
+        if let Err(e) = std::fs::rename(old, &new) {
+            self.toast(format!("Can't rename: {e}"));
+            return;
+        }
+        let managers = std::iter::once(&mut self.tab_manager).chain(self.tab_manager2.as_mut());
+        for tm in managers {
+            let moved: Vec<(usize, PathBuf)> = tm
+                .tabs
+                .iter()
+                .filter_map(|t| renamed_path(&t.path, old, &new).map(|p| (t.id, p)))
+                .collect();
+            for (id, path) in moved {
+                tm.retarget(id, path);
+            }
+        }
+        for editor in std::iter::once(&mut self.editor).chain(self.editor2.as_mut()) {
+            if let Some(path) = editor
+                .current_path
+                .as_deref()
+                .and_then(|p| renamed_path(p, old, &new))
+            {
+                // Keep the text (and unsaved changes); only the file it saves to moves.
+                editor.set_path(path);
+            }
+        }
+        if let Some(path) = self.editor.current_path.clone() {
+            self.record_file_stamp(&path);
+        }
+    }
     /// Open paths handed over by another launch (see `single_instance`) and bring the
     /// window to the front.
     pub(super) fn open_forwarded_paths(&mut self, ctx: &egui::Context) {
@@ -270,7 +350,39 @@ impl CodingUnicorns {
 #[cfg(test)]
 mod tests {
     use super::absolute_path;
+    use super::{invalid_file_name, renamed_path, would_replace};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn new_names_must_be_a_single_plain_name() {
+        assert_eq!(invalid_file_name("main.rs"), None);
+        assert!(invalid_file_name("  ").is_some());
+        assert!(invalid_file_name("..").is_some());
+        assert!(invalid_file_name("a/b").is_some());
+        assert!(invalid_file_name("a\\b").is_some());
+    }
+
+    #[test]
+    fn renamed_path_follows_the_file_and_the_files_of_a_folder() {
+        let (old, new) = (Path::new("/w/src"), Path::new("/w/lib"));
+        assert_eq!(renamed_path(old, old, new), Some(PathBuf::from("/w/lib")));
+        assert_eq!(
+            renamed_path(Path::new("/w/src/a/b.rs"), old, new),
+            Some(PathBuf::from("/w/lib/a/b.rs"))
+        );
+        assert_eq!(renamed_path(Path::new("/w/srcx/b.rs"), old, new), None);
+        assert_eq!(renamed_path(Path::new("/w/other.rs"), old, new), None);
+    }
+
+    #[test]
+    fn renaming_onto_another_file_would_replace_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.rs"), dir.path().join("b.rs"));
+        std::fs::write(&a, "a").unwrap();
+        assert!(!would_replace(&a, &b), "free name");
+        std::fs::write(&b, "b").unwrap();
+        assert!(would_replace(&a, &b), "b.rs would be lost");
+    }
 
     #[test]
     fn relative_paths_are_made_absolute_from_the_current_dir() {

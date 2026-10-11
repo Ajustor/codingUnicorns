@@ -696,11 +696,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                     app.pending_delete = Some(path);
                                 }
                                 FileTreeAction::Rename(old_path, new_name) => {
-                                    if let Some(parent) = old_path.parent() {
-                                        let new_path = parent.join(&new_name);
-                                        let _ = std::fs::rename(&old_path, &new_path);
-                                        app.file_tree.reload_children();
-                                    }
+                                    app.rename_path(&old_path, &new_name);
+                                    app.file_tree.reload_children();
                                 }
                                 FileTreeAction::NewFile(parent) => {
                                     // Create with a temp name then immediately enter inline rename
