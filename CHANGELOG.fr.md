@@ -8,6 +8,11 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.12.1] - 2026-10-11
+
+### Corrections
+
+- Avec l'enregistrement automatique désactivé, les fichiers ne sont plus enregistrés d'eux-mêmes 2 secondes après la dernière modification. Cet enregistrement sur inactivité ignorait le réglage : il ne s'exécute plus que si l'enregistrement automatique est activé, et le libellé du réglage indique qu'il couvre les deux cas (inactivité et perte de focus).
 ## [0.12.0] - 2026-10-11
 
 ### Ajouts

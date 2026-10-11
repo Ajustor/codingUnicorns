@@ -8,6 +8,11 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.12.1] - 2026-10-11
+
+### Fixed
+
+- With auto-save turned off, files are no longer saved on their own 2 seconds after the last edit. That idle save ignored the setting; it now only runs when auto-save is on, and the setting's label says it covers both the idle save and the save on focus loss.
 ## [0.12.0] - 2026-10-11
 
 ### Added

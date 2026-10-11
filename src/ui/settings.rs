@@ -123,9 +123,12 @@ impl SettingsPanel {
                     changed |= checkbox(ui, &mut config.editor.word_wrap, "Word wrap");
                 }
 
-                if setting_matches(&q, &["auto", "save", "focus"]) {
-                    changed |=
-                        checkbox(ui, &mut config.editor.auto_save, "Auto-save on focus loss");
+                if setting_matches(&q, &["auto", "save", "focus", "idle"]) {
+                    changed |= checkbox(
+                        ui,
+                        &mut config.editor.auto_save,
+                        "Auto-save (2 s after the last edit, and on focus loss)",
+                    );
                 }
 
                 if setting_matches(&q, &["auto", "close", "brackets", "pairs"]) {

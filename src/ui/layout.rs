@@ -78,10 +78,14 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     app.palette = palette;
     app.spacing = spacing;
 
-    // ── Auto-save (2-second inactivity) ──────────────────────────────────────
+    // ── Auto-save (2-second inactivity), only when enabled in the settings ───
     if app.editor.content_version != app.last_edit_version_seen {
         app.last_edit_version_seen = app.editor.content_version;
         app.last_edit_instant = Some(std::time::Instant::now());
+    }
+    if !app.config.editor.auto_save {
+        // Edits made while it is off don't start a countdown for when it's on.
+        app.last_edit_instant = None;
     }
     if let Some(t) = app.last_edit_instant {
         if t.elapsed().as_secs() >= 2 {
