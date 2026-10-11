@@ -10,6 +10,10 @@ pub struct MergeView {
     pub result_text: String,
     pub hunks: Vec<crate::git::merge::ConflictHunk>,
     pub is_active: bool,
+    /// The file used CRLF line endings; the panes work with `\n`.
+    crlf: bool,
+    /// The file ended with a line break, which the panes drop.
+    final_newline: bool,
 }
 
 pub enum MergeAction {
@@ -24,6 +28,8 @@ impl MergeView {
         let parsed = parse_conflict_file(&content)?;
         Some(Self {
             file_path,
+            crlf: content.contains("\r\n"),
+            final_newline: content.ends_with('\n'),
             original_content: content,
             ours_text: parsed.ours_content,
             theirs_text: parsed.theirs_content,
@@ -31,6 +37,17 @@ impl MergeView {
             hunks: parsed.hunks,
             is_active: true,
         })
+    }
+
+    /// The result as it should be written: the file's own line endings and
+    /// final line break restored.
+    pub fn resolved_content(&self) -> String {
+        restore_line_endings(&self.result_text, self.crlf, self.final_newline)
+    }
+
+    /// Write the result to the file.
+    pub fn save(&self) -> std::io::Result<()> {
+        std::fs::write(&self.file_path, self.resolved_content())
     }
 
     pub fn accept_all_ours(&mut self) {
@@ -235,5 +252,71 @@ impl MergeView {
         });
 
         action
+    }
+}
+
+/// `text` with `\n` line breaks, converted to CRLF when `crlf`, ending with a
+/// line break when `final_newline` (and not empty).
+fn restore_line_endings(text: &str, crlf: bool, final_newline: bool) -> String {
+    let mut out = text.replace("\r\n", "\n");
+    if final_newline && !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if crlf {
+        out = out.replace('\n', "\r\n");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CONFLICT: &str = "head\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> other\ntail\n";
+
+    fn open(content: &str) -> (tempfile::TempDir, MergeView) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, content).unwrap();
+        let view = MergeView::open(path).unwrap();
+        (dir, view)
+    }
+
+    #[test]
+    fn keeps_the_final_newline() {
+        let (_dir, mut v) = open(CONFLICT);
+        v.accept_all_theirs();
+        assert_eq!(v.resolved_content(), "head\ntheirs\ntail\n");
+    }
+
+    #[test]
+    fn keeps_crlf_line_endings() {
+        let (_dir, v) = open(&CONFLICT.replace('\n', "\r\n"));
+        assert_eq!(v.resolved_content(), "head\r\nmine\r\ntail\r\n");
+        v.save().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&v.file_path).unwrap(),
+            "head\r\nmine\r\ntail\r\n"
+        );
+    }
+
+    #[test]
+    fn no_final_newline_is_not_added() {
+        let (_dir, v) = open(CONFLICT.trim_end());
+        assert_eq!(v.resolved_content(), "head\nmine\ntail");
+    }
+
+    #[test]
+    fn restore_line_endings_handles_edge_cases() {
+        assert_eq!(restore_line_endings("", true, true), "");
+        assert_eq!(restore_line_endings("a\r\nb\n", true, true), "a\r\nb\r\n");
+        assert_eq!(restore_line_endings("a\nb", false, false), "a\nb");
+    }
+
+    #[test]
+    fn save_reports_write_errors() {
+        let (dir, mut v) = open(CONFLICT);
+        v.file_path = dir.path().join("missing").join("f.txt");
+        assert!(v.save().is_err());
     }
 }

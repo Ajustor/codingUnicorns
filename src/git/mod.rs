@@ -89,6 +89,12 @@ impl GitStatus {
         git2::Repository::discover(repo_path).map_err(|e| format!("Repo error: {e}"))
     }
 
+    /// Root of the repository's working tree: status paths are relative to it,
+    /// not to the opened folder (which may be a subfolder).
+    pub fn workdir(&self) -> Option<PathBuf> {
+        self.open_repo().ok()?.workdir().map(|p| p.to_path_buf())
+    }
+
     pub fn load(&mut self, path: PathBuf) {
         self.repo_path = Some(path.clone());
         self.last_error = None;
@@ -408,6 +414,18 @@ pub(crate) mod tests {
         let r = TestRepo::new();
         s.repo_path = Some(r.path().to_path_buf());
         assert!(s.open_repo().is_ok());
+    }
+
+    #[test]
+    fn workdir_is_the_repository_root_from_a_subfolder() {
+        let r = TestRepo::new();
+        r.write("sub/a.txt", "1");
+        let mut s = GitStatus::new();
+        assert!(s.workdir().is_none());
+        s.repo_path = Some(r.path().join("sub"));
+        let root = s.workdir().unwrap();
+        assert!(root.join("sub/a.txt").exists());
+        assert!(!root.join("a.txt").exists());
     }
 
     #[test]

@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Vue de merge : « Save & Resolve » n'indexe plus un fichier qu'il n'a pas réussi à écrire (l'erreur s'affiche et la vue reste ouverte). Il conserve les fins de ligne CRLF et le saut de ligne final du fichier, et fonctionne quand le dossier ouvert est un sous-dossier du dépôt.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
