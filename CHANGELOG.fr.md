@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- La gouttière git compare maintenant le fichier à HEAD ligne à ligne : insérer une ligne ne marque plus toutes les suivantes comme modifiées, les lignes modifiées et ajoutées sont distinguées, et les lignes supprimées affichent un petit repère rouge à leur emplacement.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
