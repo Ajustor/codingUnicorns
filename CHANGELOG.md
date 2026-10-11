@@ -38,6 +38,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Git panel: the conflicts list follows git's own merge state, so it updates as soon as a conflict is resolved and no longer lists files that merely contain `<<<<<<<`.
 - Extensions: module updates compare versions properly: a pre-release such as `1.0.0-rc.1` comes before `1.0.0`, and a `v` prefix (`v1.3.0`) is understood.
 - Claude panel: two editor windows running Claude at the same time no longer overwrite each other's permission server settings, which got tool permissions denied.
+- Settings: a config file with a missing section or field keeps everything else it sets instead of falling back to the defaults. A file that can't be read at all is kept as `config.toml.invalid` before it gets overwritten.
 
 ## [0.12.2] - 2026-10-11
 
