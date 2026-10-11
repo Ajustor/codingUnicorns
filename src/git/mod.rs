@@ -33,6 +33,8 @@ pub struct FileStatus {
     pub path: String,
     pub index_status: FileChangeKind,
     pub wt_status: FileChangeKind,
+    /// Unmerged path (git's CONFLICTED state), to resolve in the merge view.
+    pub conflicted: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -166,6 +168,7 @@ impl GitStatus {
                             path,
                             index_status,
                             wt_status,
+                            conflicted: st.contains(git2::Status::CONFLICTED),
                         })
                     })
                     .collect();
