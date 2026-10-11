@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Multi-curseurs : chaque édition s'applique maintenant à tous les curseurs et les déplace tous correctement. Retour arrière, Suppr et Couper avec des sélections n'agissent plus seulement sur le curseur principal ; taper à un curseur placé avant le principal, les paires auto-fermées et les jonctions de lignes ne laissent plus de curseurs mal placés ni de texte corrompu ; un collage réparti sur les curseurs remplace leurs sélections ; et copier avec plusieurs curseurs prend chaque sélection exacte, de haut en bas.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts

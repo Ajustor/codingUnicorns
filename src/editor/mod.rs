@@ -1010,44 +1010,8 @@ impl Editor {
                                     let lines: Vec<&str> = text.lines().collect();
 
                                     if cursor_count > 1 && lines.len() == cursor_count {
-                                        // Collect all cursor positions sorted top-to-bottom
-                                        let mut positions: Vec<(usize, usize, bool)> = vec![];
-                                        let (mr, mc) = self.cursor.position();
-                                        positions.push((mr, mc, true));
-                                        for ec in &self.extra_cursors {
-                                            let (er, ec_col) = ec.position();
-                                            positions.push((er, ec_col, false));
-                                        }
-                                        positions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-                                        // Insert in reverse order to preserve positions
-                                        for (sorted_idx, &(row, col, _)) in
-                                            positions.iter().enumerate().rev()
-                                        {
-                                            let line_text = lines[sorted_idx];
-                                            for (j, ch) in line_text.chars().enumerate() {
-                                                self.buffer.insert_char(row, col + j, ch);
-                                            }
-                                        }
-                                        // Update cursor positions (forward order)
-                                        for (sorted_idx, &(row, col, is_main)) in
-                                            positions.iter().enumerate()
-                                        {
-                                            let new_col = col + lines[sorted_idx].chars().count();
-                                            if is_main {
-                                                self.cursor.set_position(row, new_col);
-                                            } else {
-                                                for ec in &mut self.extra_cursors {
-                                                    let (er, ec_col) = ec.position();
-                                                    if er == row && ec_col == col {
-                                                        ec.set_position(row, new_col);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        self.is_modified = true;
-                                        self.content_version = self.content_version.wrapping_add(1);
+                                        // One line per cursor, top to bottom.
+                                        self.paste_lines_at_cursors(&lines);
                                     } else {
                                         // Default: paste full text at each cursor. The
                                         // buffer is LF-only (CRLF is re-applied on save),
@@ -1929,46 +1893,9 @@ impl Editor {
 
                     if do_copy {
                         if !self.extra_cursors.is_empty() {
-                            let mut parts: Vec<String> = vec![];
-                            // Main cursor
-                            if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
-                                if sr == er {
-                                    let line = self.buffer.line(sr);
-                                    parts.push(line.chars().skip(sc).take(ec - sc).collect());
-                                } else {
-                                    // Multi-line selection: collect all lines
-                                    let mut text = String::new();
-                                    for r in sr..=er {
-                                        let l = self.buffer.line(r);
-                                        if r == sr {
-                                            text.push_str(&l.chars().skip(sc).collect::<String>());
-                                        } else if r == er {
-                                            text.push('\n');
-                                            text.push_str(&l.chars().take(ec).collect::<String>());
-                                        } else {
-                                            text.push('\n');
-                                            text.push_str(&l);
-                                        }
-                                    }
-                                    parts.push(text);
-                                }
-                            } else {
-                                parts.push(self.buffer.line(self.cursor.row).to_string());
-                            }
-                            // Extra cursors
-                            for extra in &self.extra_cursors {
-                                if let Some(((sr, sc), (er, ec))) = extra.selection_range() {
-                                    if sr == er {
-                                        let line = self.buffer.line(sr);
-                                        parts.push(line.chars().skip(sc).take(ec - sc).collect());
-                                    } else {
-                                        parts.push(self.buffer.line(sr).to_string());
-                                    }
-                                } else {
-                                    parts.push(self.buffer.line(extra.row).to_string());
-                                }
-                            }
-                            ui.ctx().copy_text(parts.join("\n"));
+                            // One part per cursor, top to bottom (the order a
+                            // multi-cursor paste distributes them in).
+                            ui.ctx().copy_text(self.cursor_texts().join("\n"));
                         } else {
                             let text = self.selected_text().unwrap_or_else(|| {
                                 let (row, _) = self.cursor.position();
@@ -1978,7 +1905,12 @@ impl Editor {
                         }
                     }
                     if do_cut {
-                        if let Some(text) = self.selected_text() {
+                        if !self.extra_cursors.is_empty() {
+                            if self.all_cursors_have_selection() {
+                                ui.ctx().copy_text(self.cursor_texts().join("\n"));
+                                self.cut_selections();
+                            }
+                        } else if let Some(text) = self.selected_text() {
                             ui.ctx().copy_text(text);
                             self.buffer.checkpoint();
                             self.delete_selection();
@@ -4768,14 +4700,15 @@ mod tests {
         multi.sel_anchor = Some((2, 0));
         ed.extra_cursors.push(multi);
         let out = h.press(&mut ed, Key::C, CTRL);
-        assert_eq!(copied(&out).as_deref(), Some("bc\ndef\ng\njkl\nghi"));
+        // Top to bottom (the order paste distributes in), each selection exact.
+        assert_eq!(copied(&out).as_deref(), Some("bc\ndef\ng\nghi\njk\njkl"));
 
-        // Primary without selection copies its whole line.
+        // A cursor without selection copies its whole line.
         ed.cursor.clear_selection();
         ed.cursor.set_position(1, 0);
         ed.extra_cursors = vec![extra(0, 0)];
         let out = h.press(&mut ed, Key::C, CTRL);
-        assert_eq!(copied(&out).as_deref(), Some("def\nabc"));
+        assert_eq!(copied(&out).as_deref(), Some("abc\ndef"));
     }
 
     #[test]
