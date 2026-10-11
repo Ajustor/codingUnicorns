@@ -16,12 +16,18 @@ comments and commit messages stay in English.
 
 ## The board
 
-- Notion database: **Coding Unicorns — Tickets** (find it with the Notion MCP
-  search; if it doesn't exist, stop and tell the user in the terminal).
-- `Statut`: `Backlog` → `Prêt` → `En cours` → `En revue` → `Fait`, plus
-  `En attente de réponse` and `Bloqué`.
+- Notion database: **Coding Unicorns — Tickets**, data source
+  `collection://516e38a2-b1f4-4e66-978d-b58d41319f95` (query it directly; if
+  it's gone, search for the title, else stop and tell the user in the
+  terminal). It lives under the **Coding Unicorns** page, whose user guide
+  must stay in step with this skill.
+- Title property: `Nom`. `N°` is the ticket number (`CU-<n>`), use it in the
+  branch name.
+- `Statut` (a select): `Backlog` → `Prêt` → `En cours` → `En revue` → `Fait`,
+  plus `En attente de réponse` and `Bloqué`.
 - Other fields: `Type` (Bug / Fonctionnalité / Tâche), `Priorité`
-  (Haute / Normale / Basse), `Branche`, `PR`.
+  (Haute / Normale / Basse), `Version` (set by the user at release time),
+  `Branche`, `PR` (URL).
 - Only ever pick tickets the user moved to `Prêt`. `Backlog` is theirs.
 
 ## A pass
