@@ -1,5 +1,26 @@
 use super::auto_close;
+use super::cursor::Cursor;
 use super::Editor;
+
+/// One cursor's edit, in char indices of the text before the batch: replace
+/// `start..end` with `text` and put the caret `caret` chars into it.
+pub(super) struct CursorEdit {
+    start: usize,
+    end: usize,
+    text: String,
+    caret: usize,
+}
+
+impl CursorEdit {
+    fn new(start: usize, end: usize, text: String, caret: usize) -> Self {
+        Self {
+            start,
+            end,
+            text,
+            caret,
+        }
+    }
+}
 
 impl Editor {
     /// Insert a typed char at every cursor. Consecutive calls form one typing burst
@@ -7,12 +28,6 @@ impl Editor {
     /// moves a cursor, changes the selection or edits the buffer.
     pub fn insert_char(&mut self, ch: char, auto_close_enabled: bool) {
         self.insert_char_with(ch, auto_close_enabled, true);
-    }
-
-    /// Insert a pasted char: like `insert_char` without auto-close or the
-    /// closing-bracket dedent, since pasted text carries its own indentation.
-    pub(super) fn insert_pasted_char(&mut self, ch: char) {
-        self.insert_char_with(ch, false, false);
     }
 
     fn insert_char_with(&mut self, ch: char, auto_close_enabled: bool, smart_indent: bool) {
@@ -24,19 +39,6 @@ impl Editor {
     }
 
     fn insert_char_inner(&mut self, ch: char, auto_close_enabled: bool, smart_indent: bool) {
-        // Skip-close: if typing a closing char that's already under the cursor, just move right.
-        if auto_close_enabled && auto_close::is_closing(ch) {
-            let (row, col) = self.cursor.position();
-            let line = self.buffer.line(row);
-            let chars: Vec<char> = line.chars().collect();
-            if col < chars.len() && chars[col] == ch {
-                self.cursor.move_right(&self.buffer);
-                self.cursor.clear_selection();
-                self.cursor_blink_epoch = std::time::Instant::now();
-                return;
-            }
-        }
-
         // Dedent: a closing bracket typed on a whitespace-only line drops one indent
         // level (single cursor only — other cursors' columns would need shifting).
         if smart_indent
@@ -46,146 +48,40 @@ impl Editor {
         {
             self.dedent_before_cursor();
         }
+        let edits = self
+            .all_cursors()
+            .map(|c| self.char_edit(c, ch, auto_close_enabled))
+            .collect();
+        self.apply_cursor_edits(edits);
+    }
 
-        // Surround: if there's a selection and typing an opening char, wrap the selection.
-        if auto_close_enabled && self.cursor.has_selection() {
-            if let Some(close) = auto_close::closing_pair(ch) {
-                if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
-                    self.buffer.insert_char(er, ec, close);
-                    self.buffer.insert_char(sr, sc, ch);
-                    if sr == er {
-                        self.cursor.set_position(er, ec + 2);
-                    } else {
-                        self.cursor.set_position(er, ec + 1);
-                    }
-                    self.cursor.clear_selection();
-                    self.is_modified = true;
-                    self.content_version = self.content_version.wrapping_add(1);
-                    self.cursor_blink_epoch = std::time::Instant::now();
-                    return;
-                }
+    /// The edit typing `ch` makes at one cursor: wrap its selection in a pair,
+    /// replace it, step over the closing char already there, or insert (with
+    /// its auto-closed pair).
+    fn char_edit(&self, c: &Cursor, ch: char, auto_close: bool) -> CursorEdit {
+        let (start, end) = self.span_of(c);
+        if start != end {
+            if let Some(close) = auto_close.then(|| auto_close::closing_pair(ch)).flatten() {
+                let text = format!("{ch}{}{close}", self.buffer.rope_slice(start, end));
+                let caret = text.chars().count();
+                return CursorEdit::new(start, end, text, caret);
+            }
+        } else if auto_close && auto_close::is_closing(ch) && self.char_at(start) == Some(ch) {
+            // Skip-close: type over the closer instead of doubling it.
+            return CursorEdit::new(start, start + 1, ch.to_string(), 1);
+        }
+        let mut text = ch.to_string();
+        if let Some(close) = auto_close.then(|| auto_close::closing_pair(ch)).flatten() {
+            let on_line = |c: Option<char>| c.filter(|c| *c != '\n');
+            let next = on_line(self.char_at(end));
+            let prev = on_line(start.checked_sub(1).and_then(|i| self.char_at(i)));
+            if !auto_close::should_skip_quote_auto_close(ch, prev)
+                && auto_close::should_auto_close(ch, next)
+            {
+                text.push(close);
             }
         }
-
-        if self.cursor.has_selection() {
-            if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
-                // Adjust extra cursors BEFORE deleting, since deletion shifts positions.
-                if sr == er {
-                    let deleted = ec - sc;
-                    for ec_cursor in &mut self.extra_cursors {
-                        if ec_cursor.row == sr && ec_cursor.col > sc {
-                            ec_cursor.col = ec_cursor.col.saturating_sub(deleted);
-                            ec_cursor.desired_col = ec_cursor.col;
-                        }
-                        if let Some((ar, ac)) = ec_cursor.sel_anchor {
-                            if ar == sr && ac > sc {
-                                ec_cursor.sel_anchor = Some((ar, ac.saturating_sub(deleted)));
-                            }
-                        }
-                    }
-                }
-            }
-            self.delete_selection();
-        }
-        let (row, col) = self.cursor.position();
-        self.buffer.insert_char(row, col, ch);
-        self.cursor.move_right(&self.buffer);
-        self.cursor.clear_selection();
-
-        // Auto-insert closing bracket/quote if appropriate.
-        if auto_close_enabled {
-            if let Some(close) = auto_close::closing_pair(ch) {
-                let line = self.buffer.line(row);
-                let chars: Vec<char> = line.chars().collect();
-                let cursor_col = col + 1; // cursor moved right already
-                let next_char = chars.get(cursor_col).copied();
-                let prev_char = if col > 0 {
-                    chars.get(col.saturating_sub(1)).copied()
-                } else {
-                    None
-                };
-                if !auto_close::should_skip_quote_auto_close(ch, prev_char)
-                    && auto_close::should_auto_close(ch, next_char)
-                {
-                    let (cur_row, cur_col) = self.cursor.position();
-                    self.buffer.insert_char(cur_row, cur_col, close);
-                }
-            }
-        }
-
-        // Adjust extra cursors on the same row that are after the insertion point.
-        for ec in &mut self.extra_cursors {
-            if ec.row == row && ec.col > col {
-                ec.col += 1;
-                ec.desired_col = ec.col;
-            }
-            if let Some((ar, ac)) = ec.sel_anchor {
-                if ar == row && ac > col {
-                    ec.sel_anchor = Some((ar, ac + 1));
-                }
-            }
-        }
-
-        // Process each extra cursor in order: delete its selection first, then insert.
-        let n = self.extra_cursors.len();
-        for i in 0..n {
-            if self.extra_cursors[i].has_selection() {
-                if let Some(((sr, sc), (er, ec))) = self.extra_cursors[i].selection_range() {
-                    if sr == er {
-                        // Same-line selection: delete the selected characters.
-                        let count = ec - sc;
-                        for _ in 0..count {
-                            self.buffer.delete_char(sr, sc);
-                        }
-                        self.extra_cursors[i].set_position(sr, sc);
-                        self.extra_cursors[i].clear_selection();
-
-                        // Adjust all subsequent extra cursors on the same row.
-                        for j in (i + 1)..n {
-                            if self.extra_cursors[j].row == sr && self.extra_cursors[j].col > sc {
-                                self.extra_cursors[j].col = self.extra_cursors[j]
-                                    .col
-                                    .saturating_sub(ec)
-                                    .saturating_add(sc);
-                                self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
-                            }
-                            if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
-                                if ar == sr && ac > sc {
-                                    let adj = ac.saturating_sub(ec).saturating_add(sc);
-                                    self.extra_cursors[j].sel_anchor = Some((ar, adj));
-                                }
-                            }
-                        }
-                    } else {
-                        // Multi-line selection: move cursor to start and clear selection.
-                        self.extra_cursors[i].set_position(sr, sc);
-                        self.extra_cursors[i].clear_selection();
-                    }
-                }
-            }
-
-            // Insert the character at the (possibly adjusted) cursor position.
-            let (er, ec) = self.extra_cursors[i].position();
-            self.buffer.insert_char(er, ec, ch);
-            self.extra_cursors[i].move_right(&self.buffer);
-
-            // Adjust all subsequent extra cursors on the same row.
-            for j in (i + 1)..n {
-                if self.extra_cursors[j].row == er && self.extra_cursors[j].col >= ec {
-                    self.extra_cursors[j].col += 1;
-                    self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
-                }
-                if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
-                    if ar == er && ac >= ec {
-                        self.extra_cursors[j].sel_anchor = Some((ar, ac + 1));
-                    }
-                }
-            }
-        }
-
-        self.is_modified = true;
-        self.content_version = self.content_version.wrapping_add(1);
-        self.cursor_blink_epoch = std::time::Instant::now();
+        CursorEdit::new(start, end, text, 1)
     }
 
     /// When only whitespace precedes the primary cursor, remove one indent level
@@ -212,202 +108,42 @@ impl Editor {
 
     pub fn delete_char_before(&mut self) {
         self.buffer.checkpoint();
-        if self.cursor.has_selection() {
-            self.delete_selection();
-            return;
-        }
-        let (row, col) = self.cursor.position();
-
-        // Pair-delete: if the char before cursor and the char under cursor form a pair, delete both.
-        if col > 0 {
-            let line = self.buffer.line(row);
-            let chars: Vec<char> = line.chars().collect();
-            let prev = chars[col - 1];
-            if let Some(expected_close) = auto_close::closing_pair(prev) {
-                if col < chars.len() && chars[col] == expected_close {
-                    self.buffer.delete_char(row, col);
-                    self.buffer.delete_char(row, col - 1);
-                    self.cursor.move_left(&self.buffer);
-                    self.is_modified = true;
-                    self.content_version = self.content_version.wrapping_add(1);
-                    self.cursor_blink_epoch = std::time::Instant::now();
-                    return;
+        let edits = self
+            .all_cursors()
+            .map(|c| {
+                let (start, end) = self.span_of(c);
+                if start != end || start == 0 {
+                    return CursorEdit::new(start, end, String::new(), 0);
                 }
-            }
-        }
-
-        if col > 0 {
-            self.buffer.delete_char(row, col - 1);
-            self.cursor.move_left(&self.buffer);
-
-            // Adjust extra cursors on the same row that are after the deleted column.
-            for ec in &mut self.extra_cursors {
-                if ec.row == row && ec.col >= col {
-                    ec.col -= 1;
-                    ec.desired_col = ec.col;
-                }
-                if let Some((ar, ac)) = ec.sel_anchor {
-                    if ar == row && ac >= col {
-                        ec.sel_anchor = Some((ar, ac - 1));
-                    }
-                }
-            }
-        } else if row > 0 {
-            let prev_len = self.buffer.line_len(row - 1);
-            self.buffer.join_lines(row);
-            self.cursor.set_position(row - 1, prev_len);
-        }
-
-        // Process each extra cursor in order: delete its selection if any, else delete char before.
-        let n = self.extra_cursors.len();
-        for i in 0..n {
-            if self.extra_cursors[i].has_selection() {
-                if let Some(((sr, sc), (er, ec))) = self.extra_cursors[i].selection_range() {
-                    if sr == er {
-                        let count = ec - sc;
-                        for _ in 0..count {
-                            self.buffer.delete_char(sr, sc);
-                        }
-                        self.extra_cursors[i].set_position(sr, sc);
-                        self.extra_cursors[i].clear_selection();
-
-                        // Adjust all subsequent extra cursors on the same row.
-                        for j in (i + 1)..n {
-                            if self.extra_cursors[j].row == sr && self.extra_cursors[j].col > sc {
-                                self.extra_cursors[j].col = self.extra_cursors[j]
-                                    .col
-                                    .saturating_sub(ec)
-                                    .saturating_add(sc);
-                                self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
-                            }
-                            if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
-                                if ar == sr && ac > sc {
-                                    let adj = ac.saturating_sub(ec).saturating_add(sc);
-                                    self.extra_cursors[j].sel_anchor = Some((ar, adj));
-                                }
-                            }
-                        }
-                    } else {
-                        self.extra_cursors[i].set_position(sr, sc);
-                        self.extra_cursors[i].clear_selection();
-                    }
-                }
-            } else {
-                let (er, ec) = self.extra_cursors[i].position();
-                if ec > 0 {
-                    self.buffer.delete_char(er, ec - 1);
-                    self.extra_cursors[i].move_left(&self.buffer);
-
-                    // Adjust all subsequent extra cursors on the same row.
-                    for j in (i + 1)..n {
-                        if self.extra_cursors[j].row == er && self.extra_cursors[j].col >= ec {
-                            self.extra_cursors[j].col -= 1;
-                            self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
-                        }
-                        if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
-                            if ar == er && ac >= ec {
-                                self.extra_cursors[j].sel_anchor = Some((ar, ac - 1));
-                            }
-                        }
-                    }
-                } else if er > 0 {
-                    let prev_len = self.buffer.line_len(er - 1);
-                    self.buffer.join_lines(er);
-                    self.extra_cursors[i].set_position(er - 1, prev_len);
-                }
-            }
-        }
-
-        self.is_modified = true;
-        self.content_version = self.content_version.wrapping_add(1);
+                // Pair-delete: `(|)` loses both chars.
+                let prev = self.char_at(start - 1);
+                let pair = prev
+                    .and_then(auto_close::closing_pair)
+                    .is_some_and(|close| self.char_at(start) == Some(close));
+                let end = if pair { start + 1 } else { start };
+                // At a line start this removes the line break: the lines join.
+                CursorEdit::new(start - 1, end, String::new(), 0)
+            })
+            .collect();
+        self.apply_cursor_edits(edits);
     }
 
     pub fn delete_char_after(&mut self) {
         self.buffer.checkpoint();
-        if self.cursor.has_selection() {
-            self.delete_selection();
-            return;
-        }
-        let (row, col) = self.cursor.position();
-        let line_len = self.buffer.line_len(row);
-
-        if col < line_len {
-            self.buffer.delete_char(row, col);
-
-            // Adjust extra cursors on the same row that are after the deleted column.
-            for ec in &mut self.extra_cursors {
-                if ec.row == row && ec.col > col {
-                    ec.col -= 1;
-                    ec.desired_col = ec.col;
-                }
-                if let Some((ar, ac)) = ec.sel_anchor {
-                    if ar == row && ac > col {
-                        ec.sel_anchor = Some((ar, ac - 1));
-                    }
-                }
-            }
-        } else if row + 1 < self.buffer.num_lines() {
-            // At end of line: join with next line
-            self.buffer.join_lines(row + 1);
-        }
-
-        // Process each extra cursor.
-        let n = self.extra_cursors.len();
-        for i in 0..n {
-            if self.extra_cursors[i].has_selection() {
-                if let Some(((sr, sc), (er, ec))) = self.extra_cursors[i].selection_range() {
-                    if sr == er {
-                        let count = ec - sc;
-                        for _ in 0..count {
-                            self.buffer.delete_char(sr, sc);
-                        }
-                        self.extra_cursors[i].set_position(sr, sc);
-                        self.extra_cursors[i].clear_selection();
-                        for j in (i + 1)..n {
-                            if self.extra_cursors[j].row == sr && self.extra_cursors[j].col > sc {
-                                self.extra_cursors[j].col = self.extra_cursors[j]
-                                    .col
-                                    .saturating_sub(ec)
-                                    .saturating_add(sc);
-                                self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
-                            }
-                            if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
-                                if ar == sr && ac > sc {
-                                    let adj = ac.saturating_sub(ec).saturating_add(sc);
-                                    self.extra_cursors[j].sel_anchor = Some((ar, adj));
-                                }
-                            }
-                        }
-                    } else {
-                        self.extra_cursors[i].set_position(sr, sc);
-                        self.extra_cursors[i].clear_selection();
-                    }
-                }
-            } else {
-                let (er, ec_col) = self.extra_cursors[i].position();
-                let el = self.buffer.line_len(er);
-                if ec_col < el {
-                    self.buffer.delete_char(er, ec_col);
-                    for j in (i + 1)..n {
-                        if self.extra_cursors[j].row == er && self.extra_cursors[j].col > ec_col {
-                            self.extra_cursors[j].col -= 1;
-                            self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
-                        }
-                        if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
-                            if ar == er && ac > ec_col {
-                                self.extra_cursors[j].sel_anchor = Some((ar, ac - 1));
-                            }
-                        }
-                    }
-                } else if er + 1 < self.buffer.num_lines() {
-                    self.buffer.join_lines(er + 1);
-                }
-            }
-        }
-
-        self.is_modified = true;
-        self.content_version = self.content_version.wrapping_add(1);
-        self.cursor_blink_epoch = std::time::Instant::now();
+        let len = self.buffer.rope_len();
+        let edits = self
+            .all_cursors()
+            .map(|c| {
+                let (start, end) = self.span_of(c);
+                let end = if start == end {
+                    (end + 1).min(len)
+                } else {
+                    end
+                };
+                CursorEdit::new(start, end, String::new(), 0)
+            })
+            .collect();
+        self.apply_cursor_edits(edits);
     }
 
     /// Ctrl+Backspace / Ctrl+Delete: delete the word before / after every cursor
@@ -487,12 +223,6 @@ impl Editor {
         self.insert_newline_impl(true);
     }
 
-    /// Split the line at every cursor without any auto-indent — used by paste,
-    /// whose text already carries its own indentation.
-    pub(super) fn insert_newline_plain(&mut self) {
-        self.insert_newline_impl(false);
-    }
-
     /// One indent level in the file's detected style.
     pub(super) fn indent_unit(&self) -> String {
         if self.detected_indent_spaces {
@@ -503,12 +233,20 @@ impl Editor {
     }
 
     /// Text to insert for a newline at (row, col), and the caret offset inside it
-    /// as (lines down, column). With `auto_indent` the new line copies the leading
-    /// whitespace before the cursor, gains one level after an opening bracket, and
-    /// a cursor between a bracket pair (`{|}`) pushes the closer onto its own line.
-    fn newline_text(&self, row: usize, col: usize, auto_indent: bool) -> (String, (usize, usize)) {
+    /// in chars. `rest` is what follows the inserted newline on that line (after
+    /// a replaced selection). With `auto_indent` the new line copies the leading
+    /// whitespace before the cursor, gains one level after an opening bracket,
+    /// and a cursor between a bracket pair (`{|}`) pushes the closer onto its
+    /// own line.
+    fn newline_text(
+        &self,
+        row: usize,
+        col: usize,
+        rest: &str,
+        auto_indent: bool,
+    ) -> (String, usize) {
         if !auto_indent {
-            return ("\n".to_string(), (1, 0));
+            return ("\n".to_string(), 1);
         }
         let chars: Vec<char> = self.buffer.line(row).chars().collect();
         let col = col.min(chars.len());
@@ -523,117 +261,185 @@ impl Editor {
             .copied()
             .filter(|c| matches!(c, '{' | '[' | '('));
         let Some(opener) = opener else {
-            let n = indent.chars().count();
-            return (format!("\n{indent}"), (1, n));
+            let text = format!("\n{indent}");
+            let caret = text.chars().count();
+            return (text, caret);
         };
-        let inner = format!("{indent}{}", self.indent_unit());
-        let caret = (1, inner.chars().count());
+        let inner = format!("\n{indent}{}", self.indent_unit());
+        let caret = inner.chars().count();
         let closer = auto_close::closing_pair(opener);
-        let next = chars[col..].iter().find(|c| !c.is_whitespace()).copied();
+        let next = rest.chars().find(|c| !c.is_whitespace());
         if next.is_some() && next == closer {
-            (format!("\n{inner}\n{indent}"), caret)
+            (format!("{inner}\n{indent}"), caret)
         } else {
-            (format!("\n{inner}"), caret)
-        }
-    }
-
-    /// Shift every cursor (and selection anchor) except the skipped ones to account
-    /// for `text` inserted at (row, col).
-    fn shift_cursors_for_insert(
-        &mut self,
-        skip_primary: bool,
-        skip_extra: Option<usize>,
-        (row, col): (usize, usize),
-        text: &str,
-    ) {
-        let added_lines = text.matches('\n').count();
-        let last_len = text.rsplit('\n').next().unwrap_or("").chars().count();
-        let shift = |(r, c): (usize, usize)| -> (usize, usize) {
-            if r == row && c >= col {
-                if added_lines == 0 {
-                    (r, c + last_len)
-                } else {
-                    (r + added_lines, c - col + last_len)
-                }
-            } else if r > row {
-                (r + added_lines, c)
-            } else {
-                (r, c)
-            }
-        };
-        let apply = |cur: &mut super::cursor::Cursor| {
-            let (r, c) = shift(cur.position());
-            cur.row = r;
-            cur.col = c;
-            cur.desired_col = c;
-            cur.sel_anchor = cur.sel_anchor.map(shift);
-        };
-        if !skip_primary {
-            apply(&mut self.cursor);
-        }
-        for (i, ec) in self.extra_cursors.iter_mut().enumerate() {
-            if skip_extra != Some(i) {
-                apply(ec);
-            }
+            (inner, caret)
         }
     }
 
     fn insert_newline_impl(&mut self, auto_indent: bool) {
         self.buffer.checkpoint();
-        if self.cursor.has_selection() {
-            self.delete_selection();
-        }
-        let (row, col) = self.cursor.position();
-        let (text, (dr, dc)) = self.newline_text(row, col, auto_indent);
-        self.buffer.insert_str(row, col, &text);
-        self.shift_cursors_for_insert(true, None, (row, col), &text);
-        self.cursor.set_position(row + dr, dc);
+        let edits = self
+            .all_cursors()
+            .map(|c| {
+                let (start, end) = self.span_of(c);
+                let (row, col) = self.buffer.position_of(start);
+                let (end_row, end_col) = self.buffer.position_of(end);
+                let rest: String = self.buffer.line(end_row).chars().skip(end_col).collect();
+                let (text, caret) = self.newline_text(row, col, &rest, auto_indent);
+                CursorEdit::new(start, end, text, caret)
+            })
+            .collect();
+        self.apply_cursor_edits(edits);
+    }
 
-        // Process each extra cursor in order: delete its selection if any, then insert newline.
-        let n = self.extra_cursors.len();
-        for i in 0..n {
-            if self.extra_cursors[i].has_selection() {
-                if let Some(((sr, sc), (er, ec))) = self.extra_cursors[i].selection_range() {
-                    if sr == er {
-                        let count = ec - sc;
-                        for _ in 0..count {
-                            self.buffer.delete_char(sr, sc);
-                        }
-                        self.extra_cursors[i].set_position(sr, sc);
-                        self.extra_cursors[i].clear_selection();
+    // ── Edits at every cursor ──────────────────────────────────────────────
 
-                        // Adjust subsequent extra cursors on the same row.
-                        for j in (i + 1)..n {
-                            if self.extra_cursors[j].row == sr && self.extra_cursors[j].col > sc {
-                                self.extra_cursors[j].col = self.extra_cursors[j]
-                                    .col
-                                    .saturating_sub(ec)
-                                    .saturating_add(sc);
-                                self.extra_cursors[j].desired_col = self.extra_cursors[j].col;
-                            }
-                            if let Some((ar, ac)) = self.extra_cursors[j].sel_anchor {
-                                if ar == sr && ac > sc {
-                                    let adj = ac.saturating_sub(ec).saturating_add(sc);
-                                    self.extra_cursors[j].sel_anchor = Some((ar, adj));
-                                }
-                            }
-                        }
-                    } else {
-                        self.extra_cursors[i].set_position(sr, sc);
-                        self.extra_cursors[i].clear_selection();
-                    }
-                }
+    /// The primary cursor, then the extra ones.
+    fn all_cursors(&self) -> impl Iterator<Item = &Cursor> {
+        std::iter::once(&self.cursor).chain(self.extra_cursors.iter())
+    }
+
+    /// A cursor's selection (or caret) as char indices, start first.
+    fn span_of(&self, c: &Cursor) -> (usize, usize) {
+        let idx =
+            |(r, col): (usize, usize)| self.buffer.char_index(r, col).min(self.buffer.rope_len());
+        match c.selection_range() {
+            Some((s, e)) => (idx(s), idx(e)),
+            None => {
+                let i = idx(c.position());
+                (i, i)
             }
-
-            let (er, ec) = self.extra_cursors[i].position();
-            let (text, (dr, dc)) = self.newline_text(er, ec, auto_indent);
-            self.buffer.insert_str(er, ec, &text);
-            self.shift_cursors_for_insert(false, Some(i), (er, ec), &text);
-            self.extra_cursors[i].set_position(er + dr, dc);
         }
+    }
 
-        self.is_modified = true;
-        self.content_version = self.content_version.wrapping_add(1);
+    fn char_at(&self, idx: usize) -> Option<char> {
+        (idx < self.buffer.rope_len())
+            .then(|| self.buffer.rope_slice(idx, idx + 1).chars().next())
+            .flatten()
+    }
+
+    /// Apply one edit per cursor (`edits[0]` for the primary, then the extras
+    /// in order), all expressed against the text before any of them, then put
+    /// every cursor after its own inserted text. Edits are applied bottom to
+    /// top so each one's indices stay valid; overlapping ones (two cursors in
+    /// one selection) are clamped so text is never deleted twice.
+    pub(super) fn apply_cursor_edits(&mut self, mut edits: Vec<CursorEdit>) {
+        let mut order: Vec<usize> = (0..edits.len()).collect();
+        order.sort_by_key(|&i| (edits[i].start, i));
+        let mut reach = 0;
+        for &i in &order {
+            let e = &mut edits[i];
+            e.start = e.start.max(reach);
+            e.end = e.end.max(e.start);
+            reach = e.end;
+        }
+        for &i in order.iter().rev() {
+            let e = &edits[i];
+            self.buffer.delete_range(e.start, e.end);
+            let (row, col) = self.buffer.position_of(e.start);
+            self.buffer.insert_str(row, col, &e.text);
+        }
+        // Each caret lands in its edit's text, shifted by the edits before it.
+        let mut carets = vec![0; edits.len()];
+        let mut shift: isize = 0;
+        for &i in &order {
+            let e = &edits[i];
+            carets[i] = (e.start as isize + shift) as usize + e.caret;
+            shift += e.text.chars().count() as isize - (e.end - e.start) as isize;
+        }
+        let positions: Vec<(usize, usize)> =
+            carets.iter().map(|&c| self.buffer.position_of(c)).collect();
+        let changed = edits.iter().any(|e| e.start != e.end || !e.text.is_empty());
+        for (i, (row, col)) in positions.into_iter().enumerate() {
+            let c = if i == 0 {
+                &mut self.cursor
+            } else {
+                &mut self.extra_cursors[i - 1]
+            };
+            c.clear_selection();
+            c.set_position(row, col);
+        }
+        self.dedup_cursors();
+        if changed {
+            self.is_modified = true;
+            self.content_version = self.content_version.wrapping_add(1);
+        }
+        self.cursor_blink_epoch = std::time::Instant::now();
+    }
+
+    /// Ctrl+V: `text` replaces every cursor's selection, as one undo step. It
+    /// goes in as is: no auto-indent, auto-close or dedent, since pasted text
+    /// carries its own indentation. The buffer is LF-only (CRLF is re-applied
+    /// on save).
+    pub(super) fn paste_text_at_cursors(&mut self, text: &str) {
+        self.buffer.checkpoint();
+        let text = text.replace('\r', "");
+        let caret = text.chars().count();
+        let edits = self
+            .all_cursors()
+            .map(|c| {
+                let (start, end) = self.span_of(c);
+                CursorEdit::new(start, end, text.clone(), caret)
+            })
+            .collect();
+        self.apply_cursor_edits(edits);
+    }
+
+    /// Ctrl+V with as many lines as cursors: line k goes to the k-th cursor
+    /// from the top, replacing its selection (one undo step).
+    pub(super) fn paste_lines_at_cursors(&mut self, lines: &[&str]) {
+        self.buffer.checkpoint();
+        let spans: Vec<(usize, usize)> = self.all_cursors().map(|c| self.span_of(c)).collect();
+        let mut by_position: Vec<usize> = (0..spans.len()).collect();
+        by_position.sort_by_key(|&i| spans[i]);
+        let mut edits: Vec<Option<CursorEdit>> = (0..spans.len()).map(|_| None).collect();
+        for (k, &i) in by_position.iter().enumerate() {
+            let text = lines.get(k).copied().unwrap_or_default().to_string();
+            let caret = text.chars().count();
+            edits[i] = Some(CursorEdit::new(spans[i].0, spans[i].1, text, caret));
+        }
+        self.apply_cursor_edits(edits.into_iter().flatten().collect());
+    }
+
+    /// The text each cursor would copy, top to bottom: its selection, or its
+    /// whole line when it has none.
+    pub(super) fn cursor_texts(&self) -> Vec<String> {
+        let mut spans: Vec<(usize, usize, usize)> = self
+            .all_cursors()
+            .map(|c| {
+                let (s, e) = self.span_of(c);
+                (s, e, c.row)
+            })
+            .collect();
+        spans.sort();
+        spans
+            .into_iter()
+            .map(|(s, e, row)| {
+                if s == e {
+                    self.buffer.line(row)
+                } else {
+                    self.buffer.rope_slice(s, e)
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn all_cursors_have_selection(&self) -> bool {
+        self.all_cursors().all(|c| c.has_selection())
+    }
+
+    /// Ctrl+X: delete every cursor's selection (one undo step). Cursors
+    /// without a selection are left alone.
+    pub(super) fn cut_selections(&mut self) {
+        self.buffer.checkpoint();
+        let edits = self
+            .all_cursors()
+            .map(|c| {
+                let (s, e) = self.span_of(c);
+                CursorEdit::new(s, e, String::new(), 0)
+            })
+            .collect();
+        self.apply_cursor_edits(edits);
     }
 
     pub fn selected_text(&self) -> Option<String> {
@@ -841,12 +647,12 @@ mod tests {
     }
 
     #[test]
-    fn insert_char_extra_cursor_multi_line_selection_collapses_to_start() {
+    fn insert_char_replaces_an_extra_cursors_multi_line_selection() {
         let mut ed = editor_with("aa\nbb\ncc", 2, 2);
         ed.extra_cursors.push(selecting((0, 1), 1, 1));
         ed.insert_char('X', false);
-        // Multi-line extra selections are collapsed (not deleted), then typed into.
-        assert_eq!(text(&ed), "aXa\nbb\nccX");
+        // The extra's "a\nb" is replaced, like the primary's selection would be.
+        assert_eq!(text(&ed), "aXb\nccX");
         assert_eq!(ed.extra_cursors[0].position(), (0, 2));
     }
 
@@ -945,13 +751,14 @@ mod tests {
     }
 
     #[test]
-    fn backspace_extra_cursor_multi_line_selection_collapses() {
+    fn backspace_deletes_an_extra_cursors_multi_line_selection() {
         let mut ed = editor_with("ab\ncd\nef", 2, 0);
         ed.extra_cursors.push(selecting((0, 1), 1, 1));
         ed.delete_char_before();
-        // Primary at (2,0) joins rows 1 and 2; extra selection collapses to its start.
-        assert_eq!(text(&ed), "ab\ncdef");
+        // The extra's "b\nc" goes, and the primary at (2,0) joins its line up.
+        assert_eq!(text(&ed), "adef");
         assert_eq!(ed.extra_cursors[0].position(), (0, 1));
+        assert_eq!(ed.cursor.position(), (0, 2));
     }
 
     #[test]
@@ -1043,11 +850,11 @@ mod tests {
     }
 
     #[test]
-    fn delete_extra_cursor_multi_line_selection_collapses() {
+    fn delete_removes_an_extra_cursors_multi_line_selection() {
         let mut ed = editor_with("ab\ncd\nef", 2, 2);
         ed.extra_cursors.push(selecting((0, 1), 1, 1));
         ed.delete_char_after();
-        assert_eq!(text(&ed), "ab\ncd\nef");
+        assert_eq!(text(&ed), "ad\nef");
         assert_eq!(ed.extra_cursors[0].position(), (0, 1));
         assert!(!ed.extra_cursors[0].has_selection());
     }
@@ -1099,10 +906,11 @@ mod tests {
         assert_eq!(ed.buffer.line(0), "0");
         assert_eq!(ed.extra_cursors[0].position(), (1, 0));
 
+        // A multi-line extra selection is replaced by the newline too.
         let mut ed = editor_with("ab\ncd\nef", 2, 2);
         ed.extra_cursors.push(selecting((0, 1), 1, 1));
         ed.insert_newline();
-        assert_eq!(text(&ed), "a\nb\ncd\nef\n");
+        assert_eq!(text(&ed), "a\nd\nef\n");
         assert_eq!(ed.extra_cursors[0].position(), (1, 0));
     }
 
@@ -1185,11 +993,30 @@ mod tests {
     }
 
     #[test]
-    fn plain_newline_does_not_indent() {
+    fn pasted_newline_does_not_indent() {
         let mut ed = editor_with("    {", 0, 5);
-        ed.insert_newline_plain();
+        ed.paste_text_at_cursors("\n");
         assert_eq!(text(&ed), "    {\n");
         assert_eq!(ed.cursor.position(), (1, 0));
+    }
+
+    #[test]
+    fn a_multi_line_paste_is_one_undo_step() {
+        let mut ed = editor_with("x", 0, 1);
+        ed.paste_text_at_cursors("a\r\nb\nc");
+        assert_eq!(text(&ed), "xa\nb\nc");
+        assert_eq!(ed.cursor.position(), (2, 1));
+        assert!(ed.buffer.undo());
+        assert_eq!(text(&ed), "x", "a single undo restores the pre-paste text");
+    }
+
+    #[test]
+    fn paste_replaces_every_selection() {
+        let mut ed = editor_with("one two", 0, 0);
+        ed.cursor = selecting((0, 0), 0, 3);
+        ed.extra_cursors = vec![selecting((0, 4), 0, 7)];
+        ed.paste_text_at_cursors("1\n2\n3");
+        assert_eq!(text(&ed), "1\n2\n3 1\n2\n3");
     }
 
     #[test]
@@ -1221,7 +1048,7 @@ mod tests {
 
         // Pasted brackets keep the pasted indentation.
         let mut ed = editor_with("    ", 0, 4);
-        ed.insert_pasted_char('}');
+        ed.paste_text_at_cursors("}");
         assert_eq!(text(&ed), "    }");
     }
 
@@ -1271,5 +1098,83 @@ mod tests {
         ed.cursor.set_position(0, 2);
         ed.delete_char_before();
         assert_eq!(text(&ed), "x");
+    }
+
+    // ── Every cursor edits, every cursor moves (CU-20) ───────────────────────
+
+    #[test]
+    fn backspace_deletes_every_cursors_selection() {
+        // Ctrl+D x3 on `foo foo foo` then Backspace.
+        let mut ed = editor_with("foo foo foo", 0, 0);
+        ed.cursor = selecting((0, 0), 0, 3);
+        ed.extra_cursors = vec![selecting((0, 4), 0, 7), selecting((0, 8), 0, 11)];
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "  ");
+        assert_eq!(ed.cursor.position(), (0, 0));
+        assert_eq!(ed.extra_cursors[0].position(), (0, 1));
+        assert_eq!(ed.extra_cursors[1].position(), (0, 2));
+    }
+
+    #[test]
+    fn typing_at_an_earlier_extra_cursor_shifts_the_primary() {
+        // The Ctrl+D search wrapped: the extra cursor is before the primary.
+        let mut ed = editor_with("foo foo bar", 0, 0);
+        ed.cursor = selecting((0, 4), 0, 7);
+        ed.extra_cursors = vec![selecting((0, 0), 0, 3)];
+        ed.insert_char('x', false);
+        ed.insert_char('y', false);
+        assert_eq!(text(&ed), "xy xy bar");
+        assert_eq!(ed.cursor.position(), (0, 5));
+        assert_eq!(ed.extra_cursors[0].position(), (0, 2));
+    }
+
+    #[test]
+    fn auto_closed_pairs_shift_later_cursors_by_both_chars() {
+        let mut ed = editor_with("a b", 0, 1);
+        ed.extra_cursors = vec![cursor_at(0, 3)];
+        ed.insert_char('(', true);
+        assert_eq!(text(&ed), "a() b()");
+        assert_eq!(ed.cursor.position(), (0, 2));
+        assert_eq!(ed.extra_cursors[0].position(), (0, 6));
+    }
+
+    #[test]
+    fn joining_lines_at_several_cursors_joins_the_right_lines() {
+        let mut ed = editor_with("a\nb\nc\nd", 1, 0);
+        ed.extra_cursors = vec![cursor_at(2, 0)];
+        ed.delete_char_before();
+        assert_eq!(text(&ed), "abc\nd");
+        assert_eq!(ed.cursor.position(), (0, 1));
+        assert_eq!(ed.extra_cursors[0].position(), (0, 2));
+
+        let mut ed = editor_with("a\nb\nc\nd", 0, 1);
+        ed.extra_cursors = vec![cursor_at(1, 1)];
+        ed.delete_char_after();
+        assert_eq!(text(&ed), "abc\nd");
+    }
+
+    #[test]
+    fn distributed_paste_replaces_each_selection_with_its_line() {
+        let mut ed = editor_with("foo foo", 0, 0);
+        ed.cursor = selecting((0, 4), 0, 7);
+        ed.extra_cursors = vec![selecting((0, 0), 0, 3)];
+        // Line k goes to the k-th cursor from the top.
+        ed.paste_lines_at_cursors(&["first", "second"]);
+        assert_eq!(text(&ed), "first second");
+        assert_eq!(ed.extra_cursors[0].position(), (0, 5));
+        assert_eq!(ed.cursor.position(), (0, 12));
+        assert!(!ed.cursor.has_selection());
+    }
+
+    #[test]
+    fn cut_removes_every_selection_and_copy_lists_them_top_to_bottom() {
+        let mut ed = editor_with("ab\ncd", 1, 0);
+        ed.cursor = selecting((1, 0), 1, 1);
+        ed.extra_cursors = vec![selecting((0, 1), 1, 0)];
+        assert_eq!(ed.cursor_texts(), ["b\n", "c"]);
+        ed.cut_selections();
+        assert_eq!(text(&ed), "ad");
+        assert!(ed.buffer.undo(), "one undo step");
+        assert_eq!(text(&ed), "ab\ncd");
     }
 }

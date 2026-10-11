@@ -130,6 +130,12 @@ impl GitStatus {
     pub fn merge_branch(&mut self, branch_name: &str) -> Result<(), String> {
         let repo_path = self.repo_path.as_ref().ok_or("No repository")?;
         let repo = git2::Repository::discover(repo_path).map_err(|e| e.message().to_string())?;
+        if repo.state() != git2::RepositoryState::Clean {
+            return Err(
+                "Cannot merge: another operation is in progress. Finish or abort it first."
+                    .to_string(),
+            );
+        }
         let reference = repo
             .find_reference(&format!("refs/heads/{}", branch_name))
             .map_err(|e| e.message().to_string())?;
@@ -141,12 +147,16 @@ impl GitStatus {
             .map_err(|e| e.message().to_string())?;
         if analysis.is_fast_forward() {
             let target_oid = reference.target().ok_or("No target")?;
-            let mut head_ref = repo.head().map_err(|e| e.message().to_string())?;
-            head_ref
-                .set_target(target_oid, &format!("merge {}: fast-forward", branch_name))
-                .map_err(|e| e.message().to_string())?;
-            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-                .map_err(|e| e.message().to_string())?;
+            let head = repo.head().map_err(|e| e.message().to_string())?;
+            let current = head
+                .is_branch()
+                .then(|| head.shorthand())
+                .flatten()
+                .ok_or("Cannot merge: HEAD is not on a branch")?
+                .to_string();
+            // Safe checkout first, like pull: uncommitted changes make it fail
+            // instead of being overwritten.
+            super::commit::fast_forward(&repo, &current, target_oid, "Merge")?;
         } else if analysis.is_normal() {
             repo.merge(&[&annotated], None, None)
                 .map_err(|e| e.message().to_string())?;
@@ -506,6 +516,53 @@ mod tests {
         assert_eq!(r.head_oid(), tip);
         assert_eq!(r.read("b"), "2");
         assert_eq!(r.repo.state(), git2::RepositoryState::Clean);
+    }
+
+    #[test]
+    fn fast_forward_merge_keeps_unrelated_local_changes() {
+        let r = TestRepo::new();
+        r.write("a", "1");
+        r.write("notes", "base");
+        r.commit_all("base");
+        r.branch("ahead");
+        r.switch("ahead");
+        r.write("b", "2");
+        let tip = r.commit_all("ahead work");
+        r.switch("main");
+        r.write("notes", "uncommitted edit");
+        let mut s = r.status();
+        s.merge_branch("ahead").unwrap();
+        assert_eq!(r.head_oid(), tip);
+        assert_eq!(r.read("b"), "2");
+        assert_eq!(r.read("notes"), "uncommitted edit", "local edit survives");
+    }
+
+    #[test]
+    fn fast_forward_merge_refuses_to_overwrite_local_changes() {
+        let r = TestRepo::new();
+        r.write("a", "1");
+        let base = r.commit_all("base");
+        r.branch("ahead");
+        r.switch("ahead");
+        r.write("a", "2");
+        r.commit_all("ahead changes a");
+        r.switch("main");
+        r.write("a", "uncommitted edit");
+        let mut s = r.status();
+        let err = s.merge_branch("ahead").unwrap_err();
+        assert!(err.contains("Merge would overwrite local changes"), "{err}");
+        assert_eq!(r.head_oid(), base, "HEAD not moved");
+        assert_eq!(r.read("a"), "uncommitted edit");
+    }
+
+    #[test]
+    fn merge_refused_while_another_merge_is_in_progress() {
+        let r = diverged();
+        let mut s = r.status();
+        s.merge_branch("feature").unwrap();
+        assert_eq!(r.repo.state(), git2::RepositoryState::Merge);
+        let err = s.merge_branch("feature").unwrap_err();
+        assert!(err.contains("in progress"), "{err}");
     }
 
     #[test]

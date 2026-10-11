@@ -26,8 +26,9 @@ mod claude_ops;
 mod debug_ops;
 pub mod file_ops;
 pub mod file_watch;
-mod lsp_ops;
+pub mod lsp_ops;
 mod navigation;
+pub mod pane2;
 pub mod session;
 mod update_ops;
 mod workspace_search;
@@ -53,16 +54,19 @@ pub struct CodingUnicorns {
     pub keybinds: crate::keybinds::KeybindingRegistry,
     pub tab_manager: TabManager,
     pub editor: Editor,
+    /// Modified files of inactive tabs, kept in memory (tabs hold no content):
+    /// switching tabs parks the editor's document here and restores it on return.
+    pub parked_docs: std::collections::HashMap<PathBuf, crate::editor::ParkedDoc>,
     pub file_tree: FileTree,
     pub git_status: GitStatus,
     pub git_panel: crate::ui::git_panel::GitPanel,
     pub lsp: LspManager,
-    pub pending_hover_id: Option<u64>,
+    pub pending_hover_id: Option<lsp_ops::PendingLsp>,
     pub lsp_hover_result: Option<String>,
     /// Pending LSP go-to-definition request id.
-    pub pending_definition_id: Option<u64>,
+    pub pending_definition_id: Option<lsp_ops::PendingLsp>,
     /// Pending LSP completion request id.
-    pub pending_completion_id: Option<u64>,
+    pub pending_completion_id: Option<lsp_ops::PendingLsp>,
     /// Last editor content_version sent to the LSP server (to detect changes).
     pub last_lsp_content_version: i32,
     pub terminals: Vec<Terminal>,
@@ -99,6 +103,8 @@ pub struct CodingUnicorns {
     pub run_panel: RunPanel,
     pub folder_pending: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
     pub file_pending: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
+    /// "Save As" dialog for an untitled buffer, answered on another thread.
+    pub save_as_pending: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
     pub plugin_manager: PluginManager,
     pub plugin_status: Option<String>,
     /// What plugins were last updated with (see `PluginInputKey`).
@@ -116,7 +122,7 @@ pub struct CodingUnicorns {
     /// Document symbols for the outline panel.
     pub outline_symbols: Vec<crate::lsp::client::DocumentSymbol>,
     /// Pending LSP documentSymbol request id.
-    pub pending_symbols_id: Option<u64>,
+    pub pending_symbols_id: Option<lsp_ops::PendingLsp>,
     /// Content version at time of last symbol request.
     pub outline_last_version: i32,
     /// Time of last symbol request.
@@ -124,7 +130,7 @@ pub struct CodingUnicorns {
     /// Find-all-references results: (path, line, preview).
     pub references_result: Vec<(std::path::PathBuf, u32, String)>,
     /// Pending LSP references request id.
-    pub pending_references_id: Option<u64>,
+    pub pending_references_id: Option<lsp_ops::PendingLsp>,
     /// Whether to show the references panel.
     pub show_references: bool,
     /// Rename dialog state.
@@ -133,7 +139,7 @@ pub struct CodingUnicorns {
     pub rename_pending_id: Option<u64>,
     /// Code actions.
     pub code_actions: Vec<crate::lsp::client::CodeAction>,
-    pub pending_code_actions_id: Option<u64>,
+    pub pending_code_actions_id: Option<lsp_ops::PendingLsp>,
     pub show_code_actions_menu: bool,
     pub code_actions_pos: egui::Pos2,
     pub code_actions_last_request: Option<std::time::Instant>,
@@ -141,9 +147,9 @@ pub struct CodingUnicorns {
     /// an explicit Ctrl+. request, so the menu never pops up on its own (e.g. while typing).
     pub code_actions_show_pending: bool,
     /// Pending signature help request id.
-    pub pending_signature_id: Option<u64>,
+    pub pending_signature_id: Option<lsp_ops::PendingLsp>,
     /// Pending LSP formatting request id.
-    pub pending_format_id: Option<u64>,
+    pub pending_format_id: Option<lsp_ops::PendingLsp>,
     // ── Auto-save ────────────────────────────────────────────────────────────
     /// Last content_version seen — used to detect edits for auto-save.
     pub last_edit_version_seen: i32,
@@ -160,6 +166,10 @@ pub struct CodingUnicorns {
     /// Second editor pane (None = no split).
     pub editor2: Option<Editor>,
     pub tab_manager2: Option<TabManager>,
+    /// On-disk stamp of the right pane's file when it loaded or saved it.
+    pub pane2_stamp: Option<file_watch::FileStamp>,
+    /// Closing the right pane's unsaved file, waiting for the user's choice.
+    pub pane2_close_pending: Option<pane2::Pane2Close>,
     /// Which pane is active: 0 = left/main, 1 = right/split.
     pub active_pane: usize,
     /// Split ratio (0.0 - 1.0), default 0.5.
@@ -265,6 +275,7 @@ impl CodingUnicorns {
             config,
             keybinds,
             tab_manager: TabManager::new(),
+            parked_docs: std::collections::HashMap::new(),
             editor: Editor::new(),
             file_tree: FileTree::new(),
             git_status: GitStatus::new(),
@@ -305,6 +316,7 @@ impl CodingUnicorns {
             run_panel: RunPanel::new(),
             folder_pending: None,
             file_pending: None,
+            save_as_pending: None,
             plugin_manager,
             plugin_status: None,
             last_plugin_input: None,
@@ -340,6 +352,8 @@ impl CodingUnicorns {
             merge_view: None,
             editor2: None,
             tab_manager2: None,
+            pane2_stamp: None,
+            pane2_close_pending: None,
             active_pane: 0,
             split_ratio: 0.5,
             pending_image: None,
@@ -499,7 +513,8 @@ impl eframe::App for CodingUnicorns {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle window close request — warn about unsaved files
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        let any_unsaved = self.tab_manager.tabs.iter().any(|t| t.is_modified);
+        let any_unsaved =
+            self.tab_manager.tabs.iter().any(|t| t.is_modified) || self.pane2_modified();
         if close_requested && any_unsaved && !self.confirmed_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.show_close_warning = true;
@@ -521,7 +536,10 @@ impl eframe::App for CodingUnicorns {
                         if ui.button("Save All & Quit").clicked() {
                             self.show_close_warning = false;
                             // A file changed on disk raises the overwrite prompt instead.
-                            if self.save_editor_guarded(true) {
+                            if self.save_editor_guarded(true)
+                                && self.save_parked_docs()
+                                && self.save_pane2()
+                            {
                                 self.confirmed_close = true;
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
@@ -548,7 +566,10 @@ impl eframe::App for CodingUnicorns {
                 });
         }
 
-        // Ctrl+W close-tab unsaved-changes dialog
+        // Close-tab unsaved-changes dialog (Ctrl+W, or × / middle-click on a tab)
+        if self.close_tab_id_pending.is_none() {
+            self.close_tab_id_pending = self.tab_manager.close_request.take();
+        }
         if let Some(pending_id) = self.close_tab_id_pending {
             egui::Window::new("Close Tab")
                 .collapsible(false)
@@ -567,7 +588,7 @@ impl eframe::App for CodingUnicorns {
                     ui.horizontal(|ui| {
                         if ui.button("Save & Close").clicked() {
                             self.close_tab_id_pending = None;
-                            if self.save_editor_guarded(true) {
+                            if self.save_tab(pending_id) {
                                 self.tab_manager.close(pending_id);
                                 self.load_active_tab();
                             }
@@ -607,6 +628,8 @@ impl eframe::App for CodingUnicorns {
             want_nav_forward,
             want_split,
         ) = ctx.input(|i| {
+            let mac_editor_word_keys =
+                cfg!(target_os = "macos") && self.editor.has_focus && i.modifiers.alt;
             (
                 self.config.keybindings.open_folder.matches(i),
                 self.config.keybindings.open_file.matches(i),
@@ -632,10 +655,11 @@ impl eframe::App for CodingUnicorns {
                 self.config.keybindings.debug_step_out.matches(i),
                 // F12 = go to definition
                 self.config.keybindings.goto_definition.matches(i),
-                // Alt+Left = navigate back
-                self.config.keybindings.navigate_back.matches(i),
+                // Alt+Left = navigate back (on macOS, Option+arrows in the
+                // editor move by word instead)
+                self.config.keybindings.navigate_back.matches(i) && !mac_editor_word_keys,
                 // Alt+Right = navigate forward
-                self.config.keybindings.navigate_forward.matches(i),
+                self.config.keybindings.navigate_forward.matches(i) && !mac_editor_word_keys,
                 // Ctrl+\ = toggle split editor
                 self.config.keybindings.toggle_split.matches(i),
             )
@@ -773,6 +797,7 @@ impl eframe::App for CodingUnicorns {
 
         // Poll all LSP clients for incoming messages (also drives auto-restart).
         let (lsp_responses, reconnected_exts) = self.lsp.poll_all();
+        self.expire_lsp_requests(&reconnected_exts);
         self.sync_problems();
         // Keep updating the "LSP loading…" status while a server is busy.
         if self.lsp.any_busy() {
@@ -797,19 +822,19 @@ impl eframe::App for CodingUnicorns {
                 if self.handle_palette_lsp_response(&ext, id, &response) {
                     continue;
                 }
-                if Some(id) == self.pending_hover_id {
+                if lsp_ops::PendingLsp::answers(&self.pending_hover_id, &ext, id) {
                     self.lsp_hover_result = LspClient::parse_hover(&response);
                     self.pending_hover_id = None;
-                } else if Some(id) == self.pending_definition_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_definition_id, &ext, id) {
+                    self.pending_definition_id = None;
                     if let Some((path, line)) = LspClient::parse_definition(&response) {
                         if let Some(current_path) = self.editor.current_path.clone() {
                             let (row, col) = self.editor.cursor.position();
                             self.nav_history.push(current_path, row, col);
                         }
                         self.open_file_at_line(path, line as usize);
-                        self.pending_definition_id = None;
                     }
-                } else if Some(id) == self.pending_completion_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_completion_id, &ext, id) {
                     let items = LspClient::parse_completions(&response);
                     if !items.is_empty() {
                         let suggestions = items
@@ -823,10 +848,10 @@ impl eframe::App for CodingUnicorns {
                         self.editor.autocomplete.set_lsp_suggestions(suggestions);
                     }
                     self.pending_completion_id = None;
-                } else if Some(id) == self.pending_symbols_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_symbols_id, &ext, id) {
                     self.outline_symbols = LspClient::parse_document_symbols(&response);
                     self.pending_symbols_id = None;
-                } else if Some(id) == self.pending_references_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_references_id, &ext, id) {
                     let refs = LspClient::parse_references(&response);
                     self.references_result = refs
                         .into_iter()
@@ -848,7 +873,7 @@ impl eframe::App for CodingUnicorns {
                         self.apply_rename_edits(edits);
                     }
                     self.rename_pending_id = None;
-                } else if Some(id) == self.pending_code_actions_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_code_actions_id, &ext, id) {
                     self.code_actions = LspClient::parse_code_actions(&response);
                     self.pending_code_actions_id = None;
                     // Only pop the menu when the user explicitly asked (Ctrl+.), never on its own.
@@ -856,45 +881,14 @@ impl eframe::App for CodingUnicorns {
                         self.show_code_actions_menu = true;
                     }
                     self.code_actions_show_pending = false;
-                } else if Some(id) == self.pending_signature_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_signature_id, &ext, id) {
                     self.editor.signature_help_text = LspClient::parse_signature_help(&response);
                     self.pending_signature_id = None;
                     self.editor.signature_help_request_pending = false;
-                } else if Some(id) == self.pending_format_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_format_id, &ext, id) {
                     self.pending_format_id = None;
                     let edits = LspClient::parse_text_edits(&response);
-                    if !edits.is_empty() {
-                        // Apply edits in reverse order (bottom-to-top) to preserve positions.
-                        let mut sorted = edits;
-                        sorted.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-                        self.editor.buffer.checkpoint();
-                        for (sl, sc, el, ec, new_text) in sorted {
-                            let sl = sl as usize;
-                            let sc = sc as usize;
-                            let el = el as usize;
-                            let ec = ec as usize;
-                            // Delete range then insert
-                            if sl == el {
-                                let len = ec.saturating_sub(sc);
-                                for _ in 0..len {
-                                    self.editor.buffer.delete_char(sl, sc);
-                                }
-                                for (i, ch) in new_text.chars().enumerate() {
-                                    self.editor.buffer.insert_char(sl, sc + i, ch);
-                                }
-                            } else {
-                                // Multi-line edit: replace with new_text
-                                let mut row = el;
-                                while row > sl {
-                                    self.editor.buffer.delete_line(row);
-                                    row -= 1;
-                                }
-                                self.editor.buffer.replace_line(sl, &new_text);
-                            }
-                        }
-                        self.editor.is_modified = true;
-                        self.editor.content_version = self.editor.content_version.wrapping_add(1);
-                    }
+                    self.editor.apply_text_edits(edits);
                 }
             }
         }
@@ -943,8 +937,10 @@ impl eframe::App for CodingUnicorns {
                     if let Some(client) = self.lsp.get_mut(ext) {
                         if client.is_connected {
                             let uri = crate::lsp::client::path_to_uri(&path);
-                            self.pending_completion_id =
-                                Some(client.request_completions(&uri, row as u32, col as u32));
+                            self.pending_completion_id = Some(lsp_ops::PendingLsp::new(
+                                ext,
+                                client.request_completions(&uri, row as u32, col as u32),
+                            ));
                             lsp_sent = true;
                         }
                     }
@@ -971,8 +967,10 @@ impl eframe::App for CodingUnicorns {
                         if let Some(client) = self.lsp.get_mut(ext) {
                             if client.is_connected {
                                 let uri = crate::lsp::client::path_to_uri(&path);
-                                self.pending_symbols_id =
-                                    Some(client.request_document_symbols(&uri));
+                                self.pending_symbols_id = Some(lsp_ops::PendingLsp::new(
+                                    ext,
+                                    client.request_document_symbols(&uri),
+                                ));
                                 self.outline_last_version = self.editor.content_version;
                                 self.outline_last_request = Some(std::time::Instant::now());
                             }
@@ -992,8 +990,10 @@ impl eframe::App for CodingUnicorns {
                             let uri = crate::lsp::client::path_to_uri(&path);
                             let tab_size = self.editor.detected_indent_size as u32;
                             let insert_spaces = self.editor.detected_indent_spaces;
-                            self.pending_format_id =
-                                Some(client.request_formatting(&uri, tab_size, insert_spaces));
+                            self.pending_format_id = Some(lsp_ops::PendingLsp::new(
+                                ext,
+                                client.request_formatting(&uri, tab_size, insert_spaces),
+                            ));
                             self.toast("Formatted");
                         }
                     }
@@ -1010,8 +1010,10 @@ impl eframe::App for CodingUnicorns {
                             let uri = crate::lsp::client::path_to_uri(&path);
                             let row = self.editor.signature_help_row;
                             let col = self.editor.signature_help_col;
-                            self.pending_signature_id =
-                                Some(client.request_signature_help(&uri, row, col));
+                            self.pending_signature_id = Some(lsp_ops::PendingLsp::new(
+                                ext,
+                                client.request_signature_help(&uri, row, col),
+                            ));
                             self.editor.signature_help_request_pending = false;
                         }
                     }
@@ -1134,12 +1136,21 @@ impl eframe::App for CodingUnicorns {
         }
 
         self.tick_file_watch(ctx);
+        self.tick_pane2(ctx);
         // Branch / ahead-behind / changed files, kept current without a
         // manual refresh (cheap when nothing changed: see `git::watch`).
         let now = std::time::Instant::now();
         self.git_status.refresh_if_changed(now);
         if let Some(delay) = self.git_status.refresh_pending_in(now) {
             ctx.request_repaint_after(delay);
+        }
+        // A push / pull / fetch finishing while the Git panel is hidden.
+        if let Some(op) = self.git_status.poll_remote() {
+            if let Some(err) = self.git_status.last_error.clone() {
+                self.toast(format!("{op:?} failed: {err}"));
+            }
+        } else if self.git_status.remote_busy().is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
         crate::ui::layout::render(self, ctx);
         self.run_extension_actions(ctx);
@@ -1170,7 +1181,7 @@ impl eframe::App for CodingUnicorns {
                 (exts, deps)
             };
             // Drop the plugin (releases the DLL lock on Windows).
-            self.plugin_manager.unload_by_extensions(&exts);
+            self.plugin_manager.unload_extension(&id, &exts);
             // Remove external dependencies off the UI thread — npm/pip/dotnet
             // uninstall can take several seconds.
             if let Some(deps) = deps {
@@ -1193,12 +1204,12 @@ impl eframe::App for CodingUnicorns {
 
         // Registry installs/updates: drop the loaded plugin first so its DLL can
         // be replaced; the download starts on the next frame.
-        for languages in self
+        for (id, languages) in self
             .extensions_panel
             .registry_browser
             .take_unload_requests()
         {
-            self.plugin_manager.unload_by_extensions(&languages);
+            self.plugin_manager.unload_extension(&id, &languages);
         }
 
         // Reload LSP + plugins when a module installation just completed.

@@ -30,6 +30,42 @@ use indent::detect_indent;
 use std::path::PathBuf;
 use utils::{find_next_occurrence, get_word_at};
 
+/// A modified file's editing state, kept in memory while another tab is shown
+/// (a tab holds no content of its own). Made by [`Editor::park`].
+pub struct ParkedDoc {
+    buffer: Buffer,
+    cursor: Cursor,
+    extra_cursors: Vec<Cursor>,
+    text_format: text_format::TextFormat,
+    decoded_lossy: bool,
+    scroll_offset: egui::Vec2,
+}
+
+impl ParkedDoc {
+    /// The bytes to write to disk: the buffer in the file's own line endings/BOM.
+    pub fn encoded(&self) -> Vec<u8> {
+        text_format::encode(&self.buffer.to_string(), self.text_format)
+    }
+}
+
+/// Shortcuts follow the platform's conventions.
+const MAC: bool = cfg!(target_os = "macos");
+
+/// The modifier that moves, selects and deletes by word: Option on macOS,
+/// Ctrl elsewhere (where Alt+Left/Right navigate back/forward).
+fn word_modifier(m: &egui::Modifiers, mac: bool) -> bool {
+    if mac {
+        m.alt && !m.ctrl && !m.mac_cmd
+    } else {
+        m.ctrl && !m.alt
+    }
+}
+
+/// macOS: Cmd+Left/Right jump to the line start/end.
+fn line_edge_modifier(m: &egui::Modifiers, mac: bool) -> bool {
+    mac && m.mac_cmd && !m.alt && !m.ctrl
+}
+
 /// Editor state right after the last typed char: primary cursor position, whether
 /// it has a selection, extra cursor count and content version. Typing continues
 /// the current undo burst only while this is unchanged.
@@ -177,6 +213,10 @@ pub struct Editor {
     // ── Breadcrumbs ─────────────────────────────────────────────────────────
     /// Set true for one frame after an explicit Ctrl+S save, so the app can toast.
     pub just_saved: bool,
+    /// Ctrl+S on an untitled buffer: the app asks where to save it.
+    pub save_as_requested: bool,
+    /// Why the last Ctrl+S failed, for the app to report.
+    pub save_error: Option<String>,
     // ── Cursor blink ────────────────────────────────────────────────────────
     /// Epoch-ms of the last cursor movement / keypress, used to reset blink.
     cursor_blink_epoch: std::time::Instant,
@@ -277,6 +317,8 @@ impl Editor {
             fold_regions: Vec::new(),
             fold_regions_version: -1,
             just_saved: false,
+            save_as_requested: false,
+            save_error: None,
             line_diff: Vec::new(),
             line_diff_path: None,
             format_request_pending: false,
@@ -350,6 +392,86 @@ impl Editor {
         }
     }
 
+    /// Take the open document out of the editor, to keep a modified file in
+    /// memory while another tab is shown (see [`Editor::unpark`]). The editor is
+    /// left on an empty buffer for the caller to load the next file into.
+    pub fn park(&mut self) -> ParkedDoc {
+        // The emptied buffer must never be saved over the parked file.
+        self.is_modified = false;
+        ParkedDoc {
+            buffer: std::mem::replace(&mut self.buffer, Buffer::new()),
+            cursor: std::mem::replace(&mut self.cursor, Cursor::new()),
+            extra_cursors: std::mem::take(&mut self.extra_cursors),
+            text_format: self.text_format,
+            decoded_lossy: self.decoded_lossy,
+            scroll_offset: self.scroll_offset,
+        }
+    }
+
+    /// Show a parked document again as `path`: its text, undo history, cursors
+    /// and scroll come back as they were, still modified.
+    pub fn unpark(&mut self, doc: ParkedDoc, path: PathBuf) {
+        // Reset every per-file cache and pick the language, as for a fresh load.
+        self.set_content(String::new(), Some(path));
+        let (spaces, size) = detect_indent(&doc.buffer.to_string());
+        self.detected_indent_spaces = spaces;
+        self.detected_indent_size = size;
+        self.buffer = doc.buffer;
+        self.cursor = doc.cursor;
+        self.extra_cursors = doc.extra_cursors;
+        self.text_format = doc.text_format;
+        self.decoded_lossy = doc.decoded_lossy;
+        self.scroll_offset = doc.scroll_offset;
+        self.is_modified = true;
+    }
+
+    /// Apply language-server text edits (start line/col, end line/col, new
+    /// text), all expressed against the current text, as one undo step. Each
+    /// range is replaced exactly, whatever lines it spans; ranges past the end
+    /// of a line or of the document are clamped.
+    pub fn apply_text_edits(&mut self, mut edits: Vec<(u32, u32, u32, u32, String)>) {
+        if edits.is_empty() {
+            return;
+        }
+        // Bottom-to-top, so earlier ranges keep their positions.
+        edits.sort_by_key(|e| std::cmp::Reverse((e.0, e.1)));
+        self.buffer.checkpoint();
+        for (sl, sc, el, ec, new_text) in edits {
+            let start = self.clamped_char_index(sl as usize, sc as usize);
+            let end = self.clamped_char_index(el as usize, ec as usize).max(start);
+            self.buffer.delete_range(start, end);
+            // The buffer is LF-only (CRLF is re-applied on save).
+            let text = new_text.replace("\r\n", "\n");
+            let (row, col) = self.buffer.position_of(start);
+            self.buffer.insert_str(row, col, &text);
+        }
+        // Keep the cursors inside the new text.
+        let last = self.buffer.num_lines().saturating_sub(1);
+        let clamp = |c: &mut Cursor, buf: &Buffer| {
+            let row = c.row.min(last);
+            let col = c.col.min(buf.line_len(row));
+            c.clear_selection();
+            c.set_position(row, col);
+        };
+        clamp(&mut self.cursor, &self.buffer);
+        for c in &mut self.extra_cursors {
+            clamp(c, &self.buffer);
+        }
+        self.dedup_cursors();
+        self.is_modified = true;
+        self.content_version = self.content_version.wrapping_add(1);
+    }
+
+    /// Char index of (row, col), clamped to the line's length and to the end
+    /// of the document.
+    fn clamped_char_index(&self, row: usize, col: usize) -> usize {
+        if row >= self.buffer.num_lines() {
+            return self.buffer.rope_len();
+        }
+        self.buffer
+            .char_index(row, col.min(self.buffer.line_len(row)))
+    }
+
     /// Longest line length (chars), cached and recomputed only when the content
     /// changes — used to size the horizontal scrollbar and clamp horizontal scroll.
     /// Avoids an allocating O(file) scan every frame.
@@ -389,14 +511,27 @@ impl Editor {
         self.max_line_chars
     }
 
+    /// Write the buffer to its file. An untitled buffer has nowhere to go: that
+    /// is an error, never a silent success (see `save_as_requested`).
     pub fn save(&mut self) -> anyhow::Result<()> {
-        if let Some(path) = &self.current_path {
-            let bytes = text_format::encode(&self.buffer.to_string(), self.text_format);
-            std::fs::write(path, bytes)?;
-            self.is_modified = false;
-            self.invalidate_line_diff();
-        }
+        let Some(path) = &self.current_path else {
+            anyhow::bail!("untitled file: choose where to save it");
+        };
+        let bytes = text_format::encode(&self.buffer.to_string(), self.text_format);
+        std::fs::write(path, bytes)?;
+        self.is_modified = false;
+        self.invalidate_line_diff();
         Ok(())
+    }
+
+    /// Give the (untitled) buffer a file, picking its language from the name.
+    /// The text is kept; the caller then saves it.
+    pub fn set_path(&mut self, path: PathBuf) {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            self.highlighter.set_language_from_filename(name);
+        }
+        self.highlighter.invalidate();
+        self.current_path = Some(path);
     }
 
     fn typing_burst_state(&self) -> TypingBurstState {
@@ -1002,66 +1137,14 @@ impl Editor {
                                     text_typed = true;
                                 }
                                 egui::Event::Paste(text) => {
-                                    self.buffer.checkpoint();
-                                    // The paste is its own undo step: let its chars
-                                    // join the checkpoint above, not open a new one.
-                                    self.typing_burst = Some(self.typing_burst_state());
+                                    // Each paste is a single undo step.
                                     let cursor_count = 1 + self.extra_cursors.len();
                                     let lines: Vec<&str> = text.lines().collect();
-
                                     if cursor_count > 1 && lines.len() == cursor_count {
-                                        // Collect all cursor positions sorted top-to-bottom
-                                        let mut positions: Vec<(usize, usize, bool)> = vec![];
-                                        let (mr, mc) = self.cursor.position();
-                                        positions.push((mr, mc, true));
-                                        for ec in &self.extra_cursors {
-                                            let (er, ec_col) = ec.position();
-                                            positions.push((er, ec_col, false));
-                                        }
-                                        positions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-                                        // Insert in reverse order to preserve positions
-                                        for (sorted_idx, &(row, col, _)) in
-                                            positions.iter().enumerate().rev()
-                                        {
-                                            let line_text = lines[sorted_idx];
-                                            for (j, ch) in line_text.chars().enumerate() {
-                                                self.buffer.insert_char(row, col + j, ch);
-                                            }
-                                        }
-                                        // Update cursor positions (forward order)
-                                        for (sorted_idx, &(row, col, is_main)) in
-                                            positions.iter().enumerate()
-                                        {
-                                            let new_col = col + lines[sorted_idx].chars().count();
-                                            if is_main {
-                                                self.cursor.set_position(row, new_col);
-                                            } else {
-                                                for ec in &mut self.extra_cursors {
-                                                    let (er, ec_col) = ec.position();
-                                                    if er == row && ec_col == col {
-                                                        ec.set_position(row, new_col);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        self.is_modified = true;
-                                        self.content_version = self.content_version.wrapping_add(1);
+                                        // One line per cursor, top to bottom.
+                                        self.paste_lines_at_cursors(&lines);
                                     } else {
-                                        // Default: paste full text at each cursor. The
-                                        // buffer is LF-only (CRLF is re-applied on save),
-                                        // and pasted text keeps its own indentation.
-                                        for ch in text.chars() {
-                                            if ch == '\r' {
-                                                continue;
-                                            }
-                                            if ch == '\n' {
-                                                self.insert_newline_plain();
-                                            } else {
-                                                self.insert_pasted_char(ch);
-                                            }
-                                        }
+                                        self.paste_text_at_cursors(text);
                                     }
                                     // Typing after a paste starts a new undo step.
                                     self.typing_burst = None;
@@ -1109,12 +1192,13 @@ impl Editor {
                                                 self.insert_newline();
                                             }
                                         }
-                                        // Ctrl+Backspace / Ctrl+Delete — delete a whole word.
-                                        egui::Key::Backspace if modifiers.ctrl => {
+                                        // Ctrl+Backspace / Ctrl+Delete (Option on macOS) —
+                                        // delete a whole word.
+                                        egui::Key::Backspace if word_modifier(modifiers, MAC) => {
                                             self.delete_word(false);
                                             text_typed = true;
                                         }
-                                        egui::Key::Delete if modifiers.ctrl => {
+                                        egui::Key::Delete if word_modifier(modifiers, MAC) => {
                                             self.delete_word(true);
                                             text_typed = true;
                                         }
@@ -1282,10 +1366,31 @@ impl Editor {
                                             ac_nav = true;
                                         }
 
-                                        // Ctrl(+Shift)+Left/Right — jump (select) by word.
-                                        egui::Key::ArrowLeft
-                                            if modifiers.ctrl && !modifiers.alt =>
+                                        // macOS: Cmd(+Shift)+Left/Right — line start/end.
+                                        egui::Key::ArrowLeft | egui::Key::ArrowRight
+                                            if line_edge_modifier(modifiers, MAC) =>
                                         {
+                                            let to_end = *key == egui::Key::ArrowRight;
+                                            let select = modifiers.shift;
+                                            let buf = &self.buffer;
+                                            let cursors = std::iter::once(&mut self.cursor)
+                                                .chain(self.extra_cursors.iter_mut());
+                                            for c in cursors {
+                                                if select {
+                                                    c.start_selection();
+                                                } else {
+                                                    c.clear_selection();
+                                                }
+                                                let col =
+                                                    if to_end { buf.line_len(c.row) } else { 0 };
+                                                c.set_position(c.row, col);
+                                            }
+                                            self.dedup_cursors();
+                                            ac_dismiss = true;
+                                        }
+                                        // Ctrl(+Shift)+Left/Right (Option on macOS) — jump
+                                        // (select) by word.
+                                        egui::Key::ArrowLeft if word_modifier(modifiers, MAC) => {
                                             let select = modifiers.shift;
                                             self.cursor.move_word_left(&self.buffer, select);
                                             for ec in &mut self.extra_cursors {
@@ -1294,9 +1399,7 @@ impl Editor {
                                             self.dedup_cursors();
                                             ac_dismiss = true;
                                         }
-                                        egui::Key::ArrowRight
-                                            if modifiers.ctrl && !modifiers.alt =>
-                                        {
+                                        egui::Key::ArrowRight if word_modifier(modifiers, MAC) => {
                                             let select = modifiers.shift;
                                             self.cursor.move_word_right(&self.buffer, select);
                                             for ec in &mut self.extra_cursors {
@@ -1541,8 +1644,14 @@ impl Editor {
 
                                         // Save
                                         egui::Key::S if modifiers.ctrl => {
-                                            let _ = self.save();
-                                            self.just_saved = true;
+                                            if self.current_path.is_none() {
+                                                self.save_as_requested = true;
+                                            } else {
+                                                match self.save() {
+                                                    Ok(()) => self.just_saved = true,
+                                                    Err(e) => self.save_error = Some(e.to_string()),
+                                                }
+                                            }
                                         }
 
                                         // Undo
@@ -1929,46 +2038,9 @@ impl Editor {
 
                     if do_copy {
                         if !self.extra_cursors.is_empty() {
-                            let mut parts: Vec<String> = vec![];
-                            // Main cursor
-                            if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
-                                if sr == er {
-                                    let line = self.buffer.line(sr);
-                                    parts.push(line.chars().skip(sc).take(ec - sc).collect());
-                                } else {
-                                    // Multi-line selection: collect all lines
-                                    let mut text = String::new();
-                                    for r in sr..=er {
-                                        let l = self.buffer.line(r);
-                                        if r == sr {
-                                            text.push_str(&l.chars().skip(sc).collect::<String>());
-                                        } else if r == er {
-                                            text.push('\n');
-                                            text.push_str(&l.chars().take(ec).collect::<String>());
-                                        } else {
-                                            text.push('\n');
-                                            text.push_str(&l);
-                                        }
-                                    }
-                                    parts.push(text);
-                                }
-                            } else {
-                                parts.push(self.buffer.line(self.cursor.row).to_string());
-                            }
-                            // Extra cursors
-                            for extra in &self.extra_cursors {
-                                if let Some(((sr, sc), (er, ec))) = extra.selection_range() {
-                                    if sr == er {
-                                        let line = self.buffer.line(sr);
-                                        parts.push(line.chars().skip(sc).take(ec - sc).collect());
-                                    } else {
-                                        parts.push(self.buffer.line(sr).to_string());
-                                    }
-                                } else {
-                                    parts.push(self.buffer.line(extra.row).to_string());
-                                }
-                            }
-                            ui.ctx().copy_text(parts.join("\n"));
+                            // One part per cursor, top to bottom (the order a
+                            // multi-cursor paste distributes them in).
+                            ui.ctx().copy_text(self.cursor_texts().join("\n"));
                         } else {
                             let text = self.selected_text().unwrap_or_else(|| {
                                 let (row, _) = self.cursor.position();
@@ -1978,7 +2050,12 @@ impl Editor {
                         }
                     }
                     if do_cut {
-                        if let Some(text) = self.selected_text() {
+                        if !self.extra_cursors.is_empty() {
+                            if self.all_cursors_have_selection() {
+                                ui.ctx().copy_text(self.cursor_texts().join("\n"));
+                                self.cut_selections();
+                            }
+                        } else if let Some(text) = self.selected_text() {
                             ui.ctx().copy_text(text);
                             self.buffer.checkpoint();
                             self.delete_selection();
@@ -2529,8 +2606,8 @@ impl Editor {
                             DIFF_MODIFIED => Some(palette.git_modified),
                             _ => None,
                         };
+                        let bar_x = rect.min.x + blame_extra_width;
                         if let Some(color) = bar_color {
-                            let bar_x = rect.min.x + blame_extra_width;
                             painter.rect_filled(
                                 egui::Rect::from_min_size(
                                     egui::pos2(bar_x, y + 1.0),
@@ -2539,6 +2616,17 @@ impl Editor {
                                 0.0,
                                 color,
                             );
+                        } else if diff_status == diff::DIFF_DELETED_ABOVE {
+                            // Lines removed just above: a small wedge on the line's top edge.
+                            painter.add(egui::Shape::convex_polygon(
+                                vec![
+                                    egui::pos2(bar_x, y - 3.0),
+                                    egui::pos2(bar_x + 5.0, y),
+                                    egui::pos2(bar_x, y + 3.0),
+                                ],
+                                palette.git_removed,
+                                egui::Stroke::NONE,
+                            ));
                         }
                     }
 
@@ -3727,6 +3815,69 @@ mod tests {
     }
 
     #[test]
+    fn park_and_unpark_keep_text_cursor_undo_and_format() {
+        let mut ed = editor_with("");
+        let a = PathBuf::from("/w/a.rs");
+        ed.set_content("one\r\ntwo\r\n".to_string(), Some(a.clone()));
+        ed.cursor.set_position(1, 3);
+        ed.insert_char('!', false);
+        assert!(ed.is_modified);
+        let doc = ed.park();
+        assert_eq!(doc.encoded(), b"one\r\ntwo!\r\n", "CRLF kept for saving");
+        assert!(
+            !ed.is_modified,
+            "the emptied editor is never saved over a.rs"
+        );
+
+        // Another file is shown in between.
+        ed.set_content("other".to_string(), Some(PathBuf::from("/w/b.rs")));
+        ed.unpark(doc, a.clone());
+        assert_eq!(ed.current_path.as_deref(), Some(a.as_path()));
+        assert_eq!(ed.buffer.to_string(), "one\ntwo!\n");
+        assert_eq!(ed.cursor.position(), (1, 4));
+        assert!(ed.is_modified);
+        assert!(ed.buffer.undo(), "undo history came back too");
+        assert_eq!(ed.buffer.to_string(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn multi_line_text_edits_replace_exactly_their_range() {
+        let mut ed = editor_with("fn foo(\n    a: i32,\n) {}\n");
+        // rustfmt joining the parameter list: (0,7)-(1,4) and (1,11)-(2,0) -> "".
+        ed.apply_text_edits(vec![
+            (0, 7, 1, 4, String::new()),
+            (1, 11, 2, 0, String::new()),
+        ]);
+        assert_eq!(ed.buffer.to_string(), "fn foo(a: i32,) {}\n");
+        assert!(ed.is_modified);
+        assert!(ed.buffer.undo(), "one undo step for the whole format");
+        assert_eq!(ed.buffer.to_string(), "fn foo(\n    a: i32,\n) {}\n");
+    }
+
+    #[test]
+    fn whole_document_text_edit_keeps_nothing_of_the_old_text() {
+        let mut ed = editor_with("let  x=1;\nlet y =2;");
+        ed.cursor.set_position(1, 9);
+        // Range past the last line, as servers send for "whole document";
+        // CRLF in the new text becomes LF (re-applied on save).
+        let new = "let x = 1;\r\nlet y = 2;\n".to_string();
+        ed.apply_text_edits(vec![(0, 0, 5, 0, new)]);
+        assert_eq!(ed.buffer.to_string(), "let x = 1;\nlet y = 2;\n");
+        let (row, col) = ed.cursor.position();
+        assert!(
+            col <= ed.buffer.line_len(row),
+            "cursor stays inside the text"
+        );
+    }
+
+    #[test]
+    fn single_line_text_edits_apply_bottom_to_top() {
+        let mut ed = editor_with("a=1\nb=2");
+        ed.apply_text_edits(vec![(0, 1, 0, 2, " = ".into()), (1, 1, 1, 2, " = ".into())]);
+        assert_eq!(ed.buffer.to_string(), "a = 1\nb = 2");
+    }
+
+    #[test]
     fn save_writes_buffer_and_clears_modified_flag() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.rs");
@@ -3777,11 +3928,24 @@ mod tests {
     }
 
     #[test]
-    fn save_without_path_is_a_noop() {
+    fn save_without_path_is_an_error_not_a_silent_success() {
         let mut ed = editor_with("abc");
         ed.is_modified = true;
-        ed.save().unwrap();
+        assert!(ed.save().is_err());
         assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn set_path_names_an_untitled_buffer_and_keeps_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.md");
+        let mut ed = editor_with("draft");
+        ed.is_modified = true;
+        ed.set_path(path.clone());
+        assert_eq!(ed.buffer.to_string(), "draft");
+        ed.save().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "draft");
+        assert!(!ed.is_modified);
     }
 
     #[test]
@@ -3803,6 +3967,8 @@ mod tests {
     const SHIFT: Modifiers = Modifiers::SHIFT;
     const ALT: Modifiers = Modifiers::ALT;
     const NONE: Modifiers = Modifiers::NONE;
+    /// The platform's move/delete-by-word modifier: Option on macOS, Ctrl elsewhere.
+    const WORD: Modifiers = if MAC { ALT } else { CTRL };
 
     fn mods(list: &[Modifiers]) -> Modifiers {
         list.iter().fold(NONE, |a, &b| a | b)
@@ -4501,29 +4667,47 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_arrows_jump_and_select_by_word() {
+    fn word_and_line_edge_modifiers_follow_the_platform() {
+        let opt = Modifiers::ALT;
+        let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        // macOS: Option moves by word, Cmd jumps to the line edges.
+        assert!(word_modifier(&opt, true));
+        assert!(word_modifier(&(opt | SHIFT), true), "Option+Shift selects");
+        assert!(!word_modifier(&CTRL, true));
+        assert!(line_edge_modifier(&cmd, true));
+        assert!(!line_edge_modifier(&opt, true));
+        // Elsewhere: Ctrl moves by word, Alt stays free for back/forward.
+        assert!(word_modifier(&CTRL, false));
+        assert!(word_modifier(&(CTRL | SHIFT), false));
+        assert!(!word_modifier(&opt, false));
+        assert!(!word_modifier(&(CTRL | ALT), false));
+        assert!(!line_edge_modifier(&cmd, false));
+    }
+
+    #[test]
+    fn word_arrows_jump_and_select_by_word() {
         let (mut h, mut ed) = setup("let foo_bar = 1;\nnext");
         ed.cursor.set_position(0, 4);
-        h.press(&mut ed, Key::ArrowRight, CTRL);
+        h.press(&mut ed, Key::ArrowRight, WORD);
         assert_eq!(ed.cursor.position(), (0, 11), "crosses the whole word");
-        h.press(&mut ed, Key::ArrowLeft, CTRL);
+        h.press(&mut ed, Key::ArrowLeft, WORD);
         assert_eq!(ed.cursor.position(), (0, 4));
-        h.press(&mut ed, Key::ArrowRight, mods(&[CTRL, SHIFT]));
+        h.press(&mut ed, Key::ArrowRight, mods(&[WORD, SHIFT]));
         assert_eq!(ed.selected_text().as_deref(), Some("foo_bar"));
         ed.cursor.clear_selection();
         ed.cursor.set_position(0, 16);
-        h.press(&mut ed, Key::ArrowRight, CTRL);
+        h.press(&mut ed, Key::ArrowRight, WORD);
         assert_eq!(ed.cursor.position(), (1, 0), "line end wraps to next line");
     }
 
     #[test]
-    fn ctrl_backspace_and_delete_remove_a_word() {
+    fn word_backspace_and_delete_remove_a_word() {
         let (mut h, mut ed) = setup("foo bar baz");
         ed.cursor.set_position(0, 7);
-        h.press(&mut ed, Key::Backspace, CTRL);
+        h.press(&mut ed, Key::Backspace, WORD);
         assert_eq!(ed.buffer.to_string(), "foo  baz");
         assert_eq!(ed.cursor.position(), (0, 4));
-        h.press(&mut ed, Key::Delete, CTRL);
+        h.press(&mut ed, Key::Delete, WORD);
         assert_eq!(ed.buffer.to_string(), "foo ");
         // One undo step per word deletion.
         assert!(ed.buffer.undo());
@@ -4531,11 +4715,11 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_backspace_deletes_at_every_cursor() {
+    fn word_backspace_deletes_at_every_cursor() {
         let (mut h, mut ed) = setup("one two\nthree four");
         ed.cursor.set_position(0, 7);
         ed.extra_cursors.push(extra(1, 10));
-        h.press(&mut ed, Key::Backspace, CTRL);
+        h.press(&mut ed, Key::Backspace, WORD);
         assert_eq!(ed.buffer.to_string(), "one \nthree ");
         assert_eq!(ed.cursor.position(), (0, 4));
         assert_eq!(ed.extra_cursors[0].position(), (1, 6));
@@ -4768,14 +4952,15 @@ mod tests {
         multi.sel_anchor = Some((2, 0));
         ed.extra_cursors.push(multi);
         let out = h.press(&mut ed, Key::C, CTRL);
-        assert_eq!(copied(&out).as_deref(), Some("bc\ndef\ng\njkl\nghi"));
+        // Top to bottom (the order paste distributes in), each selection exact.
+        assert_eq!(copied(&out).as_deref(), Some("bc\ndef\ng\nghi\njk\njkl"));
 
-        // Primary without selection copies its whole line.
+        // A cursor without selection copies its whole line.
         ed.cursor.clear_selection();
         ed.cursor.set_position(1, 0);
         ed.extra_cursors = vec![extra(0, 0)];
         let out = h.press(&mut ed, Key::C, CTRL);
-        assert_eq!(copied(&out).as_deref(), Some("def\nabc"));
+        assert_eq!(copied(&out).as_deref(), Some("abc\ndef"));
     }
 
     #[test]
@@ -4827,6 +5012,28 @@ mod tests {
         assert!(ed.just_saved);
         assert!(!ed.is_modified);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+    }
+
+    #[test]
+    fn ctrl_s_on_untitled_asks_where_to_save_instead_of_claiming_success() {
+        let (mut h, mut ed) = setup_path("", None);
+        h.type_text(&mut ed, "x");
+        h.press(&mut ed, Key::S, CTRL);
+        assert!(!ed.just_saved, "no \"Saved\" toast");
+        assert!(ed.save_as_requested);
+        assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn ctrl_s_reports_a_failed_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing_dir").join("f.rs");
+        let (mut h, mut ed) = setup_path("", Some(path));
+        h.type_text(&mut ed, "x");
+        h.press(&mut ed, Key::S, CTRL);
+        assert!(!ed.just_saved);
+        assert!(ed.save_error.is_some());
+        assert!(ed.is_modified);
     }
 
     #[test]

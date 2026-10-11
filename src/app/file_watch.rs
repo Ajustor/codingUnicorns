@@ -221,7 +221,7 @@ pub fn normalize_text(s: &str) -> String {
 }
 
 /// Whether the file at `path` holds `text` (modulo BOM / line endings).
-fn disk_matches(path: &Path, text: &str) -> bool {
+pub(super) fn disk_matches(path: &Path, text: &str) -> bool {
     std::fs::read_to_string(path).is_ok_and(|disk| normalize_text(&disk) == normalize_text(text))
 }
 
@@ -255,7 +255,8 @@ pub fn decide(
         None if was_deleted => DiskAction::None,
         None => DiskAction::MarkDeleted,
         Some(now) if recorded == Some(now) => DiskAction::None,
-        // Inactive tabs are re-read from disk when activated.
+        // Inactive tabs are re-read from disk when activated (unsaved ones are
+        // parked in memory and skipped by the caller).
         Some(_) if !is_active => DiskAction::AcceptStamp,
         Some(_) if same_content() => DiskAction::AcceptStamp,
         Some(_) if !modified => DiskAction::Reload,
@@ -402,6 +403,11 @@ impl CodingUnicorns {
                 self.tab_manager.set_deleted(&path, false);
             }
             let is_active = self.editor.current_path.as_deref() == Some(path.as_path());
+            if now.is_some() && !is_active && self.parked_docs.contains_key(&path) {
+                // Unsaved edits wait in memory: keep the old stamp so the change
+                // made on disk is raised once the tab is back (or on quit).
+                continue;
+            }
             let action = decide(
                 self.file_watch.stamps.get(&path).copied(),
                 now,
@@ -440,8 +446,15 @@ impl CodingUnicorns {
     /// and without stealing keyboard focus.
     fn reload_from_disk(&mut self, path: PathBuf) {
         let focus = self.editor.focus_requested;
-        self.open_file(path);
+        self.open_file_with(path, true);
         self.editor.focus_requested = focus;
+    }
+
+    /// True when a parked (unsaved, inactive) file changed on disk since it
+    /// was loaded or saved.
+    pub(super) fn parked_changed_on_disk(&self, path: &Path) -> bool {
+        FileStamp::of(path)
+            .is_some_and(|now| self.file_watch.stamps.get(path).is_some_and(|s| *s != now))
     }
 
     /// True when saving the editor to `path` would overwrite changes made on
@@ -473,6 +486,13 @@ impl CodingUnicorns {
     /// is false for auto-saves. Returns true if the file was written.
     pub fn save_editor_guarded(&mut self, explicit: bool) -> bool {
         let path = self.editor.current_path.clone();
+        if path.is_none() {
+            // Untitled: nothing was written. An explicit save asks where to.
+            if explicit {
+                self.request_save_as();
+            }
+            return false;
+        }
         if let Some(path) = &path {
             if self.has_disk_conflict(path) {
                 let on_save = explicit
@@ -498,10 +518,14 @@ impl CodingUnicorns {
     /// The editor saves itself on Ctrl+S; swallow that key when the save would
     /// overwrite external changes and ask instead.
     fn intercept_conflicting_save(&mut self, ctx: &egui::Context) {
-        if self.editor2.is_some() && self.active_pane == 1 {
+        if !ctx.input(|i| i.events.iter().any(is_ctrl_s)) {
             return;
         }
-        if !ctx.input(|i| i.events.iter().any(is_ctrl_s)) {
+        if self.editor2.is_some() && self.active_pane == 1 {
+            // The right pane saves on its own: never over a newer version.
+            if !self.pane2_save_allowed() {
+                ctx.input_mut(|i| i.events.retain(|e| !is_ctrl_s(e)));
+            }
             return;
         }
         let Some(path) = self.editor.current_path.clone() else {

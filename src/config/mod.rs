@@ -113,7 +113,9 @@ impl KeyBinding {
     }
 }
 
+/// Missing bindings (an older config, a hand-edited one) take their default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct KeyBindings {
     pub new_file: KeyBinding,
     pub open_folder: KeyBinding,
@@ -218,7 +220,10 @@ impl Default for KeyBindings {
     }
 }
 
+/// Missing sections and fields take their default, so a partial file keeps
+/// everything it does set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub theme: Theme,
     pub editor: EditorConfig,
@@ -322,6 +327,7 @@ fn default_claude_binary() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Theme {
     pub name: String,
     pub background: [u8; 3],
@@ -329,7 +335,19 @@ pub struct Theme {
     pub accent: [u8; 3],
 }
 
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            name: "dark".to_string(),
+            background: [30, 30, 30],
+            foreground: [212, 212, 212],
+            accent: [0, 122, 204],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EditorConfig {
     pub tab_size: usize,
     pub insert_spaces: bool,
@@ -346,40 +364,48 @@ pub struct EditorConfig {
     pub highlight_current_line: bool,
 }
 
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            tab_size: 4,
+            insert_spaces: true,
+            word_wrap: false,
+            line_numbers: true,
+            auto_save: false,
+            auto_close_brackets: true,
+            show_gitignored: false,
+            show_minimap: true,
+            highlight_current_line: true,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FontConfig {
     pub size: f32,
     pub family: String,
 }
 
+impl Default for FontConfig {
+    fn default() -> Self {
+        Self {
+            size: 14.0,
+            family: "monospace".to_string(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
-            theme: Theme {
-                name: "dark".to_string(),
-                background: [30, 30, 30],
-                foreground: [212, 212, 212],
-                accent: [0, 122, 204],
-            },
-            editor: EditorConfig {
-                tab_size: 4,
-                insert_spaces: true,
-                word_wrap: false,
-                line_numbers: true,
-                auto_save: false,
-                auto_close_brackets: true,
-                show_gitignored: false,
-                show_minimap: true,
-                highlight_current_line: true,
-            },
-            font: FontConfig {
-                size: 14.0,
-                family: "monospace".to_string(),
-            },
+            theme: Theme::default(),
+            editor: EditorConfig::default(),
+            font: FontConfig::default(),
             keybindings: KeyBindings::default(),
             last_workspace: None,
             last_file: None,
@@ -409,11 +435,31 @@ impl Config {
     }
 
     fn load_from(path: &std::path::Path) -> Self {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            toml::from_str(&content).unwrap_or_default()
-        } else {
-            Self::default()
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        match toml::from_str(&content) {
+            Ok(config) => config,
+            Err(e) => {
+                // The next save rewrites the file with defaults: keep a copy
+                // of what the user had so nothing is lost for good.
+                let backup = Self::invalid_backup_path(path);
+                log::warn!(
+                    "Invalid config {}: {e}; using defaults, previous file kept as {}",
+                    path.display(),
+                    backup.display()
+                );
+                let _ = std::fs::write(&backup, &content);
+                Self::default()
+            }
         }
+    }
+
+    /// Where [`Self::load_from`] keeps an unreadable config (`config.toml.invalid`).
+    fn invalid_backup_path(path: &std::path::Path) -> PathBuf {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(".invalid");
+        path.with_file_name(name)
     }
 
     pub fn save(&self) {
@@ -769,8 +815,20 @@ mod tests {
     }
 
     #[test]
-    fn config_missing_required_section_fails_to_parse() {
-        assert!(toml::from_str::<Config>("[theme]\nname = \"x\"").is_err());
+    fn partial_config_keeps_what_it_sets() {
+        let c: Config = toml::from_str(
+            "recent_workspaces = [\"/w\"]\n[theme]\nname = \"x\"\n[editor]\ntab_size = 2\n\
+             [keybindings.save]\nkey = \"F2\"\nctrl = false\nshift = false\nalt = false\n",
+        )
+        .unwrap();
+        assert_eq!(c.theme.name, "x");
+        assert_eq!(c.theme.accent, Theme::default().accent);
+        assert_eq!(c.editor.tab_size, 2);
+        assert!(c.editor.insert_spaces);
+        assert_eq!(c.font.size, 14.0);
+        assert_eq!(c.recent_workspaces, ["/w"]);
+        assert_eq!(c.keybindings.save.display(), "F2");
+        assert_eq!(c.keybindings.find.display(), "Ctrl+F");
     }
 
     #[test]
@@ -798,6 +856,12 @@ mod tests {
         let c = Config::load_from(&corrupt);
         assert_eq!(c.font.size, 14.0);
         assert_eq!(c.claude_binary, "claude");
+        // The unreadable file is kept before a save overwrites it.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("bad.toml.invalid")).unwrap(),
+            "this is = = not toml ["
+        );
+        assert!(!dir.path().join("nope.toml.invalid").exists());
     }
 
     #[test]

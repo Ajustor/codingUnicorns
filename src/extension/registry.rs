@@ -172,23 +172,35 @@ impl ExtensionRegistry {
             .iter()
             .position(|e| e.manifest.extension.id == id)
         {
-            let ext = self.installed.remove(pos);
-            std::fs::remove_dir_all(&ext.path)?;
+            // Keep the entry while its files are still there (a DLL still
+            // locked on Windows), so the module stays listed and can be retried.
+            match std::fs::remove_dir_all(&self.installed[pos].path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            self.installed.remove(pos);
         }
         Ok(())
     }
 }
 
-/// Returns true if `a` is a strictly greater semver than `b`.
+/// Returns true if `a` is a strictly greater semver than `b` (pre-releases
+/// sort before their release). A leading `v` and missing minor/patch numbers
+/// are accepted; anything unparsable counts as `0.0.0`.
 pub(crate) fn version_gt(a: &str, b: &str) -> bool {
-    fn parse(v: &str) -> (u32, u32, u32) {
-        let mut parts = v.trim().splitn(3, '.');
-        let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        (major, minor, patch)
-    }
-    parse(a) > parse(b)
+    // Precedence ignores build metadata (`+build.5`), unlike `Ord`.
+    parse_version(a).cmp_precedence(&parse_version(b)) == std::cmp::Ordering::Greater
+}
+
+fn parse_version(v: &str) -> semver::Version {
+    let v = v.trim();
+    let v = v.strip_prefix(['v', 'V']).unwrap_or(v);
+    let core_end = v.find(['-', '+']).unwrap_or(v.len());
+    let (core, rest) = v.split_at(core_end);
+    let missing = 2usize.saturating_sub(core.matches('.').count());
+    let full = format!("{core}{}{rest}", ".0".repeat(missing));
+    semver::Version::parse(&full).unwrap_or(semver::Version::new(0, 0, 0))
 }
 
 impl Default for ExtensionRegistry {
@@ -390,17 +402,30 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_reports_fs_errors() {
+    fn uninstall_of_a_missing_directory_drops_the_entry() {
         let mut r = registry(Path::new("unused"));
         let mut e = r_dummy();
         e.manifest.extension.id = "ghost".into();
         e.path = std::env::temp_dir().join(format!("cu-missing-{}", uuid::Uuid::new_v4()));
         r.installed.push(e);
-        assert!(r.uninstall("ghost").is_err());
-        assert!(
-            !r.is_installed("ghost"),
-            "entry removed even if delete fails"
-        );
+        r.uninstall("ghost").unwrap();
+        assert!(!r.is_installed("ghost"));
+    }
+
+    #[test]
+    fn uninstall_keeps_the_entry_when_delete_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A file where the module directory should be: remove_dir_all fails.
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+        let mut r = registry(tmp.path());
+        let mut e = r_dummy();
+        e.manifest.extension.id = "stuck".into();
+        e.path = file.clone();
+        r.installed.push(e);
+        assert!(r.uninstall("stuck").is_err());
+        assert!(r.is_installed("stuck"), "entry kept so it can be retried");
+        assert!(file.exists());
     }
 
     #[test]
@@ -413,6 +438,18 @@ mod tests {
         assert!(!version_gt("1.0.0", "1.0.1"));
         assert!(!version_gt("garbage", "0.0.0"));
         assert!(version_gt("1", "0.9"));
+    }
+
+    #[test]
+    fn version_gt_handles_prereleases_and_v_prefix() {
+        assert!(version_gt("1.2.10-rc.1", "1.2.9"));
+        assert!(version_gt("1.0.0", "1.0.0-rc.1"));
+        assert!(!version_gt("1.0.0-rc.1", "1.0.0"));
+        assert!(version_gt("1.0.0-rc.2", "1.0.0-rc.1"));
+        assert!(version_gt("v1.3.0", "1.2.0"));
+        assert!(!version_gt("v1.3.0", "1.3.0"));
+        assert!(version_gt("V2", "1.9.9"));
+        assert!(!version_gt("1.0.0+build.5", "1.0.0"));
     }
 
     fn with_source(

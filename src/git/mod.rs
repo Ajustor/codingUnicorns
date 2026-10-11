@@ -33,6 +33,8 @@ pub struct FileStatus {
     pub path: String,
     pub index_status: FileChangeKind,
     pub wt_status: FileChangeKind,
+    /// Unmerged path (git's CONFLICTED state), to resolve in the merge view.
+    pub conflicted: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -61,7 +63,32 @@ pub struct GitStatus {
     watch: Option<watch::RepoWatch>,
     /// Background refresh in flight (see [`Self::refresh_if_changed`]).
     refreshing: Option<std::sync::mpsc::Receiver<GitStatus>>,
+    /// Push / pull / fetch in flight (see [`Self::start_remote`]).
+    remote: Option<(RemoteOp, std::sync::mpsc::Receiver<RemoteDone>)>,
 }
+
+/// A network operation, run off the UI thread: it can take as long as the
+/// network or a credential prompt does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteOp {
+    Push,
+    Pull,
+    Fetch,
+}
+
+impl RemoteOp {
+    /// What the panel shows while it runs.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Push => "Pushing…",
+            Self::Pull => "Pulling…",
+            Self::Fetch => "Fetching…",
+        }
+    }
+}
+
+/// The outcome of a [`RemoteOp`] and the repository status after it.
+type RemoteDone = (Result<(), String>, GitStatus);
 
 impl GitStatus {
     pub fn new() -> Self {
@@ -77,7 +104,65 @@ impl GitStatus {
             stashes: vec![],
             watch: None,
             refreshing: None,
+            remote: None,
         }
+    }
+
+    /// Start `op` on its own thread. False when another one is running or
+    /// there is no repository. Its result arrives through [`Self::poll_remote`].
+    pub fn start_remote(&mut self, op: RemoteOp) -> bool {
+        let Some(path) = self.repo_path.clone() else {
+            return false;
+        };
+        if self.remote.is_some() {
+            return false;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("git-remote".into())
+            .spawn(move || {
+                let mut git = GitStatus::new();
+                git.repo_path = Some(path);
+                let result = match op {
+                    RemoteOp::Push => git.push(),
+                    RemoteOp::Pull => git.pull(),
+                    RemoteOp::Fetch => git.fetch(),
+                };
+                // The operations refresh on success; a failed pull may have
+                // left conflicts to show too.
+                git.refresh();
+                let _ = tx.send((result, git));
+            });
+        if spawned.is_err() {
+            return false;
+        }
+        self.remote = Some((op, rx));
+        true
+    }
+
+    /// The network operation in flight, if any.
+    pub fn remote_busy(&self) -> Option<RemoteOp> {
+        self.remote.as_ref().map(|(op, _)| *op)
+    }
+
+    /// Apply the finished network operation, if any: its status, and its error
+    /// in `last_error`. Returns the operation that finished.
+    pub fn poll_remote(&mut self) -> Option<RemoteOp> {
+        let (op, rx) = self.remote.as_ref()?;
+        let op = *op;
+        let (result, fresh) = match rx.try_recv() {
+            Ok(done) => done,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.remote = None;
+                self.last_error = Some(format!("{op:?} stopped unexpectedly"));
+                return Some(op);
+            }
+        };
+        self.remote = None;
+        self.adopt(fresh);
+        self.last_error = result.err();
+        Some(op)
     }
 
     /// Open the git repository. Centralizes the discover+error pattern.
@@ -87,6 +172,12 @@ impl GitStatus {
             .as_ref()
             .ok_or_else(|| "No repository path".to_string())?;
         git2::Repository::discover(repo_path).map_err(|e| format!("Repo error: {e}"))
+    }
+
+    /// Root of the repository's working tree: status paths are relative to it,
+    /// not to the opened folder (which may be a subfolder).
+    pub fn workdir(&self) -> Option<PathBuf> {
+        self.open_repo().ok()?.workdir().map(|p| p.to_path_buf())
     }
 
     pub fn load(&mut self, path: PathBuf) {
@@ -166,6 +257,7 @@ impl GitStatus {
                             path,
                             index_status,
                             wt_status,
+                            conflicted: st.contains(git2::Status::CONFLICTED),
                         })
                     })
                     .collect();
@@ -408,6 +500,18 @@ pub(crate) mod tests {
         let r = TestRepo::new();
         s.repo_path = Some(r.path().to_path_buf());
         assert!(s.open_repo().is_ok());
+    }
+
+    #[test]
+    fn workdir_is_the_repository_root_from_a_subfolder() {
+        let r = TestRepo::new();
+        r.write("sub/a.txt", "1");
+        let mut s = GitStatus::new();
+        assert!(s.workdir().is_none());
+        s.repo_path = Some(r.path().join("sub"));
+        let root = s.workdir().unwrap();
+        assert!(root.join("sub/a.txt").exists());
+        assert!(!root.join("a.txt").exists());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::git::{BranchInfo, FileChangeKind, GitStatus};
+use crate::git::{BranchInfo, FileChangeKind, GitStatus, RemoteOp};
 use egui_phosphor::regular;
 
 /// The inline branch dialog shown under the BRANCHES header, if any.
@@ -20,10 +20,6 @@ pub struct GitPanel {
     focus_branch_input: bool,
     /// Optional message for the next "Stash changes".
     pub stash_message: String,
-    /// Cached conflict file paths to avoid reading files every frame.
-    cached_conflict_files: Vec<String>,
-    /// Number of files when cache was last computed.
-    conflict_cache_file_count: usize,
 }
 
 impl GitPanel {
@@ -35,8 +31,6 @@ impl GitPanel {
             checkout_new_branch: true,
             focus_branch_input: false,
             stash_message: String::new(),
-            cached_conflict_files: vec![],
-            conflict_cache_file_count: 0,
         }
     }
 
@@ -77,30 +71,34 @@ impl GitPanel {
                     Err(e) => git.last_error = Some(e),
                 }
             }
-            if ui.button("Push").clicked() {
-                if let Err(e) = git.push() {
-                    git.last_error = Some(e);
-                } else {
-                    git.last_error = None;
-                }
+            // Network operations run on their own thread: the editor stays
+            // responsive however long the network or a credential prompt takes.
+            git.poll_remote();
+            let idle = git.remote_busy().is_none();
+            let mut start = None;
+            if ui.add_enabled(idle, egui::Button::new("Push")).clicked() {
+                start = Some(RemoteOp::Push);
             }
-            if ui.button("Pull").clicked() {
-                if let Err(e) = git.pull() {
-                    git.last_error = Some(e);
-                } else {
-                    git.last_error = None;
-                }
+            if ui.add_enabled(idle, egui::Button::new("Pull")).clicked() {
+                start = Some(RemoteOp::Pull);
             }
             if ui
-                .button("Fetch")
+                .add_enabled(idle, egui::Button::new("Fetch"))
                 .on_hover_text("Fetch origin and update ahead/behind counts")
                 .clicked()
             {
-                if let Err(e) = git.fetch() {
-                    git.last_error = Some(e);
-                } else {
-                    git.last_error = None;
-                }
+                start = Some(RemoteOp::Fetch);
+            }
+            if let Some(op) = start {
+                git.last_error = None;
+                git.start_remote(op);
+            }
+            if let Some(op) = git.remote_busy() {
+                ui.spinner();
+                ui.label(egui::RichText::new(op.label()).small());
+                // Keep polling for the result while nothing else repaints.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
             }
         });
 
@@ -734,30 +732,10 @@ impl GitPanel {
         });
     }
 
-    /// Check whether a file (given by relative path) contains git conflict markers.
-    fn has_conflict_markers(repo_path: Option<&std::path::PathBuf>, rel_path: &str) -> bool {
-        if let Some(root) = repo_path {
-            let full = root.join(rel_path);
-            if let Ok(content) = std::fs::read_to_string(&full) {
-                return content.contains("<<<<<<<");
-            }
-        }
-        false
-    }
-
     pub fn show_conflicts(&mut self, ui: &mut egui::Ui, git: &mut GitStatus) -> Option<String> {
-        // Only rescan for conflict markers when the file list changes
-        let file_count = git.files.len();
-        if file_count != self.conflict_cache_file_count {
-            self.conflict_cache_file_count = file_count;
-            self.cached_conflict_files = git
-                .files
-                .iter()
-                .filter(|f| Self::has_conflict_markers(git.repo_path.as_ref(), &f.path))
-                .map(|f| f.path.clone())
-                .collect();
-        }
-        let conflict_files = &self.cached_conflict_files;
+        // Git's own unmerged state: always current after a reload, and a file
+        // that merely contains `<<<<<<<` is not a conflict.
+        let conflict_files = conflicted_paths(git);
 
         if conflict_files.is_empty() {
             return None;
@@ -774,7 +752,7 @@ impl GitPanel {
         });
 
         let mut open_path: Option<String> = None;
-        for path in conflict_files {
+        for path in &conflict_files {
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new("!")
@@ -792,6 +770,15 @@ impl GitPanel {
         }
         open_path
     }
+}
+
+/// Paths git reports as unmerged.
+fn conflicted_paths(git: &GitStatus) -> Vec<String> {
+    git.files
+        .iter()
+        .filter(|f| f.conflicted)
+        .map(|f| f.path.clone())
+        .collect()
 }
 
 /// Small frameless icon button with a tooltip, for per-row actions.

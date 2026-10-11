@@ -226,43 +226,46 @@ impl DapClient {
     }
 
     pub fn continue_execution(&mut self, thread_id: i64) {
-        let seq = self.next_seq();
-        let _ = self.transport.send(&json!({
-            "seq": seq,
-            "type": "request",
-            "command": "continue",
-            "arguments": { "threadId": thread_id }
-        }));
+        self.resume("continue", thread_id);
     }
 
     pub fn next_step(&mut self, thread_id: i64) {
-        let seq = self.next_seq();
-        let _ = self.transport.send(&json!({
-            "seq": seq,
-            "type": "request",
-            "command": "next",
-            "arguments": { "threadId": thread_id }
-        }));
+        self.resume("next", thread_id);
     }
 
     pub fn step_in(&mut self, thread_id: i64) {
-        let seq = self.next_seq();
-        let _ = self.transport.send(&json!({
-            "seq": seq,
-            "type": "request",
-            "command": "stepIn",
-            "arguments": { "threadId": thread_id }
-        }));
+        self.resume("stepIn", thread_id);
     }
 
     pub fn step_out(&mut self, thread_id: i64) {
+        self.resume("stepOut", thread_id);
+    }
+
+    /// Send a request that lets the program run (`continue`, `next`…). Most
+    /// adapters (lldb-dap, codelldb…) send no `continued` event for it, as the
+    /// spec allows: the session is running from now on, until the next stop.
+    fn resume(&mut self, command: &str, thread_id: i64) {
         let seq = self.next_seq();
         let _ = self.transport.send(&json!({
             "seq": seq,
             "type": "request",
-            "command": "stepOut",
+            "command": command,
             "arguments": { "threadId": thread_id }
         }));
+        self.mark_running();
+    }
+
+    /// The program runs again: the paused stack, scopes and variables are
+    /// stale, and late answers to their requests must not bring them back.
+    fn mark_running(&mut self) {
+        self.state = DebugSessionState::Running;
+        self.call_stack.clear();
+        self.selected_frame = 0;
+        self.scopes.clear();
+        self.children.clear();
+        self.pending_stack_seq = None;
+        self.pending_scopes_seq = None;
+        self.pending_vars.clear();
     }
 
     pub fn pause(&mut self, thread_id: i64) {
@@ -444,7 +447,7 @@ impl DapClient {
                             }));
                         }
                         "continued" => {
-                            self.state = DebugSessionState::Running;
+                            self.mark_running();
                         }
                         "terminated" | "exited" => {
                             self.state = DebugSessionState::Terminated;
@@ -1427,6 +1430,34 @@ mod tests {
         h.client.poll();
         assert_eq!(h.client.children[&3].len(), 100);
         assert_eq!(h.client.children[&3][99].name, "v99");
+    }
+
+    #[test]
+    fn stepping_runs_the_session_without_waiting_for_a_continued_event() {
+        type Step = fn(&mut DapClient, i64);
+        let steps: [(Step, &str); 4] = [
+            (DapClient::continue_execution, "continue"),
+            (DapClient::next_step, "next"),
+            (DapClient::step_in, "stepIn"),
+            (DapClient::step_out, "stepOut"),
+        ];
+        for (step, command) in steps {
+            let mut h = harness();
+            h.client.state = DebugSessionState::Paused { thread_id: 7 };
+            h.client.call_stack = vec![StackFrame {
+                id: 1,
+                name: "main".into(),
+                file: None,
+                line: 3,
+            }];
+            h.sent();
+            step(&mut h.client, 7);
+            let sent = h.sent();
+            assert_eq!(commands(&sent), [command]);
+            assert_eq!(sent[0]["arguments"]["threadId"], 7);
+            assert_eq!(h.client.state, DebugSessionState::Running, "{command}");
+            assert!(h.client.call_stack.is_empty(), "stale stack cleared");
+        }
     }
 
     #[test]

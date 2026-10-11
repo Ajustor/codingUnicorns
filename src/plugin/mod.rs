@@ -12,6 +12,11 @@ pub trait Plugin: Send + Sync {
     fn version(&self) -> &str {
         "0.1.0"
     }
+    /// Id of the installed extension this plugin was loaded from (None for
+    /// built-in plugins), so it can be unloaded when that extension goes.
+    fn extension_id(&self) -> Option<&str> {
+        None
+    }
     fn commands(&self) -> Vec<PluginCommand> {
         vec![]
     }

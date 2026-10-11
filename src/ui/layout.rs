@@ -133,6 +133,22 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             Err(_) => {}
         }
     }
+    if std::mem::take(&mut app.editor.save_as_requested) {
+        app.request_save_as();
+    }
+    if let Some(e) = app.editor.save_error.take() {
+        app.toast(format!("Could not save: {e}"));
+    }
+    if let Some(rx) = app.save_as_pending.take() {
+        match rx.try_recv() {
+            Ok(path) => app.finish_save_as(path),
+            Err(std::sync::mpsc::TryRecvError::Empty) => app.save_as_pending = Some(rx),
+            Err(_) => {} // dialog cancelled
+        }
+    }
+
+    // Unsaved edits of a closed tab are discarded with it.
+    app.prune_parked_docs();
 
     // Sync editor modified state → active tab
     if let Some(active_id) = app.tab_manager.active_tab {
@@ -683,11 +699,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                     app.pending_delete = Some(path);
                                 }
                                 FileTreeAction::Rename(old_path, new_name) => {
-                                    if let Some(parent) = old_path.parent() {
-                                        let new_path = parent.join(&new_name);
-                                        let _ = std::fs::rename(&old_path, &new_path);
-                                        app.file_tree.reload_children();
-                                    }
+                                    app.rename_path(&old_path, &new_name);
+                                    app.file_tree.reload_children();
                                 }
                                 FileTreeAction::NewFile(parent) => {
                                     // Create with a temp name then immediately enter inline rename
@@ -736,8 +749,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     SidebarTab::Git => {
                         let merge_file = app.git_panel.show(ui, &mut app.git_status);
                         if let Some(file_path) = merge_file {
-                            if let Some(ws) = &app.workspace_path {
-                                let full_path = ws.join(&file_path);
+                            // Status paths are relative to the repository root.
+                            if let Some(root) = app.git_status.workdir() {
+                                let full_path = root.join(&file_path);
                                 app.merge_view = crate::ui::merge_panel::MergeView::open(full_path);
                             }
                         }
@@ -1014,15 +1028,21 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 let action = merge_view.show(ui);
                 match action {
                     crate::ui::merge_panel::MergeAction::SaveAndResolve => {
+                        if let Err(e) = merge_view.save() {
+                            // Keep the view open: nothing was written, nothing staged.
+                            let msg =
+                                format!("Could not save {}: {e}", merge_view.file_path.display());
+                            app.toast(msg);
+                            return;
+                        }
                         let path = merge_view.file_path.clone();
-                        let content = merge_view.result_text.clone();
-                        let _ = std::fs::write(&path, &content);
-                        // Stage the resolved file
+                        // Stage the resolved file (index paths are relative to
+                        // the repository root, with `/` separators).
                         if let Some(rel_path) = app
-                            .workspace_path
-                            .as_ref()
-                            .and_then(|ws| path.strip_prefix(ws).ok())
-                            .map(|p| p.to_string_lossy().to_string())
+                            .git_status
+                            .workdir()
+                            .and_then(|root| path.strip_prefix(&root).ok().map(|p| p.to_path_buf()))
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
                         {
                             app.git_status.stage_file(&rel_path);
                         }

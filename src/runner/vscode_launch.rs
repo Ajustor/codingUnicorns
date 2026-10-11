@@ -277,7 +277,7 @@ mod tests {
             "program": "${workspaceFolder}/index.js"
         }))
         .unwrap();
-        let r = c.resolve(Some(Path::new("ws")), None);
+        let r = c.resolve(Some(Path::new("ws")), None, crate::runner::ShellKind::Posix);
         assert_eq!(r.command, "node ws/index.js");
         assert_eq!(r.cwd, "ws", "cwd defaults to the workspace folder");
     }

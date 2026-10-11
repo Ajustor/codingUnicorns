@@ -8,6 +8,40 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- macOS: word shortcuts follow the Mac conventions. Option+Left/Right move by word (with Shift to select), Option+Backspace/Delete delete a word, and Cmd+Left/Right jump to the start/end of the line. In the editor, Option+arrows no longer trigger back/forward navigation on macOS; Windows and Linux are unchanged (Ctrl for words, Alt+arrows to navigate).
+
+### Fixed
+
+- Git: merging a branch that is ahead (fast-forward) from the branch list no longer discards uncommitted changes. Unrelated local edits are kept, and the merge is refused with a clear message when it would overwrite them. A merge is also refused while another one is in progress.
+- Switching tabs no longer throws away unsaved changes: a modified file is kept in memory, with its undo history and cursors, until you come back to it. Clicking the current tab again, or going to a definition in the same file, no longer reloads it from disk either. "Save All & Quit" saves these files too, and a file changed on disk meanwhile still raises the conflict prompt.
+- Closing a tab with unsaved changes with its × or a middle-click now asks to save, discard or cancel, like Ctrl+W, instead of closing it straight away.
+- Split view: the right pane's unsaved changes are now protected. Its tab shows the modified dot, closing its tab or the split asks to save, discard or cancel, quitting includes it in "Save All & Quit", opening another file there is refused until it is saved, and it no longer overwrites a version saved from the left pane (it reloads it when it has no changes of its own).
+- Language servers: hover, completion, outline, formatting and signature help no longer stop working until a restart when a server crashes or never answers a request (it is given up after 15 s or when the server restarts), and with several servers running, an answer from one is no longer taken for another's. Go to Definition no longer stays stuck after a "not found".
+- Formatting a document through its language server (rustfmt, prettier, gofmt…) no longer destroys text when an edit spans several lines: each edit now replaces exactly its range, and the whole format is a single undo step.
+- Renaming a symbol through the language server while the file has unsaved changes no longer loses them or lands the edits on the wrong lines: the open file is renamed in the editor (undoable, saved like any edit), other files on disk as before, and a file that can't be written is reported.
+- Saving an untitled file (Ctrl+N) now asks where to save it, and its tab takes the file's name. Before, Ctrl+S, "Save" and "Save All & Quit" reported success without writing anything, so quitting lost the text. A save that fails now says so instead of showing "Saved".
+- Renaming in the file tree no longer silently replaces an existing file of that name (a case-only rename is still allowed), refuses names with a path separator, and reports a failed rename. Open tabs follow the renamed file or folder, so saving no longer recreates the old name (e.g. New File, rename, Ctrl+S).
+- Multiple cursors: every edit now applies at every cursor and moves all of them correctly. Backspace, Delete and Cut with selections no longer act on the main cursor only; typing at a cursor placed before the main one, auto-closed pairs and line joins no longer leave cursors at wrong positions or corrupt the text; a paste spread over the cursors replaces their selections; and copying with several cursors takes each exact selection, top to bottom.
+- Pasting several lines is a single undo step again. Each pasted line used to add two, so a large paste could push everything before it out of the undo history.
+- The git gutter now compares the file with HEAD line by line: inserting a line no longer marks every line below it as modified, changed lines and added lines are told apart, and removed lines show a small red marker where they were.
+- Run configurations: their `env` variables (e.g. imported from launch.json) are now passed to the command, paths substituted for `${file}`, `${workspaceFolder}`… and arguments containing spaces are quoted for the terminal's shell (PowerShell, cmd, bash/zsh, fish), and cmd changes drive when needed. New variables `${fileBasename}` (file name with its extension) and `${fileExtname}`.
+- Git: Push, Pull and Fetch no longer freeze the editor while the network (or a credential prompt) is slow. They run in the background with a spinner in the Git panel, the buttons wait until the operation ends, and an error is reported even if the panel was closed meanwhile.
+- Extensions: a module without its own document tokenizer no longer leaks memory on every keystroke (its list of file extensions was copied and never freed each time it was asked for).
+- Debugger: Continue and the step commands no longer leave the session shown as "Paused" with debuggers that don't announce it (lldb-dap, CodeLLDB…). The old call stack and variables are cleared until the next stop, and stepping again is no longer sent to a running thread.
+- Language servers and debuggers that send a `Content-Type` header after `Content-Length` no longer have every message dropped, which left them looking frozen.
+- Extensions: uninstalling or updating a module that only adds panels or commands now unloads it first, so its library is released on Windows. When its files can't be deleted, the module stays listed instead of disappearing half-removed.
+- Merge view: "Save & Resolve" no longer stages a file it failed to write (the error is shown and the view stays open), keeps the file's CRLF line endings and final line break, and works when the opened folder is a subfolder of the repository.
+- Extensions: a ZIP install that fails to extract a file now reports the module as failed instead of installing a truncated library, and an update that fails to copy its library puts the previous one back.
+- Git panel: the conflicts list follows git's own merge state, so it updates as soon as a conflict is resolved and no longer lists files that merely contain `<<<<<<<`.
+- Extensions: module updates compare versions properly: a pre-release such as `1.0.0-rc.1` comes before `1.0.0`, and a `v` prefix (`v1.3.0`) is understood.
+- Claude panel: two editor windows running Claude at the same time no longer overwrite each other's permission server settings, which got tool permissions denied.
+- Settings: a config file with a missing section or field keeps everything else it sets instead of falling back to the defaults. A file that can't be read at all is kept as `config.toml.invalid` before it gets overwritten.
+- macOS: after an in-app update, the Finder shows the new version (the app's `Info.plist` is updated) and the app's ad hoc signature matches the new executable again.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added
