@@ -6,7 +6,8 @@
 //! Flow: `check()` fetches the manifest on a background thread and compares its version with
 //! `CARGO_PKG_VERSION`. If newer, the UI offers to install. `install()` downloads the asset for
 //! this platform, verifies its SHA-256 against the manifest, then either:
-//! - replaces the running executable in place (portable binaries, the macOS `.app` bundle), or
+//! - replaces the running executable in place (portable binaries, the macOS `.app` bundle,
+//!   whose `Info.plist` version and ad hoc signature are then refreshed), or
 //! - replaces the `.AppImage` file the app runs from (Linux AppImage), or
 //! - on Windows MSI installs (Program Files, not writable), stages the `.msi` so it can be run
 //!   with `msiexec` once the app has exited.
@@ -577,6 +578,10 @@ fn stage_and_apply(
             let res =
                 self_replace::self_replace(&path).map_err(|e| format!("replacing executable: {e}"));
             let _ = std::fs::remove_file(&path);
+            #[cfg(target_os = "macos")]
+            if res.is_ok() {
+                refresh_macos_bundle(&info.version);
+            }
             res.map(|_| None)
         }
         InstallKind::AppImage => {
@@ -586,6 +591,67 @@ fn stage_and_apply(
             let _ = std::fs::remove_file(&path);
             res.map(|_| None)
         }
+    }
+}
+
+/// The `.app` bundle `exe` runs from (`<Name>.app/Contents/MacOS/<exe>`), if any.
+#[cfg(any(target_os = "macos", test))]
+fn bundle_of(exe: &std::path::Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    let is_app = app
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("app"));
+    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && is_app)
+        .then(|| app.to_path_buf())
+}
+
+/// `CFBundleShortVersionString` only takes x.y.z, like `scripts/build-macos-app.sh` writes it.
+#[cfg(any(target_os = "macos", test))]
+fn bundle_version(version: &semver::Version) -> String {
+    format!("{}.{}.{}", version.major, version.minor, version.patch)
+}
+
+/// After the executable inside the `.app` was swapped, bring the rest of the bundle in step:
+/// the `Info.plist` version the Finder shows, and the ad hoc signature, which sealed the old
+/// executable. Best effort: the update itself already succeeded, so failures are only logged.
+#[cfg(target_os = "macos")]
+fn refresh_macos_bundle(version: &semver::Version) {
+    use std::ffi::OsStr;
+    let Some(app) = std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .ok()
+        .and_then(|exe| bundle_of(&exe))
+    else {
+        return;
+    };
+    let plist = app.join("Contents").join("Info.plist");
+    let version = bundle_version(version);
+    for key in ["CFBundleShortVersionString", "CFBundleVersion"] {
+        let args = ["-replace", key, "-string", version.as_str()].map(OsStr::new);
+        run_tool(
+            "/usr/bin/plutil",
+            args.iter().copied().chain([plist.as_os_str()]),
+        );
+    }
+    let args = ["--force", "--deep", "--sign", "-"].map(OsStr::new);
+    run_tool(
+        "/usr/bin/codesign",
+        args.iter().copied().chain([app.as_os_str()]),
+    );
+}
+
+/// Run `program` and log (only) a failure.
+#[cfg(target_os = "macos")]
+fn run_tool<'a>(program: &str, args: impl IntoIterator<Item = &'a std::ffi::OsStr>) {
+    match std::process::Command::new(program).args(args).output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => log::warn!(
+            "{program} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => log::warn!("running {program}: {e}"),
     }
 }
 
@@ -909,6 +975,28 @@ mod tests {
         let dir = scratch_dir("appimage-missing");
         let err = replace_file(&dir.join("src"), &dir.join("cu.AppImage")).unwrap_err();
         assert!(err.starts_with("writing"), "{err}");
+    }
+
+    #[test]
+    fn bundle_of_finds_the_app_around_its_executable() {
+        let exe = PathBuf::from("/Users/u/Apps/Coding Unicorns.app/Contents/MacOS/coding-unicorns");
+        assert_eq!(
+            bundle_of(&exe),
+            Some(PathBuf::from("/Users/u/Apps/Coding Unicorns.app"))
+        );
+        // A portable binary, or a look-alike layout outside a bundle, is left alone.
+        assert_eq!(
+            bundle_of(&PathBuf::from("/usr/local/bin/coding-unicorns")),
+            None
+        );
+        let fake = PathBuf::from("/tmp/Contents/MacOS/coding-unicorns");
+        assert_eq!(bundle_of(&fake), None);
+    }
+
+    #[test]
+    fn bundle_version_keeps_only_major_minor_patch() {
+        let v = semver::Version::parse("1.2.3-beta.1+build.5").unwrap();
+        assert_eq!(bundle_version(&v), "1.2.3");
     }
 
     // ---- stage_and_apply (MSI path only: never self-replace the test binary) ----

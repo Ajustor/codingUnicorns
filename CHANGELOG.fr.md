@@ -39,6 +39,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Extensions : les mises à jour de modules comparent correctement les versions. Une pré-version comme `1.0.0-rc.1` passe avant `1.0.0`, et le préfixe `v` (`v1.3.0`) est reconnu.
 - Panneau Claude : deux fenêtres de l'éditeur qui lancent Claude en même temps n'écrasent plus mutuellement la configuration de leur serveur d'autorisations, ce qui faisait refuser les autorisations d'outils.
 - Réglages : quand il manque une section ou un champ dans le fichier de configuration, tout le reste du fichier est conservé au lieu de revenir aux valeurs par défaut. Un fichier totalement illisible est sauvegardé sous `config.toml.invalid` avant d'être réécrit.
+- macOS : après une mise à jour depuis l'app, le Finder affiche la nouvelle version (l'`Info.plist` de l'app est mis à jour) et la signature ad hoc de l'app correspond de nouveau au nouvel exécutable.
 
 ## [0.12.2] - 2026-10-11
 
