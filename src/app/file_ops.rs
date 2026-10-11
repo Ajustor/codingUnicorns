@@ -186,6 +186,46 @@ impl CodingUnicorns {
         self.editor.set_content(String::new(), None);
     }
 
+    /// Ask where to save the untitled buffer (once; the answer arrives in
+    /// `save_as_pending`, see [`Self::finish_save_as`]).
+    pub fn request_save_as(&mut self) {
+        if self.save_as_pending.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = self.workspace_path.clone();
+        std::thread::spawn(move || {
+            let mut dialog = rfd::FileDialog::new();
+            if let Some(dir) = dir {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(path) = dialog.save_file() {
+                let _ = tx.send(path);
+            }
+        });
+        self.save_as_pending = Some(rx);
+    }
+
+    /// Save the untitled buffer as `path`: its tab takes the file's name and
+    /// the file is then opened like any other (language server, stamps).
+    pub fn finish_save_as(&mut self, path: PathBuf) {
+        if self.editor.current_path.is_some() {
+            return; // another file is shown by now
+        }
+        let path = absolute_path(path);
+        self.editor.set_path(path.clone());
+        if !self.save_editor_guarded(true) {
+            self.editor.current_path = None;
+            self.toast(format!("Could not save {}", path.display()));
+            return;
+        }
+        if let Some(id) = self.tab_manager.active_tab {
+            self.tab_manager.retarget(id, path.clone());
+        }
+        self.toast("Saved");
+        self.open_file(path);
+    }
+
     pub fn trigger_open_folder(&mut self) -> std::sync::mpsc::Receiver<PathBuf> {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {

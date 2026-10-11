@@ -473,6 +473,13 @@ impl CodingUnicorns {
     /// is false for auto-saves. Returns true if the file was written.
     pub fn save_editor_guarded(&mut self, explicit: bool) -> bool {
         let path = self.editor.current_path.clone();
+        if path.is_none() {
+            // Untitled: nothing was written. An explicit save asks where to.
+            if explicit {
+                self.request_save_as();
+            }
+            return false;
+        }
         if let Some(path) = &path {
             if self.has_disk_conflict(path) {
                 let on_save = explicit

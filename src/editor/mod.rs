@@ -177,6 +177,10 @@ pub struct Editor {
     // ── Breadcrumbs ─────────────────────────────────────────────────────────
     /// Set true for one frame after an explicit Ctrl+S save, so the app can toast.
     pub just_saved: bool,
+    /// Ctrl+S on an untitled buffer: the app asks where to save it.
+    pub save_as_requested: bool,
+    /// Why the last Ctrl+S failed, for the app to report.
+    pub save_error: Option<String>,
     // ── Cursor blink ────────────────────────────────────────────────────────
     /// Epoch-ms of the last cursor movement / keypress, used to reset blink.
     cursor_blink_epoch: std::time::Instant,
@@ -277,6 +281,8 @@ impl Editor {
             fold_regions: Vec::new(),
             fold_regions_version: -1,
             just_saved: false,
+            save_as_requested: false,
+            save_error: None,
             line_diff: Vec::new(),
             line_diff_path: None,
             format_request_pending: false,
@@ -389,14 +395,27 @@ impl Editor {
         self.max_line_chars
     }
 
+    /// Write the buffer to its file. An untitled buffer has nowhere to go: that
+    /// is an error, never a silent success (see `save_as_requested`).
     pub fn save(&mut self) -> anyhow::Result<()> {
-        if let Some(path) = &self.current_path {
-            let bytes = text_format::encode(&self.buffer.to_string(), self.text_format);
-            std::fs::write(path, bytes)?;
-            self.is_modified = false;
-            self.invalidate_line_diff();
-        }
+        let Some(path) = &self.current_path else {
+            anyhow::bail!("untitled file: choose where to save it");
+        };
+        let bytes = text_format::encode(&self.buffer.to_string(), self.text_format);
+        std::fs::write(path, bytes)?;
+        self.is_modified = false;
+        self.invalidate_line_diff();
         Ok(())
+    }
+
+    /// Give the (untitled) buffer a file, picking its language from the name.
+    /// The text is kept; the caller then saves it.
+    pub fn set_path(&mut self, path: PathBuf) {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            self.highlighter.set_language_from_filename(name);
+        }
+        self.highlighter.invalidate();
+        self.current_path = Some(path);
     }
 
     fn typing_burst_state(&self) -> TypingBurstState {
@@ -1541,8 +1560,14 @@ impl Editor {
 
                                         // Save
                                         egui::Key::S if modifiers.ctrl => {
-                                            let _ = self.save();
-                                            self.just_saved = true;
+                                            if self.current_path.is_none() {
+                                                self.save_as_requested = true;
+                                            } else {
+                                                match self.save() {
+                                                    Ok(()) => self.just_saved = true,
+                                                    Err(e) => self.save_error = Some(e.to_string()),
+                                                }
+                                            }
                                         }
 
                                         // Undo
@@ -3777,11 +3802,24 @@ mod tests {
     }
 
     #[test]
-    fn save_without_path_is_a_noop() {
+    fn save_without_path_is_an_error_not_a_silent_success() {
         let mut ed = editor_with("abc");
         ed.is_modified = true;
-        ed.save().unwrap();
+        assert!(ed.save().is_err());
         assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn set_path_names_an_untitled_buffer_and_keeps_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.md");
+        let mut ed = editor_with("draft");
+        ed.is_modified = true;
+        ed.set_path(path.clone());
+        assert_eq!(ed.buffer.to_string(), "draft");
+        ed.save().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "draft");
+        assert!(!ed.is_modified);
     }
 
     #[test]
@@ -4827,6 +4865,28 @@ mod tests {
         assert!(ed.just_saved);
         assert!(!ed.is_modified);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+    }
+
+    #[test]
+    fn ctrl_s_on_untitled_asks_where_to_save_instead_of_claiming_success() {
+        let (mut h, mut ed) = setup_path("", None);
+        h.type_text(&mut ed, "x");
+        h.press(&mut ed, Key::S, CTRL);
+        assert!(!ed.just_saved, "no \"Saved\" toast");
+        assert!(ed.save_as_requested);
+        assert!(ed.is_modified);
+    }
+
+    #[test]
+    fn ctrl_s_reports_a_failed_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing_dir").join("f.rs");
+        let (mut h, mut ed) = setup_path("", Some(path));
+        h.type_text(&mut ed, "x");
+        h.press(&mut ed, Key::S, CTRL);
+        assert!(!ed.just_saved);
+        assert!(ed.save_error.is_some());
+        assert!(ed.is_modified);
     }
 
     #[test]

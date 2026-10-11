@@ -133,6 +133,19 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             Err(_) => {}
         }
     }
+    if std::mem::take(&mut app.editor.save_as_requested) {
+        app.request_save_as();
+    }
+    if let Some(e) = app.editor.save_error.take() {
+        app.toast(format!("Could not save: {e}"));
+    }
+    if let Some(rx) = app.save_as_pending.take() {
+        match rx.try_recv() {
+            Ok(path) => app.finish_save_as(path),
+            Err(std::sync::mpsc::TryRecvError::Empty) => app.save_as_pending = Some(rx),
+            Err(_) => {} // dialog cancelled
+        }
+    }
 
     // Sync editor modified state → active tab
     if let Some(active_id) = app.tab_manager.active_tab {

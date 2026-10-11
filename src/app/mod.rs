@@ -99,6 +99,8 @@ pub struct CodingUnicorns {
     pub run_panel: RunPanel,
     pub folder_pending: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
     pub file_pending: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
+    /// "Save As" dialog for an untitled buffer, answered on another thread.
+    pub save_as_pending: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
     pub plugin_manager: PluginManager,
     pub plugin_status: Option<String>,
     /// What plugins were last updated with (see `PluginInputKey`).
@@ -305,6 +307,7 @@ impl CodingUnicorns {
             run_panel: RunPanel::new(),
             folder_pending: None,
             file_pending: None,
+            save_as_pending: None,
             plugin_manager,
             plugin_status: None,
             last_plugin_input: None,

@@ -71,6 +71,17 @@ impl TabManager {
         id
     }
 
+    /// Point tab `id` at `path` (an untitled buffer saved under a name).
+    pub fn retarget(&mut self, id: usize, path: PathBuf) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+            tab.title = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "untitled".to_string());
+            tab.path = path;
+        }
+    }
+
     pub fn open_settings(&mut self) -> usize {
         if let Some(existing) = self.tabs.iter().find(|t| t.is_settings) {
             let id = existing.id;
