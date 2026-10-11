@@ -13,6 +13,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Switching tabs no longer throws away unsaved changes: a modified file is kept in memory, with its undo history and cursors, until you come back to it. Clicking the current tab again, or going to a definition in the same file, no longer reloads it from disk either. "Save All & Quit" saves these files too, and a file changed on disk meanwhile still raises the conflict prompt.
+- Closing a tab with unsaved changes with its × or a middle-click now asks to save, discard or cancel, like Ctrl+W, instead of closing it straight away.
 
 ## [0.12.2] - 2026-10-11
 

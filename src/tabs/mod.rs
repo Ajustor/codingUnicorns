@@ -17,6 +17,9 @@ pub struct TabManager {
     pub tabs: Vec<Tab>,
     pub active_tab: Option<usize>,
     next_id: usize,
+    /// A modified tab the user asked to close (× or middle-click): left open
+    /// for the caller to confirm, like Ctrl+W.
+    pub close_request: Option<usize>,
 }
 
 impl TabManager {
@@ -25,6 +28,7 @@ impl TabManager {
             tabs: vec![],
             active_tab: None,
             next_id: 0,
+            close_request: None,
         }
     }
 
@@ -256,6 +260,13 @@ impl TabManager {
             }
         }
 
+        // A tab with unsaved changes is only closed once the user confirms.
+        if let Some(id) =
+            to_close.filter(|id| self.tabs.iter().any(|t| t.id == *id && t.is_modified))
+        {
+            self.close_request = Some(id);
+            to_close = None;
+        }
         if let Some(id) = to_close {
             let was_active = self.active_tab == Some(id);
             self.close(id);
@@ -603,5 +614,38 @@ mod tests {
         assert_eq!(tm.tabs.len(), 1);
         assert_eq!(tm.tabs[0].title, "a.rs");
         assert_eq!(r, Some(PathBuf::from("a.rs")));
+    }
+
+    #[test]
+    fn closing_a_modified_tab_asks_instead_of_closing() {
+        let mut tm = manager_with(&["a.rs", "b.rs"]);
+        tm.tabs[1].is_modified = true;
+        let b_id = tm.tabs[1].id;
+        let mut h = Harness::new();
+        let r = h.click(&mut tm, "● b.rs", egui::PointerButton::Middle);
+        assert_eq!(tm.tabs.len(), 2, "kept open until confirmed");
+        assert_eq!(tm.close_request, Some(b_id));
+        assert_eq!(r, None);
+
+        // The × of a modified tab asks the same way.
+        tm.close_request = None;
+        h.frame(&mut tm, vec![]);
+        let pos = h
+            .texts
+            .iter()
+            .filter(|(t, _)| t == "×")
+            .map(|(_, r)| r.center())
+            .nth(1)
+            .unwrap();
+        let ev = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.frame(&mut tm, vec![egui::Event::PointerMoved(pos), ev(true)]);
+        h.frame(&mut tm, vec![ev(false)]);
+        assert_eq!(tm.tabs.len(), 2);
+        assert_eq!(tm.close_request, Some(b_id));
     }
 }

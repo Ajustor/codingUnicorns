@@ -177,26 +177,51 @@ impl CodingUnicorns {
     /// returns false then: that file stays parked and modified.
     pub fn save_parked_docs(&mut self) -> bool {
         let paths: Vec<PathBuf> = self.parked_docs.keys().cloned().collect();
-        for path in paths {
-            if self.parked_changed_on_disk(&path) {
-                self.toast(format!(
-                    "{} changed on disk: open its tab to resolve it",
-                    path.display()
-                ));
-                return false;
-            }
-            let bytes = self.parked_docs[&path].encoded();
-            if let Err(e) = std::fs::write(&path, bytes) {
-                self.toast(format!("Could not save {}: {e}", path.display()));
-                return false;
-            }
-            self.parked_docs.remove(&path);
-            self.record_file_stamp(&path);
-            if let Some(tab) = self.tab_manager.tabs.iter_mut().find(|t| t.path == path) {
-                tab.is_modified = false;
-            }
+        paths.iter().all(|path| self.save_parked_doc(path))
+    }
+
+    /// Write the parked document of `path`, if any. False (with a toast) when
+    /// the file changed on disk meanwhile or can't be written: it stays parked.
+    fn save_parked_doc(&mut self, path: &std::path::Path) -> bool {
+        let Some(doc) = self.parked_docs.get(path) else {
+            return true;
+        };
+        if self.parked_changed_on_disk(path) {
+            self.toast(format!(
+                "{} changed on disk: open its tab to resolve it",
+                path.display()
+            ));
+            return false;
+        }
+        if let Err(e) = std::fs::write(path, doc.encoded()) {
+            self.toast(format!("Could not save {}: {e}", path.display()));
+            return false;
+        }
+        self.parked_docs.remove(path);
+        self.record_file_stamp(path);
+        if let Some(tab) = self.tab_manager.tabs.iter_mut().find(|t| t.path == path) {
+            tab.is_modified = false;
         }
         true
+    }
+
+    /// Save the file of tab `id`: the editor's when it is the one shown, else
+    /// its parked document. False when nothing could be saved.
+    pub fn save_tab(&mut self, id: usize) -> bool {
+        let Some(path) = self
+            .tab_manager
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.path.clone())
+        else {
+            return false;
+        };
+        if self.editor.current_path.as_ref() == Some(&path) {
+            self.save_editor_guarded(true)
+        } else {
+            self.save_parked_doc(&path)
+        }
     }
 
     pub fn open_file_at_line(&mut self, path: PathBuf, line: usize) {

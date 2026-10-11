@@ -13,6 +13,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - Changer d'onglet ne perd plus les modifications non enregistrées : un fichier modifié reste en mémoire, avec son historique d'annulation et ses curseurs, jusqu'à ce que vous y reveniez. Recliquer sur l'onglet actif ou aller à une définition dans le même fichier ne le recharge plus depuis le disque non plus. « Save All & Quit » enregistre aussi ces fichiers, et un fichier modifié sur disque entre-temps déclenche toujours la demande de conflit.
+- Fermer un onglet modifié avec son × ou un clic molette demande maintenant d'enregistrer, d'ignorer ou d'annuler, comme Ctrl+W, au lieu de le fermer directement.
 
 ## [0.12.2] - 2026-10-11
 

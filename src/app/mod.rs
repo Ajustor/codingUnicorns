@@ -552,7 +552,10 @@ impl eframe::App for CodingUnicorns {
                 });
         }
 
-        // Ctrl+W close-tab unsaved-changes dialog
+        // Close-tab unsaved-changes dialog (Ctrl+W, or × / middle-click on a tab)
+        if self.close_tab_id_pending.is_none() {
+            self.close_tab_id_pending = self.tab_manager.close_request.take();
+        }
         if let Some(pending_id) = self.close_tab_id_pending {
             egui::Window::new("Close Tab")
                 .collapsible(false)
@@ -571,7 +574,7 @@ impl eframe::App for CodingUnicorns {
                     ui.horizontal(|ui| {
                         if ui.button("Save & Close").clicked() {
                             self.close_tab_id_pending = None;
-                            if self.save_editor_guarded(true) {
+                            if self.save_tab(pending_id) {
                                 self.tab_manager.close(pending_id);
                                 self.load_active_tab();
                             }
