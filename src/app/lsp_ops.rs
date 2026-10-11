@@ -5,7 +5,71 @@ use serde_json::Value;
 use super::workspace_search::{find_definition_in_buffer, search_workspace_for_symbol};
 use super::CodingUnicorns;
 
+/// How long a request may wait for its answer before it is given up (a
+/// server busy indexing can be slow; one that never answers must not block
+/// the feature until the app restarts).
+const LSP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A request waiting for its answer from one language server. Ids are
+/// counted per server and restart with it, so a response is matched on the
+/// server (its language key) as well as on the id.
+#[derive(Debug, Clone)]
+pub struct PendingLsp {
+    ext: String,
+    id: u64,
+    sent: std::time::Instant,
+}
+
+impl PendingLsp {
+    pub fn new(ext: &str, id: u64) -> Self {
+        Self {
+            ext: ext.to_string(),
+            id,
+            sent: std::time::Instant::now(),
+        }
+    }
+
+    /// True when the response `id` from the server of `ext` answers `pending`.
+    pub fn answers(pending: &Option<Self>, ext: &str, id: u64) -> bool {
+        pending.as_ref().is_some_and(|p| p.ext == ext && p.id == id)
+    }
+
+    /// The answer will never come: the server restarted or stopped, or it is
+    /// overdue.
+    fn is_lost(&self, reconnected: &[String], connected: bool, now: std::time::Instant) -> bool {
+        !connected
+            || reconnected.contains(&self.ext)
+            || now.duration_since(self.sent) > LSP_REQUEST_TIMEOUT
+    }
+}
+
 impl CodingUnicorns {
+    /// Give up the requests whose answer can no longer come, so hover,
+    /// completion, outline, formatting… can be asked again.
+    pub(super) fn expire_lsp_requests(&mut self, reconnected: &[String]) {
+        let now = std::time::Instant::now();
+        let lsp = &self.lsp;
+        let pending = [
+            &mut self.pending_hover_id,
+            &mut self.pending_definition_id,
+            &mut self.pending_completion_id,
+            &mut self.pending_symbols_id,
+            &mut self.pending_references_id,
+            &mut self.pending_code_actions_id,
+            &mut self.pending_signature_id,
+            &mut self.pending_format_id,
+        ];
+        for slot in pending {
+            let lost = slot.as_ref().is_some_and(|p| {
+                let connected = lsp.get(&p.ext).is_some_and(|c| c.is_connected);
+                p.is_lost(reconnected, connected, now)
+            });
+            if lost {
+                *slot = None;
+            }
+        }
+    }
+
     /// Refresh the Problems panel cache when any server published diagnostics.
     pub(crate) fn sync_problems(&mut self) {
         let lsp = &self.lsp;
@@ -128,7 +192,7 @@ impl CodingUnicorns {
 
     /// Request hover information from the LSP server.
     /// Returns the request id, or `None` if no LSP is connected for this file.
-    pub fn lsp_hover(&mut self, path: &std::path::Path, line: u32, col: u32) -> Option<u64> {
+    pub fn lsp_hover(&mut self, path: &std::path::Path, line: u32, col: u32) -> Option<PendingLsp> {
         let ext = crate::language::language_key(path)?;
         let ext = ext.as_str();
         let client = self.lsp.get_mut(ext)?;
@@ -136,7 +200,7 @@ impl CodingUnicorns {
             return None;
         }
         let uri = crate::lsp::client::path_to_uri(path);
-        Some(client.request_hover(&uri, line, col))
+        Some(PendingLsp::new(ext, client.request_hover(&uri, line, col)))
     }
 
     /// Navigate to the definition of `word` via LSP (async), then file-path lookup, then workspace search.
@@ -149,8 +213,10 @@ impl CodingUnicorns {
                 if let Some(client) = self.lsp.get_mut(ext) {
                     if client.is_connected {
                         let uri = crate::lsp::client::path_to_uri(&path);
-                        self.pending_definition_id =
-                            Some(client.request_definition(&uri, row as u32, col as u32));
+                        self.pending_definition_id = Some(PendingLsp::new(
+                            ext,
+                            client.request_definition(&uri, row as u32, col as u32),
+                        ));
                         lsp_sent = true;
                     }
                 }
@@ -256,8 +322,10 @@ impl CodingUnicorns {
                 if let Some(client) = self.lsp.get_mut(ext) {
                     if client.is_connected {
                         let uri = crate::lsp::client::path_to_uri(&path);
-                        self.pending_references_id =
-                            Some(client.request_references(&uri, row as u32, col as u32));
+                        self.pending_references_id = Some(PendingLsp::new(
+                            ext,
+                            client.request_references(&uri, row as u32, col as u32),
+                        ));
                     }
                 }
             }
@@ -334,16 +402,54 @@ impl CodingUnicorns {
                             .filter(|d| d.line as usize == row)
                             .map(|d| d.message.clone())
                             .collect();
-                        self.pending_code_actions_id = Some(client.request_code_actions(
-                            &uri,
-                            row as u32,
-                            col as u32,
-                            &diag_messages,
+                        self.pending_code_actions_id = Some(PendingLsp::new(
+                            ext,
+                            client.request_code_actions(
+                                &uri,
+                                row as u32,
+                                col as u32,
+                                &diag_messages,
+                            ),
                         ));
                         self.code_actions_last_request = Some(std::time::Instant::now());
                     }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingLsp;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_response_answers_only_its_own_server_and_id() {
+        let p = Some(PendingLsp::new("rs", 7));
+        assert!(PendingLsp::answers(&p, "rs", 7));
+        assert!(
+            !PendingLsp::answers(&p, "ts", 7),
+            "same id from another server"
+        );
+        assert!(!PendingLsp::answers(&p, "rs", 8));
+        assert!(!PendingLsp::answers(&None, "rs", 7));
+    }
+
+    #[test]
+    fn a_request_is_lost_on_restart_disconnect_or_timeout() {
+        let p = PendingLsp::new("rs", 1);
+        let now = Instant::now();
+        assert!(!p.is_lost(&[], true, now));
+        assert!(
+            p.is_lost(&["rs".to_string()], true, now),
+            "server restarted"
+        );
+        assert!(!p.is_lost(&["ts".to_string()], true, now), "another server");
+        assert!(p.is_lost(&[], false, now), "server gone");
+        assert!(
+            p.is_lost(&[], true, now + Duration::from_secs(16)),
+            "overdue"
+        );
     }
 }

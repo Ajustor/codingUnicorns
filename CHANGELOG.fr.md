@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Serveurs de langage : le survol, la complétion, le plan, le formatage et l'aide de signature ne cessent plus de fonctionner jusqu'au redémarrage quand un serveur plante ou ne répond jamais (la requête est abandonnée après 15 s ou au redémarrage du serveur), et avec plusieurs serveurs actifs, la réponse de l'un n'est plus prise pour celle d'un autre. « Aller à la définition » ne reste plus bloqué après un « introuvable ».
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts

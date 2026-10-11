@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Language servers: hover, completion, outline, formatting and signature help no longer stop working until a restart when a server crashes or never answers a request (it is given up after 15 s or when the server restarts), and with several servers running, an answer from one is no longer taken for another's. Go to Definition no longer stays stuck after a "not found".
+
 ## [0.12.2] - 2026-10-11
 
 ### Added
