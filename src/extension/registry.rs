@@ -172,8 +172,14 @@ impl ExtensionRegistry {
             .iter()
             .position(|e| e.manifest.extension.id == id)
         {
-            let ext = self.installed.remove(pos);
-            std::fs::remove_dir_all(&ext.path)?;
+            // Keep the entry while its files are still there (a DLL still
+            // locked on Windows), so the module stays listed and can be retried.
+            match std::fs::remove_dir_all(&self.installed[pos].path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            self.installed.remove(pos);
         }
         Ok(())
     }
@@ -390,17 +396,30 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_reports_fs_errors() {
+    fn uninstall_of_a_missing_directory_drops_the_entry() {
         let mut r = registry(Path::new("unused"));
         let mut e = r_dummy();
         e.manifest.extension.id = "ghost".into();
         e.path = std::env::temp_dir().join(format!("cu-missing-{}", uuid::Uuid::new_v4()));
         r.installed.push(e);
-        assert!(r.uninstall("ghost").is_err());
-        assert!(
-            !r.is_installed("ghost"),
-            "entry removed even if delete fails"
-        );
+        r.uninstall("ghost").unwrap();
+        assert!(!r.is_installed("ghost"));
+    }
+
+    #[test]
+    fn uninstall_keeps_the_entry_when_delete_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A file where the module directory should be: remove_dir_all fails.
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+        let mut r = registry(tmp.path());
+        let mut e = r_dummy();
+        e.manifest.extension.id = "stuck".into();
+        e.path = file.clone();
+        r.installed.push(e);
+        assert!(r.uninstall("stuck").is_err());
+        assert!(r.is_installed("stuck"), "entry kept so it can be retried");
+        assert!(file.exists());
     }
 
     #[test]

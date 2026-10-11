@@ -32,6 +32,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 - Extensions : un module sans tokenizer de document ne fuit plus de mémoire à chaque frappe (sa liste d'extensions de fichier était copiée sans jamais être libérée à chaque demande).
 - Débogueur : Continuer et les commandes de pas à pas ne laissent plus la session affichée « Paused » avec les débogueurs qui ne le signalent pas (lldb-dap, CodeLLDB…). L'ancienne pile d'appels et les variables sont effacées jusqu'au prochain arrêt, et un nouveau pas à pas n'est plus envoyé à un thread en cours d'exécution.
 - Les serveurs de langage et les débogueurs qui envoient un en-tête `Content-Type` après `Content-Length` ne voient plus tous leurs messages ignorés (ils semblaient figés).
+- Extensions : désinstaller ou mettre à jour un module qui n'ajoute que des panneaux ou des commandes le décharge d'abord, ce qui libère sa bibliothèque sous Windows. Si ses fichiers ne peuvent pas être supprimés, le module reste dans la liste au lieu de disparaître à moitié supprimé.
 
 ## [0.12.2] - 2026-10-11
 

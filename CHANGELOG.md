@@ -32,6 +32,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Extensions: a module without its own document tokenizer no longer leaks memory on every keystroke (its list of file extensions was copied and never freed each time it was asked for).
 - Debugger: Continue and the step commands no longer leave the session shown as "Paused" with debuggers that don't announce it (lldb-dap, CodeLLDB…). The old call stack and variables are cleared until the next stop, and stepping again is no longer sent to a running thread.
 - Language servers and debuggers that send a `Content-Type` header after `Content-Length` no longer have every message dropped, which left them looking frozen.
+- Extensions: uninstalling or updating a module that only adds panels or commands now unloads it first, so its library is released on Windows. When its files can't be deleted, the module stays listed instead of disappearing half-removed.
 
 ## [0.12.2] - 2026-10-11
 

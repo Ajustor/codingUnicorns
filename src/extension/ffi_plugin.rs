@@ -17,6 +17,8 @@ pub struct FfiLangPlugin {
     // Must be kept alive — dropping it would unload the library.
     _lib: libloading::Library,
     language_id: String,
+    /// `extension.id` from the manifest.
+    extension_id: String,
     extensions: Vec<String>,
     /// `extensions` as the `&[&str]` the `LanguagePlugin` trait returns. Leaked
     /// once per load (a few bytes): `file_extensions` runs on every keystroke
@@ -163,6 +165,7 @@ impl FfiLangPlugin {
             Ok(Self {
                 _lib: lib,
                 language_id,
+                extension_id: manifest.extension.id.clone(),
                 extensions,
                 extension_refs,
                 lsp_server,
@@ -264,6 +267,10 @@ impl FfiLangPlugin {
 impl Plugin for FfiLangPlugin {
     fn name(&self) -> &str {
         &self.language_id
+    }
+
+    fn extension_id(&self) -> Option<&str> {
+        Some(&self.extension_id)
     }
 
     fn tokenize_line(&self, lang: &str, line: &str) -> Option<Vec<Token>> {
@@ -795,6 +802,7 @@ mod tests {
         FfiLangPlugin {
             _lib: this_lib(),
             language_id: "testlang".into(),
+            extension_id: "acme.testlang".into(),
             extensions: vec!["tl".into(), "tsx".into(), "jsx".into()],
             extension_refs: &["tl", "tsx", "jsx"],
             lsp_server: Some("tl-lsp".into()),
@@ -824,6 +832,7 @@ mod tests {
         FfiLangPlugin {
             _lib: this_lib(),
             language_id: "bare".into(),
+            extension_id: "acme.bare".into(),
             extensions: vec!["tl".into()],
             extension_refs: &["tl"],
             lsp_server: None,

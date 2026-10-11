@@ -1181,7 +1181,7 @@ impl eframe::App for CodingUnicorns {
                 (exts, deps)
             };
             // Drop the plugin (releases the DLL lock on Windows).
-            self.plugin_manager.unload_by_extensions(&exts);
+            self.plugin_manager.unload_extension(&id, &exts);
             // Remove external dependencies off the UI thread — npm/pip/dotnet
             // uninstall can take several seconds.
             if let Some(deps) = deps {
@@ -1204,12 +1204,12 @@ impl eframe::App for CodingUnicorns {
 
         // Registry installs/updates: drop the loaded plugin first so its DLL can
         // be replaced; the download starts on the next frame.
-        for languages in self
+        for (id, languages) in self
             .extensions_panel
             .registry_browser
             .take_unload_requests()
         {
-            self.plugin_manager.unload_by_extensions(&languages);
+            self.plugin_manager.unload_extension(&id, &languages);
         }
 
         // Reload LSP + plugins when a module installation just completed.
