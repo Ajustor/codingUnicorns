@@ -261,8 +261,10 @@ pub(crate) fn read_messages<R: BufRead>(mut reader: R, tx: &Sender<Value>) {
             }
             continue;
         };
-        let mut blank = String::new();
-        let _ = reader.read_line(&mut blank);
+        // Other headers may follow: the body starts after the blank line.
+        if !crate::lsp::transport::skip_to_body(&mut reader) {
+            break;
+        }
         let mut buf = vec![0u8; content_length];
         if reader.read_exact(&mut buf).is_err() {
             break;
@@ -305,6 +307,21 @@ mod tests {
 
     fn frame(body: &str) -> String {
         format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+    }
+
+    #[test]
+    fn skips_headers_after_content_length() {
+        let body = r#"{"seq":3}"#;
+        let input = format!(
+            "Content-Length: {}\r\nContent-Type: application/json\r\n\r\n{}{}",
+            body.len(),
+            body,
+            frame(r#"{"seq":4}"#)
+        );
+        assert_eq!(
+            read_all(input.as_bytes()),
+            vec![json!({"seq": 3}), json!({"seq": 4})]
+        );
     }
 
     #[test]

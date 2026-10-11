@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Les serveurs de langage et les débogueurs qui envoient un en-tête `Content-Type` après `Content-Length` ne voient plus tous leurs messages ignorés (ils semblaient figés).
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts

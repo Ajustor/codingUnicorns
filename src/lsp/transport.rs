@@ -86,9 +86,11 @@ pub(crate) fn read_messages<R: BufRead>(mut reader: R, tx: &Sender<Value>) {
             continue;
         };
 
-        // Skip blank line between header and body
-        let mut blank = String::new();
-        let _ = reader.read_line(&mut blank);
+        // Other headers (Content-Type…) may follow: the body starts after
+        // the blank line that ends them.
+        if !skip_to_body(&mut reader) {
+            break;
+        }
 
         let mut buf = vec![0u8; content_length];
         if reader.read_exact(&mut buf).is_err() {
@@ -97,6 +99,19 @@ pub(crate) fn read_messages<R: BufRead>(mut reader: R, tx: &Sender<Value>) {
 
         if let Ok(msg) = serde_json::from_slice::<Value>(&buf) {
             let _ = tx.send(msg);
+        }
+    }
+}
+
+/// Read the remaining header lines up to and including the blank line before
+/// the body. False at EOF.
+pub(crate) fn skip_to_body<R: BufRead>(reader: &mut R) -> bool {
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return false,
+            Ok(_) if line.trim().is_empty() => return true,
+            Ok(_) => {}
         }
     }
 }
@@ -174,6 +189,18 @@ mod tests {
             body
         );
         assert_eq!(read_all(input.as_bytes()), vec![json!({"id": 7})]);
+    }
+
+    #[test]
+    fn skips_headers_after_content_length() {
+        let body = r#"{"id":8}"#;
+        let input = format!(
+            "Content-Length: {}\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}{}",
+            body.len(),
+            body,
+            frame("2")
+        );
+        assert_eq!(read_all(input.as_bytes()), vec![json!({"id": 8}), json!(2)]);
     }
 
     #[test]

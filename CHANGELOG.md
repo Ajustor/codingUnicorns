@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Language servers and debuggers that send a `Content-Type` header after `Content-Length` no longer have every message dropped, which left them looking frozen.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added
