@@ -36,6 +36,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Merge view: "Save & Resolve" no longer stages a file it failed to write (the error is shown and the view stays open), keeps the file's CRLF line endings and final line break, and works when the opened folder is a subfolder of the repository.
 - Extensions: a ZIP install that fails to extract a file now reports the module as failed instead of installing a truncated library, and an update that fails to copy its library puts the previous one back.
 - Git panel: the conflicts list follows git's own merge state, so it updates as soon as a conflict is resolved and no longer lists files that merely contain `<<<<<<<`.
+- Extensions: module updates compare versions properly: a pre-release such as `1.0.0-rc.1` comes before `1.0.0`, and a `v` prefix (`v1.3.0`) is understood.
 
 ## [0.12.2] - 2026-10-11
 
