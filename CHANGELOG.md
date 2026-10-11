@@ -37,6 +37,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Extensions: a ZIP install that fails to extract a file now reports the module as failed instead of installing a truncated library, and an update that fails to copy its library puts the previous one back.
 - Git panel: the conflicts list follows git's own merge state, so it updates as soon as a conflict is resolved and no longer lists files that merely contain `<<<<<<<`.
 - Extensions: module updates compare versions properly: a pre-release such as `1.0.0-rc.1` comes before `1.0.0`, and a `v` prefix (`v1.3.0`) is understood.
+- Claude panel: two editor windows running Claude at the same time no longer overwrite each other's permission server settings, which got tool permissions denied.
 
 ## [0.12.2] - 2026-10-11
 
