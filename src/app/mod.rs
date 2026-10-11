@@ -607,6 +607,8 @@ impl eframe::App for CodingUnicorns {
             want_nav_forward,
             want_split,
         ) = ctx.input(|i| {
+            let mac_editor_word_keys =
+                cfg!(target_os = "macos") && self.editor.has_focus && i.modifiers.alt;
             (
                 self.config.keybindings.open_folder.matches(i),
                 self.config.keybindings.open_file.matches(i),
@@ -632,10 +634,11 @@ impl eframe::App for CodingUnicorns {
                 self.config.keybindings.debug_step_out.matches(i),
                 // F12 = go to definition
                 self.config.keybindings.goto_definition.matches(i),
-                // Alt+Left = navigate back
-                self.config.keybindings.navigate_back.matches(i),
+                // Alt+Left = navigate back (on macOS, Option+arrows in the
+                // editor move by word instead)
+                self.config.keybindings.navigate_back.matches(i) && !mac_editor_word_keys,
                 // Alt+Right = navigate forward
-                self.config.keybindings.navigate_forward.matches(i),
+                self.config.keybindings.navigate_forward.matches(i) && !mac_editor_word_keys,
                 // Ctrl+\ = toggle split editor
                 self.config.keybindings.toggle_split.matches(i),
             )

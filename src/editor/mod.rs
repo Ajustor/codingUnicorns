@@ -30,6 +30,24 @@ use indent::detect_indent;
 use std::path::PathBuf;
 use utils::{find_next_occurrence, get_word_at};
 
+/// Shortcuts follow the platform's conventions.
+const MAC: bool = cfg!(target_os = "macos");
+
+/// The modifier that moves, selects and deletes by word: Option on macOS,
+/// Ctrl elsewhere (where Alt+Left/Right navigate back/forward).
+fn word_modifier(m: &egui::Modifiers, mac: bool) -> bool {
+    if mac {
+        m.alt && !m.ctrl && !m.mac_cmd
+    } else {
+        m.ctrl && !m.alt
+    }
+}
+
+/// macOS: Cmd+Left/Right jump to the line start/end.
+fn line_edge_modifier(m: &egui::Modifiers, mac: bool) -> bool {
+    mac && m.mac_cmd && !m.alt && !m.ctrl
+}
+
 /// Editor state right after the last typed char: primary cursor position, whether
 /// it has a selection, extra cursor count and content version. Typing continues
 /// the current undo burst only while this is unchanged.
@@ -1109,12 +1127,13 @@ impl Editor {
                                                 self.insert_newline();
                                             }
                                         }
-                                        // Ctrl+Backspace / Ctrl+Delete — delete a whole word.
-                                        egui::Key::Backspace if modifiers.ctrl => {
+                                        // Ctrl+Backspace / Ctrl+Delete (Option on macOS) —
+                                        // delete a whole word.
+                                        egui::Key::Backspace if word_modifier(modifiers, MAC) => {
                                             self.delete_word(false);
                                             text_typed = true;
                                         }
-                                        egui::Key::Delete if modifiers.ctrl => {
+                                        egui::Key::Delete if word_modifier(modifiers, MAC) => {
                                             self.delete_word(true);
                                             text_typed = true;
                                         }
@@ -1282,10 +1301,31 @@ impl Editor {
                                             ac_nav = true;
                                         }
 
-                                        // Ctrl(+Shift)+Left/Right — jump (select) by word.
-                                        egui::Key::ArrowLeft
-                                            if modifiers.ctrl && !modifiers.alt =>
+                                        // macOS: Cmd(+Shift)+Left/Right — line start/end.
+                                        egui::Key::ArrowLeft | egui::Key::ArrowRight
+                                            if line_edge_modifier(modifiers, MAC) =>
                                         {
+                                            let to_end = *key == egui::Key::ArrowRight;
+                                            let select = modifiers.shift;
+                                            let buf = &self.buffer;
+                                            let cursors = std::iter::once(&mut self.cursor)
+                                                .chain(self.extra_cursors.iter_mut());
+                                            for c in cursors {
+                                                if select {
+                                                    c.start_selection();
+                                                } else {
+                                                    c.clear_selection();
+                                                }
+                                                let col =
+                                                    if to_end { buf.line_len(c.row) } else { 0 };
+                                                c.set_position(c.row, col);
+                                            }
+                                            self.dedup_cursors();
+                                            ac_dismiss = true;
+                                        }
+                                        // Ctrl(+Shift)+Left/Right (Option on macOS) — jump
+                                        // (select) by word.
+                                        egui::Key::ArrowLeft if word_modifier(modifiers, MAC) => {
                                             let select = modifiers.shift;
                                             self.cursor.move_word_left(&self.buffer, select);
                                             for ec in &mut self.extra_cursors {
@@ -1294,9 +1334,7 @@ impl Editor {
                                             self.dedup_cursors();
                                             ac_dismiss = true;
                                         }
-                                        egui::Key::ArrowRight
-                                            if modifiers.ctrl && !modifiers.alt =>
-                                        {
+                                        egui::Key::ArrowRight if word_modifier(modifiers, MAC) => {
                                             let select = modifiers.shift;
                                             self.cursor.move_word_right(&self.buffer, select);
                                             for ec in &mut self.extra_cursors {
@@ -4498,6 +4536,24 @@ mod tests {
         h.press(&mut ed, Key::ArrowLeft, SHIFT);
         assert_eq!(ed.cursor.selection_range(), Some(((0, 0), (0, 1))));
         assert_eq!(ed.selected_text().as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn word_and_line_edge_modifiers_follow_the_platform() {
+        let opt = Modifiers::ALT;
+        let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        // macOS: Option moves by word, Cmd jumps to the line edges.
+        assert!(word_modifier(&opt, true));
+        assert!(word_modifier(&(opt | SHIFT), true), "Option+Shift selects");
+        assert!(!word_modifier(&CTRL, true));
+        assert!(line_edge_modifier(&cmd, true));
+        assert!(!line_edge_modifier(&opt, true));
+        // Elsewhere: Ctrl moves by word, Alt stays free for back/forward.
+        assert!(word_modifier(&CTRL, false));
+        assert!(word_modifier(&(CTRL | SHIFT), false));
+        assert!(!word_modifier(&opt, false));
+        assert!(!word_modifier(&(CTRL | ALT), false));
+        assert!(!line_edge_modifier(&cmd, false));
     }
 
     #[test]

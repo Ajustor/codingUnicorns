@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Ajouts
+
+- macOS : les raccourcis de mot suivent les conventions du Mac. Option+Gauche/Droite déplacent par mot (Maj pour sélectionner), Option+Retour arrière/Suppr effacent un mot, et Cmd+Gauche/Droite vont au début ou à la fin de la ligne. Dans l'éditeur, Option+flèches ne déclenchent plus la navigation arrière/avant sous macOS ; rien ne change sous Windows et Linux (Ctrl pour les mots, Alt+flèches pour naviguer).
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
