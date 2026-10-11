@@ -93,7 +93,14 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 
 Depuis la [page de téléchargement](https://ajustor.github.io/codingUnicorns/fr/) :
 
-- **macOS** (Apple Silicon) : ouvrez `coding-unicorns-macos-arm64.dmg` et glissez **Coding Unicorns** dans **Applications**. L'app est signée ad hoc, sans notarisation Apple : au premier lancement, clic droit → **Ouvrir** (ou Réglages Système → Confidentialité et sécurité → **Ouvrir quand même**). Si elle ne s'ouvre pas, son journal de lancement est dans `~/Library/Logs/Coding Unicorns/launch.log`.
+- **macOS** (Apple Silicon), recommandé : dans le Terminal,
+
+  ```sh
+  curl -fsSL https://ajustor.github.io/codingUnicorns/install-macos.sh | bash
+  ```
+
+  Le script (`scripts/install-macos.sh`) télécharge le `.dmg` de la dernière version, vérifie son SHA-256, installe l'app dans `~/Apps` (`CU_INSTALL_DIR` pour un autre dossier, jamais un dossier nommé « Applications ») et ajoute `cu` au `PATH`. Téléchargée par `curl`, l'app n'a pas l'attribut de quarantaine : ni avertissement Gatekeeper, ni blocage sous macOS 26. Relancez la commande pour réinstaller.
+- **macOS**, sans le Terminal : ouvrez `coding-unicorns-macos-arm64.dmg` et glissez **Coding Unicorns** dans **Applications**. L'app est signée ad hoc, sans notarisation Apple : au premier lancement, clic droit → **Ouvrir** (ou Réglages Système → Confidentialité et sécurité → **Ouvrir quand même**). Si elle ne s'ouvre pas, son journal de lancement est dans `~/Library/Logs/Coding Unicorns/launch.log`.
 - **Linux** (x86_64) : `chmod +x coding-unicorns-linux-x64.AppImage` puis lancez-la (FUSE requis : paquet `libfuse2` ou `fuse`). Un intégrateur comme AppImageLauncher ou Gear Lever l'ajoute au menu des applications.
 - **Windows** : installateur `coding-unicorns-setup.msi`.
 

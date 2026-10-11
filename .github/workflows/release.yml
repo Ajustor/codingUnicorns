@@ -172,6 +172,30 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: bash scripts/smoke-test-macos-app.sh coding-unicorns-macos-arm64.dmg "Coding Unicorns" coding-unicorns "$HOME/Library/Logs/Coding Unicorns/launch.log" "$HOME/Library/Application Support/coding-unicorns/crash.log"
 
+      # Run the Terminal installer (scripts/install-macos.sh) against this
+      # build: a local latest.json served over file:// stands in for the site.
+      - name: Test the install script (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          set -euo pipefail
+          site="$RUNNER_TEMP/site"
+          mkdir -p "$site"
+          cp coding-unicorns-macos-arm64.dmg "$site/"
+          sha=$(shasum -a 256 "$site/coding-unicorns-macos-arm64.dmg" | cut -d' ' -f1)
+          jq -n --arg url "file://$site/coding-unicorns-macos-arm64.dmg" --arg sha "$sha" \
+            '{version: "test", assets: [{name: "coding-unicorns-macos-arm64.dmg", url: $url, sha256: $sha}]}' \
+            > "$site/latest.json"
+          export CU_BASE_URL="file://$site" CU_INSTALL_DIR="$RUNNER_TEMP/Apps"
+          bash scripts/install-macos.sh
+          app="$CU_INSTALL_DIR/Coding Unicorns.app"
+          codesign --verify --deep --strict "$app"
+          for dir in /usr/local/bin "$HOME/.local/bin"; do
+            if [ -L "$dir/cu" ]; then link="$dir/cu"; break; fi
+          done
+          test "$(readlink "$link")" = "$app/Contents/MacOS/coding-unicorns"
+          # Running it again updates in place.
+          bash scripts/install-macos.sh
+
       # ── Windows extras ─────────────────────────────────────────────────────
 
       - name: Export icon (Windows)

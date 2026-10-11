@@ -437,6 +437,18 @@ h2 {
   border-radius: 0.25rem;
   font-size: 0.875em;
 }
+.installation-mac { margin-bottom: 0.75rem; }
+.installation-mac p { margin: 0; }
+.installation-mac pre {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+.installation-mac pre code {
+  display: block;
+  padding: 0.5rem 0.75rem;
+  white-space: pre;
+  user-select: all;
+}
 
 /* --- Fonctionnalités -------------------------------------------------- */
 

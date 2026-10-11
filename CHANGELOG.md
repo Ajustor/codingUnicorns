@@ -8,6 +8,15 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.12.2] - 2026-10-11
+
+### Added
+
+- macOS: a one-line Terminal installer, now the recommended way to install on a Mac: `curl -fsSL https://ajustor.github.io/codingUnicorns/install-macos.sh | bash`. It downloads the latest version, checks its SHA-256, installs the app in `~/Apps` (where Spotlight finds it) and puts the `cu` command on your `PATH`. Downloaded this way, the app shows no "dangerous app" warning and is not blocked by macOS 26. Run the command again to reinstall; the app keeps updating itself afterwards.
+
+### Changed
+
+- The download page shows the macOS Terminal installer first; the `.pkg` and `.dmg` remain available for installing without the Terminal.
 ## [0.12.1] - 2026-10-11
 
 ### Fixed

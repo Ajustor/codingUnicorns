@@ -8,6 +8,15 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.12.2] - 2026-10-11
+
+### Ajouts
+
+- macOS : un installateur en une ligne dans le Terminal, désormais la méthode recommandée sur Mac : `curl -fsSL https://ajustor.github.io/codingUnicorns/install-macos.sh | bash`. Il télécharge la dernière version, vérifie son SHA-256, installe l'app dans `~/Apps` (où Spotlight la trouve) et ajoute la commande `cu` à votre `PATH`. Installée ainsi, l'app n'affiche plus d'avertissement « app dangereuse » et n'est pas bloquée par macOS 26. Relancez la commande pour réinstaller ; l'app continue ensuite de se mettre à jour toute seule.
+
+### Modifications
+
+- La page de téléchargement présente d'abord l'installateur macOS par le Terminal ; le `.pkg` et le `.dmg` restent disponibles pour installer sans le Terminal.
 ## [0.12.1] - 2026-10-11
 
 ### Corrections

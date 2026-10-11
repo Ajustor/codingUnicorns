@@ -43,6 +43,8 @@ jq -n --arg version "${TAG#v}" --arg notes "$notes" --arg page "$BASE_URL/" \
   > site/latest.json
 
 cp assets/icon.png site/icon.png
+# The macOS install command fetches it from the site root.
+cp scripts/install-macos.sh site/install-macos.sh
 python3 scripts/build-pages.py site/latest.json "$dir" site
 
 cat site/latest.json
