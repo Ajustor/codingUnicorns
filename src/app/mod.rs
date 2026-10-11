@@ -26,7 +26,7 @@ mod claude_ops;
 mod debug_ops;
 pub mod file_ops;
 pub mod file_watch;
-mod lsp_ops;
+pub mod lsp_ops;
 mod navigation;
 pub mod pane2;
 pub mod session;
@@ -61,12 +61,12 @@ pub struct CodingUnicorns {
     pub git_status: GitStatus,
     pub git_panel: crate::ui::git_panel::GitPanel,
     pub lsp: LspManager,
-    pub pending_hover_id: Option<u64>,
+    pub pending_hover_id: Option<lsp_ops::PendingLsp>,
     pub lsp_hover_result: Option<String>,
     /// Pending LSP go-to-definition request id.
-    pub pending_definition_id: Option<u64>,
+    pub pending_definition_id: Option<lsp_ops::PendingLsp>,
     /// Pending LSP completion request id.
-    pub pending_completion_id: Option<u64>,
+    pub pending_completion_id: Option<lsp_ops::PendingLsp>,
     /// Last editor content_version sent to the LSP server (to detect changes).
     pub last_lsp_content_version: i32,
     pub terminals: Vec<Terminal>,
@@ -120,7 +120,7 @@ pub struct CodingUnicorns {
     /// Document symbols for the outline panel.
     pub outline_symbols: Vec<crate::lsp::client::DocumentSymbol>,
     /// Pending LSP documentSymbol request id.
-    pub pending_symbols_id: Option<u64>,
+    pub pending_symbols_id: Option<lsp_ops::PendingLsp>,
     /// Content version at time of last symbol request.
     pub outline_last_version: i32,
     /// Time of last symbol request.
@@ -128,7 +128,7 @@ pub struct CodingUnicorns {
     /// Find-all-references results: (path, line, preview).
     pub references_result: Vec<(std::path::PathBuf, u32, String)>,
     /// Pending LSP references request id.
-    pub pending_references_id: Option<u64>,
+    pub pending_references_id: Option<lsp_ops::PendingLsp>,
     /// Whether to show the references panel.
     pub show_references: bool,
     /// Rename dialog state.
@@ -137,7 +137,7 @@ pub struct CodingUnicorns {
     pub rename_pending_id: Option<u64>,
     /// Code actions.
     pub code_actions: Vec<crate::lsp::client::CodeAction>,
-    pub pending_code_actions_id: Option<u64>,
+    pub pending_code_actions_id: Option<lsp_ops::PendingLsp>,
     pub show_code_actions_menu: bool,
     pub code_actions_pos: egui::Pos2,
     pub code_actions_last_request: Option<std::time::Instant>,
@@ -145,9 +145,9 @@ pub struct CodingUnicorns {
     /// an explicit Ctrl+. request, so the menu never pops up on its own (e.g. while typing).
     pub code_actions_show_pending: bool,
     /// Pending signature help request id.
-    pub pending_signature_id: Option<u64>,
+    pub pending_signature_id: Option<lsp_ops::PendingLsp>,
     /// Pending LSP formatting request id.
-    pub pending_format_id: Option<u64>,
+    pub pending_format_id: Option<lsp_ops::PendingLsp>,
     // ── Auto-save ────────────────────────────────────────────────────────────
     /// Last content_version seen — used to detect edits for auto-save.
     pub last_edit_version_seen: i32,
@@ -791,6 +791,7 @@ impl eframe::App for CodingUnicorns {
 
         // Poll all LSP clients for incoming messages (also drives auto-restart).
         let (lsp_responses, reconnected_exts) = self.lsp.poll_all();
+        self.expire_lsp_requests(&reconnected_exts);
         self.sync_problems();
         // Keep updating the "LSP loading…" status while a server is busy.
         if self.lsp.any_busy() {
@@ -815,19 +816,19 @@ impl eframe::App for CodingUnicorns {
                 if self.handle_palette_lsp_response(&ext, id, &response) {
                     continue;
                 }
-                if Some(id) == self.pending_hover_id {
+                if lsp_ops::PendingLsp::answers(&self.pending_hover_id, &ext, id) {
                     self.lsp_hover_result = LspClient::parse_hover(&response);
                     self.pending_hover_id = None;
-                } else if Some(id) == self.pending_definition_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_definition_id, &ext, id) {
+                    self.pending_definition_id = None;
                     if let Some((path, line)) = LspClient::parse_definition(&response) {
                         if let Some(current_path) = self.editor.current_path.clone() {
                             let (row, col) = self.editor.cursor.position();
                             self.nav_history.push(current_path, row, col);
                         }
                         self.open_file_at_line(path, line as usize);
-                        self.pending_definition_id = None;
                     }
-                } else if Some(id) == self.pending_completion_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_completion_id, &ext, id) {
                     let items = LspClient::parse_completions(&response);
                     if !items.is_empty() {
                         let suggestions = items
@@ -841,10 +842,10 @@ impl eframe::App for CodingUnicorns {
                         self.editor.autocomplete.set_lsp_suggestions(suggestions);
                     }
                     self.pending_completion_id = None;
-                } else if Some(id) == self.pending_symbols_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_symbols_id, &ext, id) {
                     self.outline_symbols = LspClient::parse_document_symbols(&response);
                     self.pending_symbols_id = None;
-                } else if Some(id) == self.pending_references_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_references_id, &ext, id) {
                     let refs = LspClient::parse_references(&response);
                     self.references_result = refs
                         .into_iter()
@@ -866,7 +867,7 @@ impl eframe::App for CodingUnicorns {
                         self.apply_rename_edits(edits);
                     }
                     self.rename_pending_id = None;
-                } else if Some(id) == self.pending_code_actions_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_code_actions_id, &ext, id) {
                     self.code_actions = LspClient::parse_code_actions(&response);
                     self.pending_code_actions_id = None;
                     // Only pop the menu when the user explicitly asked (Ctrl+.), never on its own.
@@ -874,11 +875,11 @@ impl eframe::App for CodingUnicorns {
                         self.show_code_actions_menu = true;
                     }
                     self.code_actions_show_pending = false;
-                } else if Some(id) == self.pending_signature_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_signature_id, &ext, id) {
                     self.editor.signature_help_text = LspClient::parse_signature_help(&response);
                     self.pending_signature_id = None;
                     self.editor.signature_help_request_pending = false;
-                } else if Some(id) == self.pending_format_id {
+                } else if lsp_ops::PendingLsp::answers(&self.pending_format_id, &ext, id) {
                     self.pending_format_id = None;
                     let edits = LspClient::parse_text_edits(&response);
                     if !edits.is_empty() {
@@ -961,8 +962,10 @@ impl eframe::App for CodingUnicorns {
                     if let Some(client) = self.lsp.get_mut(ext) {
                         if client.is_connected {
                             let uri = crate::lsp::client::path_to_uri(&path);
-                            self.pending_completion_id =
-                                Some(client.request_completions(&uri, row as u32, col as u32));
+                            self.pending_completion_id = Some(lsp_ops::PendingLsp::new(
+                                ext,
+                                client.request_completions(&uri, row as u32, col as u32),
+                            ));
                             lsp_sent = true;
                         }
                     }
@@ -989,8 +992,10 @@ impl eframe::App for CodingUnicorns {
                         if let Some(client) = self.lsp.get_mut(ext) {
                             if client.is_connected {
                                 let uri = crate::lsp::client::path_to_uri(&path);
-                                self.pending_symbols_id =
-                                    Some(client.request_document_symbols(&uri));
+                                self.pending_symbols_id = Some(lsp_ops::PendingLsp::new(
+                                    ext,
+                                    client.request_document_symbols(&uri),
+                                ));
                                 self.outline_last_version = self.editor.content_version;
                                 self.outline_last_request = Some(std::time::Instant::now());
                             }
@@ -1010,8 +1015,10 @@ impl eframe::App for CodingUnicorns {
                             let uri = crate::lsp::client::path_to_uri(&path);
                             let tab_size = self.editor.detected_indent_size as u32;
                             let insert_spaces = self.editor.detected_indent_spaces;
-                            self.pending_format_id =
-                                Some(client.request_formatting(&uri, tab_size, insert_spaces));
+                            self.pending_format_id = Some(lsp_ops::PendingLsp::new(
+                                ext,
+                                client.request_formatting(&uri, tab_size, insert_spaces),
+                            ));
                             self.toast("Formatted");
                         }
                     }
@@ -1028,8 +1035,10 @@ impl eframe::App for CodingUnicorns {
                             let uri = crate::lsp::client::path_to_uri(&path);
                             let row = self.editor.signature_help_row;
                             let col = self.editor.signature_help_col;
-                            self.pending_signature_id =
-                                Some(client.request_signature_help(&uri, row, col));
+                            self.pending_signature_id = Some(lsp_ops::PendingLsp::new(
+                                ext,
+                                client.request_signature_help(&uri, row, col),
+                            ));
                             self.editor.signature_help_request_pending = false;
                         }
                     }
