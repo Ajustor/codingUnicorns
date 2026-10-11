@@ -17,6 +17,8 @@ pub struct FfiLangPlugin {
     // Must be kept alive — dropping it would unload the library.
     _lib: libloading::Library,
     language_id: String,
+    /// `extension.id` from the manifest.
+    extension_id: String,
     extensions: Vec<String>,
     lsp_server: Option<String>,
     lsp_args: Vec<String>,
@@ -158,6 +160,7 @@ impl FfiLangPlugin {
             Ok(Self {
                 _lib: lib,
                 language_id,
+                extension_id: manifest.extension.id.clone(),
                 extensions,
                 lsp_server,
                 lsp_args,
@@ -258,6 +261,10 @@ impl FfiLangPlugin {
 impl Plugin for FfiLangPlugin {
     fn name(&self) -> &str {
         &self.language_id
+    }
+
+    fn extension_id(&self) -> Option<&str> {
+        Some(&self.extension_id)
     }
 
     fn tokenize_line(&self, lang: &str, line: &str) -> Option<Vec<Token>> {
@@ -782,6 +789,7 @@ mod tests {
         FfiLangPlugin {
             _lib: this_lib(),
             language_id: "testlang".into(),
+            extension_id: "acme.testlang".into(),
             extensions: vec!["tl".into(), "tsx".into(), "jsx".into()],
             lsp_server: Some("tl-lsp".into()),
             lsp_args: vec!["--stdio".into()],
@@ -810,6 +818,7 @@ mod tests {
         FfiLangPlugin {
             _lib: this_lib(),
             language_id: "bare".into(),
+            extension_id: "acme.bare".into(),
             extensions: vec!["tl".into()],
             lsp_server: None,
             lsp_args: vec![],

@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Extensions: uninstalling or updating a module that only adds panels or commands now unloads it first, so its library is released on Windows. When its files can't be deleted, the module stays listed instead of disappearing half-removed.
+
 ## [0.12.2] - 2026-10-11
 
 ### Added

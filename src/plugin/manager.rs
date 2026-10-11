@@ -102,6 +102,14 @@ impl PluginManager {
         });
     }
 
+    /// Unload the plugins loaded from extension `id` and those handling one of
+    /// its `languages`. Matching the id also catches modules that only add
+    /// panels or commands (`languages = []`).
+    pub fn unload_extension(&mut self, id: &str, languages: &[String]) {
+        self.plugins.retain(|p| p.extension_id() != Some(id));
+        self.unload_by_extensions(languages);
+    }
+
     /// Reset multi-line tokenizer state for all plugins that handle `lang`.
     pub fn reset_tokenizer(&self, lang: &str) {
         for plugin in &self.plugins {
@@ -175,6 +183,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         name: &'static str,
+        ext_id: Option<&'static str>,
         exts: &'static [&'static str],
         cmds: Vec<&'static str>,
         panels: Vec<&'static str>,
@@ -189,6 +198,9 @@ mod tests {
     impl Plugin for Fake {
         fn name(&self) -> &str {
             self.name
+        }
+        fn extension_id(&self) -> Option<&str> {
+            self.ext_id
         }
         fn commands(&self) -> Vec<PluginCommand> {
             self.cmds
@@ -520,6 +532,29 @@ mod tests {
         assert!(m.lsp_server_for_ext("rs").is_some());
         assert_eq!(m.update_all(&ctx()).len(), 2);
         m.unload_by_extensions(&[]);
+        assert_eq!(m.update_all(&ctx()).len(), 2);
+    }
+
+    #[test]
+    fn unload_extension_removes_panel_only_modules() {
+        let mut m = PluginManager::new();
+        m.register(Box::new(Fake {
+            name: "todo",
+            ext_id: Some("acme.todo"),
+            panels: vec!["todo-panel"],
+            ..Default::default()
+        }));
+        m.register(Box::new(Fake {
+            name: "other",
+            ext_id: Some("acme.other"),
+            ..Default::default()
+        }));
+        m.register(Box::new(Fake {
+            name: "builtin",
+            ..Default::default()
+        }));
+        m.unload_extension("acme.todo", &[]);
+        assert!(m.sidebar_panels().is_empty());
         assert_eq!(m.update_all(&ctx()).len(), 2);
     }
 }

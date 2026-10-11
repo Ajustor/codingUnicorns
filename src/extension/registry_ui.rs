@@ -93,16 +93,17 @@ impl RegistryBrowser {
         });
     }
 
-    /// Called by the app each frame: returns the language lists whose plugins
-    /// must be unloaded now; the matching installs start on the next frame.
-    pub fn take_unload_requests(&mut self) -> Vec<Vec<String>> {
+    /// Called by the app each frame: returns the `(module id, languages)` whose
+    /// plugins must be unloaded now; the matching installs start on the next
+    /// frame. The id also covers modules without languages.
+    pub fn take_unload_requests(&mut self) -> Vec<(String, Vec<String>)> {
         self.pending
             .drain(..)
             .map(|p| {
+                let id = p.module.id.clone();
                 self.ready.push(p.module);
-                p.unload_languages
+                (id, p.unload_languages)
             })
-            .filter(|langs| !langs.is_empty())
             .collect()
     }
 
@@ -460,7 +461,13 @@ mod tests {
         );
 
         let unloads = b.take_unload_requests();
-        assert_eq!(unloads, vec![vec!["rs".to_string()]]);
+        assert_eq!(
+            unloads,
+            vec![
+                ("a.fresh".to_string(), vec![]),
+                ("a.update".to_string(), vec!["rs".to_string()])
+            ]
+        );
         assert_eq!(b.ready.len(), 2);
         assert!(b.pending.is_empty());
         assert!(b.take_unload_requests().is_empty());

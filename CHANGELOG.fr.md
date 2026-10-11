@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Extensions : désinstaller ou mettre à jour un module qui n'ajoute que des panneaux ou des commandes le décharge d'abord, ce qui libère sa bibliothèque sous Windows. Si ses fichiers ne peuvent pas être supprimés, le module reste dans la liste au lieu de disparaître à moitié supprimé.
+
 ## [0.12.2] - 2026-10-11
 
 ### Ajouts
