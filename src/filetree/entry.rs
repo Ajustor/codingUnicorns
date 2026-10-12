@@ -1,5 +1,9 @@
 use std::path::{Path, PathBuf};
 
+/// Entries never listed: VCS metadata and OS clutter. Other dot-files and
+/// dot-folders (`.github`, `.vscode`, `.env`…) are shown, subject to .gitignore.
+const ALWAYS_HIDDEN: &[&str] = &[".git", ".DS_Store", "Thumbs.db"];
+
 /// Directories to ignore when not inside a git repository (fallback).
 const IGNORED_DIRS: &[&str] = &[
     "target",
@@ -93,7 +97,7 @@ impl FileEntry {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                if name.starts_with('.') {
+                if ALWAYS_HIDDEN.contains(&name.as_str()) {
                     continue;
                 }
                 if !show_gitignored && should_ignore(&path, repo) {
@@ -105,8 +109,13 @@ impl FileEntry {
                     files.push(path);
                 }
             }
-            dirs.sort();
-            files.sort();
+            // Case-insensitive, like the system file managers ("Zeta" after "alpha").
+            let key = |p: &PathBuf| {
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                (name.to_lowercase(), name.into_owned())
+            };
+            dirs.sort_by_cached_key(key);
+            files.sort_by_cached_key(key);
             for p in dirs.into_iter().chain(files) {
                 self.children.push(FileEntry::new(p, self.depth + 1));
             }
@@ -157,6 +166,7 @@ mod tests {
         fs::create_dir_all(root.join("target/debug")).unwrap();
         fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         fs::create_dir_all(root.join(".hidden_dir")).unwrap();
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
         fs::write(root.join("b.txt"), "b").unwrap();
         fs::write(root.join("A.md"), "a").unwrap();
         fs::write(root.join(".env"), "secret").unwrap();
@@ -187,22 +197,45 @@ mod tests {
     }
 
     #[test]
+    fn load_children_sorts_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("Zeta")).unwrap();
+        fs::create_dir(dir.path().join("alpha")).unwrap();
+        fs::write(dir.path().join("README.md"), "").unwrap();
+        fs::write(dir.path().join("main.rs"), "").unwrap();
+        let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
+        root.load_children(None, false);
+        assert_eq!(names(&root), ["alpha", "Zeta", "main.rs", "README.md"]);
+    }
+
+    #[test]
     fn new_on_path_without_file_name_has_empty_name() {
         let e = FileEntry::new(PathBuf::from(".."), 0);
         assert_eq!(e.name, "");
     }
 
     #[test]
-    fn load_children_sorts_dirs_first_and_skips_hidden_and_ignored() {
+    fn load_children_sorts_dirs_first_and_skips_ignored() {
         let dir = tempfile::tempdir().unwrap();
         layout(dir.path());
         let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
         root.load_children(None, false);
         // target/ and node_modules/ are ignored as dirs, but a *file* named
-        // "build" is kept. Dot-entries are always hidden.
-        assert_eq!(names(&root), ["docs", "src", "A.md", "b.txt", "build"]);
-        assert!(root.children[0].is_dir && root.children[1].is_dir);
-        assert!(root.children[2..].iter().all(|c| !c.is_dir));
+        // "build" is kept. Dot-entries are listed, except .git.
+        assert_eq!(
+            names(&root),
+            [
+                ".hidden_dir",
+                "docs",
+                "src",
+                ".env",
+                "A.md",
+                "b.txt",
+                "build"
+            ]
+        );
+        assert!(root.children[..3].iter().all(|c| c.is_dir));
+        assert!(root.children[3..].iter().all(|c| !c.is_dir));
         assert!(root.children.iter().all(|c| c.depth == 1));
         assert!(root.children.iter().all(|c| !c.is_expanded));
     }
@@ -216,10 +249,12 @@ mod tests {
         assert_eq!(
             names(&root),
             [
+                ".hidden_dir",
                 "docs",
                 "node_modules",
                 "src",
                 "target",
+                ".env",
                 "A.md",
                 "b.txt",
                 "build"
@@ -266,20 +301,32 @@ mod tests {
         let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
         root.load_children(Some(&repo), false);
         // docs/ and b.txt are gitignored; target/ and node_modules/ are NOT
-        // (the fallback list only applies outside a repository).
+        // (the fallback list only applies outside a repository). .git is never listed.
         assert_eq!(
             names(&root),
-            ["node_modules", "src", "target", "A.md", "build"]
+            [
+                ".hidden_dir",
+                "node_modules",
+                "src",
+                "target",
+                ".env",
+                ".gitignore",
+                "A.md",
+                "build"
+            ]
         );
 
         root.load_children(Some(&repo), true);
         assert_eq!(
             names(&root),
             [
+                ".hidden_dir",
                 "docs",
                 "node_modules",
                 "src",
                 "target",
+                ".env",
+                ".gitignore",
                 "A.md",
                 "b.txt",
                 "build"
@@ -295,7 +342,18 @@ mod tests {
         layout(other.path());
         let mut root = FileEntry::new(other.path().to_path_buf(), 0);
         root.load_children(Some(&repo), false);
-        assert_eq!(names(&root), ["docs", "src", "A.md", "b.txt", "build"]);
+        assert_eq!(
+            names(&root),
+            [
+                ".hidden_dir",
+                "docs",
+                "src",
+                ".env",
+                "A.md",
+                "b.txt",
+                "build"
+            ]
+        );
     }
 
     #[test]
@@ -307,7 +365,18 @@ mod tests {
         layout(other.path());
         let mut root = FileEntry::new(other.path().to_path_buf(), 0);
         root.load_children(Some(&bare), false);
-        assert_eq!(names(&root), ["docs", "src", "A.md", "b.txt", "build"]);
+        assert_eq!(
+            names(&root),
+            [
+                ".hidden_dir",
+                "docs",
+                "src",
+                ".env",
+                "A.md",
+                "b.txt",
+                "build"
+            ]
+        );
     }
 
     #[test]
@@ -332,7 +401,18 @@ mod tests {
         fs::remove_dir_all(dir.path().join("docs")).unwrap();
 
         root.reload_recursive(None, false);
-        assert_eq!(names(&root), ["src", "A.md", "b.txt", "build", "c.txt"]);
+        assert_eq!(
+            names(&root),
+            [
+                ".hidden_dir",
+                "src",
+                ".env",
+                "A.md",
+                "b.txt",
+                "build",
+                "c.txt"
+            ]
+        );
         let src = child(&mut root, "src");
         assert!(src.is_expanded, "expanded dir must stay expanded");
         assert_eq!(names(src), ["nested", "main.rs"]);
