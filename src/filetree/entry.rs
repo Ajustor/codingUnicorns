@@ -349,8 +349,12 @@ mod tests {
         fs::create_dir_all(dir.path().join("build/out")).unwrap();
         fs::write(dir.path().join("build/out/app.jar"), "").unwrap();
         fs::write(dir.path().join("kept.rs"), "").unwrap();
-        fs::write(dir.path().join(".gitignore"), "/build/
-").unwrap();
+        fs::write(
+            dir.path().join(".gitignore"),
+            "/build/
+",
+        )
+        .unwrap();
         let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
         root.load_children(Some(&repo), true);
         let flags: Vec<_> = root
