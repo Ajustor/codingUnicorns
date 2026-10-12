@@ -8,6 +8,16 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.14.1] - 2026-10-12
+
+### Ajouts
+
+- Explorateur : un bouton dans l'en-tête de l'explorateur (icône d'œil) et la commande de palette « Explorer: Show/Hide Gitignored Files » affichent les fichiers et dossiers exclus par le `.gitignore` (sorties de build, logs, dossiers d'outils locaux…). Ils apparaissent grisés et en italique, et leur infobulle précise qu'ils ne font pas partie des commits. Le choix est mémorisé, comme « Show gitignored files » dans les paramètres.
+
+### Corrections
+
+- Explorateur : « Reveal in File Manager » fonctionne désormais sous Windows (l'Explorateur s'ouvre avec le fichier sélectionné) et macOS (Finder) ; il ne marchait que sous Linux.
+
 ## [0.14.0] - 2026-10-12
 
 ### Ajouts

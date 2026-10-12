@@ -8,6 +8,16 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.14.1] - 2026-10-12
+
+### Added
+
+- File tree: a button in the explorer header (eye icon) and the palette command "Explorer: Show/Hide Gitignored Files" show the files and folders excluded by `.gitignore` (build output, logs, local tool folders…). They are dimmed and in italics, and their tooltip says they are not part of commits. The setting is remembered, like "Show gitignored files" in the settings.
+
+### Fixed
+
+- File tree: "Reveal in File Manager" now works on Windows (Explorer opens with the file selected) and macOS (Finder); it only worked on Linux.
+
 ## [0.14.0] - 2026-10-12
 
 ### Added

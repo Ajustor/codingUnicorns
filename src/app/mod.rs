@@ -445,6 +445,15 @@ impl CodingUnicorns {
         app
     }
 
+    /// Show or hide the files `.gitignore` excludes in the explorer (shown
+    /// dimmed), and remember the choice.
+    pub fn toggle_gitignored(&mut self) {
+        self.config.editor.show_gitignored = !self.config.editor.show_gitignored;
+        self.config.save();
+        self.file_tree.show_gitignored = self.config.editor.show_gitignored;
+        self.file_tree.reload_children();
+    }
+
     pub fn toast(&mut self, message: impl Into<String>) {
         self.toasts.push(crate::ui::widgets::Toast {
             message: message.into(),
@@ -1308,6 +1317,7 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::ToggleTerminal => self.show_terminal = !self.show_terminal,
                     PaletteCommand::ToggleClaude => self.show_claude = !self.show_claude,
                     PaletteCommand::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
+                    PaletteCommand::ToggleGitignored => self.toggle_gitignored(),
                     PaletteCommand::GoToLine => self.editor.show_goto_line = true,
                     PaletteCommand::SaveFile => {
                         if self.save_editor_guarded(true) {
