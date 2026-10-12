@@ -184,7 +184,7 @@ impl DapClient {
             "type": "request",
             "command": "setBreakpoints",
             "arguments": {
-                "source": { "path": file.to_string_lossy(), "name": file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() },
+                "source": { "path": source_path(file), "name": file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() },
                 "breakpoints": bps,
                 "sourceModified": false
             }
@@ -645,6 +645,17 @@ fn parse_evaluate(msg: &Value) -> WatchResult {
 
 /// Replace `var` with `replacement` in every string value of a JSON tree.
 /// Works on parsed values, so the replacement is never re-parsed as JSON.
+/// A breakpoint's source path as adapters expect it: with the platform's
+/// separators (java-debug ignores `C:/a/B.java` breakpoints on Windows).
+fn source_path(file: &Path) -> String {
+    let path = file.to_string_lossy();
+    if cfg!(windows) {
+        path.replace('/', "\\")
+    } else {
+        path.into_owned()
+    }
+}
+
 fn substitute_variable(value: &mut Value, var: &str, replacement: &str) {
     map_strings(value, &|s| s.replace(var, replacement));
 }
@@ -683,6 +694,16 @@ pub fn make_breakpoints(file: &Path, lines: &[usize]) -> Vec<Breakpoint> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breakpoint_paths_use_the_platform_separators() {
+        let p = source_path(Path::new("C:/a/B.java"));
+        if cfg!(windows) {
+            assert_eq!(p, r"C:\a\B.java");
+        } else {
+            assert_eq!(p, "C:/a/B.java");
+        }
+    }
     use crossbeam_channel::{unbounded, Sender};
     use std::io::Write;
     use std::sync::atomic::AtomicBool;
