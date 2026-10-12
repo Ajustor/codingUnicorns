@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod ffi_plugin;
 pub mod installer;
 pub mod loader;

@@ -158,17 +158,12 @@ impl DebugAdapter {
                 self.name()
             ));
         };
-        if !url.starts_with("https://") {
-            return Err(format!("refusing non-https download {url}"));
-        }
-        let bytes = crate::extension::remote_registry::http_fetch(url, 200 * 1024 * 1024)?;
-        let dest = self.debugger_dir();
-        std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
-        if url.ends_with(".zip") {
-            extract_zip(&bytes, &dest)?;
-        } else {
-            extract_tar_gz(&bytes, &dest)?;
-        }
+        let binary = self
+            .spec
+            .download
+            .as_ref()
+            .map_or("", |d| d.binary.as_str());
+        crate::extension::archive::download(url, &self.debugger_dir(), binary)?;
         self.installed_file().ok_or_else(|| {
             format!(
                 "{} not found in the downloaded archive",
@@ -232,54 +227,6 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
             .map(|s| dir.join(format!("{name}{s}")))
             .find(|p| p.is_file())
     })
-}
-
-fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
-    let mut archive =
-        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-        // `enclosed_name` rejects absolute paths and `..` components.
-        let Some(rel) = entry.enclosed_name() else {
-            continue;
-        };
-        let out = dest.join(rel);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-            continue;
-        }
-        if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let mut file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
-        std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        if let Some(mode) = entry.unix_mode() {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode));
-        }
-    }
-    Ok(())
-}
-
-/// `.tar.gz` archives are unpacked with the system `tar`.
-fn extract_tar_gz(bytes: &[u8], dest: &Path) -> Result<(), String> {
-    use crate::process_ext::CommandExt as _;
-    let archive = dest.join("download.tar.gz");
-    std::fs::write(&archive, bytes).map_err(|e| e.to_string())?;
-    let status = std::process::Command::new("tar")
-        .no_window()
-        .arg("-xzf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(dest)
-        .status();
-    let _ = std::fs::remove_file(&archive);
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("tar failed ({s})")),
-        Err(e) => Err(format!("cannot run tar: {e}")),
-    }
 }
 
 #[cfg(test)]
@@ -470,7 +417,7 @@ macos-aarch64 = "https://example.invalid/j.tgz"
         }
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("tools");
-        extract_zip(buf.get_ref(), &dest).unwrap();
+        crate::extension::archive::extract_zip(buf.get_ref(), &dest).unwrap();
         assert_eq!(
             std::fs::read(dest.join("netcoredbg").join("netcoredbg.exe")).unwrap(),
             b"bin"

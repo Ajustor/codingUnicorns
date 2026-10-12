@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.15.0] - 2026-10-12
+
+### Ajouts
+
+- Les modules peuvent faire télécharger leur serveur de langage au premier usage (`[capabilities.lsp_download]`, ou `download` pour un serveur propre à un langage) : l'archive est récupérée en arrière-plan à l'ouverture du premier fichier concerné, puis le serveur démarre. Les arguments du serveur peuvent utiliser `${serverDir}` (l'archive décompressée), `${dataDir}` (un dossier de données par module et par workspace) et `${os}`, et un nom de fichier contenant `*` désigne le fichier correspondant. Le téléchargement peut être un `.zip`, un `.tar.gz`, un fichier `.gz` seul ou l'exécutable lui-même. Les modules Java, Rust, TOML, XML et Markdown s'en servent : Eclipse JDT LS, rust-analyzer, taplo, lemminx et marksman n'ont plus à être installés à la main.
+
 ## [0.14.1] - 2026-10-12
 
 ### Ajouts

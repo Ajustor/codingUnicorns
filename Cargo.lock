@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "coding-unicorns"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "claude",
@@ -784,6 +784,7 @@ dependencies = [
  "egui_commonmark",
  "egui_extras",
  "env_logger",
+ "flate2",
  "fuzzy-matcher",
  "git2",
  "image",

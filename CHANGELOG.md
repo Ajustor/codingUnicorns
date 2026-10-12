@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-10-12
+
+### Added
+
+- Modules can have their language server downloaded on first use (`[capabilities.lsp_download]`, or `download` in a per-language server): the archive is fetched in the background when the first file of its languages is opened, then the server starts. Server arguments can use `${serverDir}` (the unpacked archive), `${dataDir}` (a data folder per module and workspace) and `${os}`, and a file name with a `*` picks the matching file. Downloads can be `.zip`, `.tar.gz`, a single `.gz` file or the executable itself. The Java, Rust, TOML, XML and Markdown modules use it: Eclipse JDT LS, rust-analyzer, taplo, lemminx and marksman no longer need to be installed by hand.
+
 ## [0.14.1] - 2026-10-12
 
 ### Added

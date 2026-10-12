@@ -82,6 +82,9 @@ pub struct LanguageServer {
     /// `initializationOptions`, instead of the module's `lsp_init_options`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub init_options: Option<toml::Table>,
+    /// Archive with the server's files, like the module's `lsp_download`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<ArchiveDownload>,
 }
 
 /// `[debugger]` section: how to start the language's debug adapter (DAP
@@ -116,11 +119,13 @@ pub struct DebuggerSpec {
     /// use when `args` refer to `${debuggerDir}`, else when the command is
     /// not on `PATH` (the downloaded binary is then the command).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub download: Option<DebuggerDownload>,
+    pub download: Option<ArchiveDownload>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DebuggerDownload {
+/// An archive a module downloads on first use (`[debugger.download]`,
+/// `[capabilities.lsp_download]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchiveDownload {
     /// File inside the archive (`/`-separated) whose presence means the
     /// download is installed; an executable is given without `.exe`
     /// (e.g. `netcoredbg/netcoredbg`).
@@ -236,9 +241,19 @@ pub struct Capabilities {
     /// LSP server binary name (e.g. "rust-analyzer", "pylsp").
     #[serde(default)]
     pub lsp_server: Option<String>,
-    /// Arguments to pass to the LSP server (e.g. ["--stdio"]).
+    /// Arguments to pass to the LSP server (e.g. ["--stdio"]). Variables:
+    /// `${serverDir}` (where `lsp_download` is unpacked), `${dataDir}` (a
+    /// folder for the server's data, one per workspace), `${os}` (`win`,
+    /// `linux` or `mac`). A path whose file name contains `*` is replaced
+    /// by the matching file (e.g. a jar named after its version).
     #[serde(default)]
     pub lsp_args: Vec<String>,
+    /// Archive with the server's files, unpacked in the module's folder
+    /// (`${serverDir}`) when the first file of its languages is opened: when
+    /// the command or arguments use `${serverDir}`, else when the command is
+    /// not on `PATH` (the downloaded `binary` is then the command).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsp_download: Option<ArchiveDownload>,
     /// `initializationOptions` sent to the LSP server (e.g.
     /// `{ provideFormatter = true }`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

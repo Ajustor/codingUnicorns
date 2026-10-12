@@ -193,6 +193,8 @@ pub struct CodingUnicorns {
     pub session: session::SessionState,
     /// External file change detection (workspace watcher + save guard).
     pub file_watch: file_watch::FileWatchState,
+    /// Language server archives being downloaded (first use of a module).
+    pub lsp_downloads: crate::lsp::server::ServerDownloads,
     /// Workspace-wide LSP diagnostics (bottom panel, Ctrl+Shift+M).
     pub problems_panel: crate::ui::problems::ProblemsPanel,
     /// In-flight `workspace/symbol` requests for the palette's `#` mode.
@@ -365,6 +367,7 @@ impl CodingUnicorns {
             pending_image: None,
             image_texture: None,
             image_view: Default::default(),
+            lsp_downloads: Default::default(),
             pending_delete: None,
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),
@@ -812,6 +815,7 @@ impl eframe::App for CodingUnicorns {
         }
 
         // Poll all LSP clients for incoming messages (also drives auto-restart).
+        self.poll_lsp_downloads(ctx);
         let (lsp_responses, reconnected_exts) = self.lsp.poll_all();
         self.expire_lsp_requests(&reconnected_exts);
         self.sync_problems();
@@ -1336,6 +1340,7 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::FindReplace => self.editor.open_find(true),
                     PaletteCommand::RestartLsp => {
                         self.lsp.restart_all();
+                        self.lsp_downloads.clear_failed();
                         // Re-start LSP for the current file if an extension provides one
                         if let Some(path) = self.editor.current_path.clone() {
                             self.ensure_lsp_for_file(&path);

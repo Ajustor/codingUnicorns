@@ -213,7 +213,7 @@ impl CodingUnicorns {
     }
 
     /// Start the language server for `path` and send it the editor's text.
-    fn notify_lsp_opened(&mut self, path: &std::path::Path) {
+    pub(super) fn notify_lsp_opened(&mut self, path: &std::path::Path) {
         self.ensure_lsp_for_file(path);
         // Notify LSP server that a file was opened — with the normalized
         // (LF-only) buffer text, so later edits line up with it.
