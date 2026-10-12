@@ -1427,33 +1427,27 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             let texture = ui.ctx().load_texture(
                                 "image_preview",
                                 color_image,
-                                egui::TextureOptions::LINEAR,
+                                // Crisp pixels when zoomed in, smooth when shrunk.
+                                egui::TextureOptions {
+                                    magnification: egui::TextureFilter::Nearest,
+                                    ..egui::TextureOptions::LINEAR
+                                },
                             );
                             let size = egui::vec2(img_data.width as f32, img_data.height as f32);
                             app.image_texture = Some((texture, size));
                         }
                     }
 
-                    if let Some((ref texture, original_size)) = app.image_texture {
-                        let available = ui.available_size();
-                        let scale = (available.x / original_size.x)
-                            .min(available.y / original_size.y)
-                            .min(1.0);
-                        let display_size =
-                            egui::vec2(original_size.x * scale, original_size.y * scale);
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(((available.y - display_size.y) / 2.0).max(0.0));
-                            ui.image(egui::load::SizedTexture::new(texture.id(), display_size));
-                            ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{}×{}",
-                                    original_size.x as u32, original_size.y as u32
-                                ))
-                                .small()
-                                .color(egui::Color32::GRAY),
-                            );
-                        });
+                    if let (Some((texture, _)), Some(data)) =
+                        (&app.image_texture, &app.pending_image)
+                    {
+                        crate::ui::image_viewer::show(
+                            ui,
+                            &mut app.image_view,
+                            texture,
+                            data,
+                            app.palette,
+                        );
                     } else {
                         // Image failed to load — show a placeholder.
                         ui.centered_and_justified(|ui| {

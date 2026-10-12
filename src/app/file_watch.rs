@@ -72,6 +72,11 @@ impl FsChanges {
 
     /// Fold one raw `notify` event in, dropping ignored paths.
     fn add_event(&mut self, event: notify::Event, root: &Path) {
+        if event.need_rescan() {
+            self.structure_changed = true;
+            self.git_changed = true;
+            return;
+        }
         let Some(structural) = classify(&event.kind) else {
             return;
         };
@@ -137,7 +142,14 @@ impl FileWatcher {
                 Ok(ev) => {
                     let _ = raw_tx.send(ev);
                 }
-                Err(e) => log::warn!("file watcher error: {e}"),
+                Err(e) => {
+                    // Typically an overflowed event buffer (many changes at
+                    // once): events were lost, so rescan everything.
+                    log::warn!("file watcher error: {e}");
+                    let _ = raw_tx.send(
+                        notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan),
+                    );
+                }
             })?;
         watcher.watch(root, RecursiveMode::Recursive)?;
         let (tx, rx) = mpsc::channel();
@@ -711,6 +723,16 @@ mod tests {
             classify(&EventKind::Modify(ModifyKind::Data(DataChange::Content))),
             Some(false)
         );
+    }
+
+    #[test]
+    fn rescan_event_marks_everything_stale() {
+        let mut c = FsChanges::default();
+        c.add_event(
+            notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan),
+            Path::new("/ws"),
+        );
+        assert!(c.structure_changed && c.git_changed);
     }
 
     #[test]

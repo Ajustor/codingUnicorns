@@ -144,8 +144,10 @@ impl FileTree {
                 let resp = ui.selectable_label(false, label);
                 if resp.clicked() {
                     entry.is_expanded = !entry.is_expanded;
-                    if entry.is_expanded && entry.children.is_empty() {
-                        entry.load_children(ctx.repo, ctx.show_gitignored);
+                    if entry.is_expanded {
+                        // Always re-read: children kept from an earlier expansion
+                        // may be stale (the watcher only reloads expanded folders).
+                        entry.reload_recursive(ctx.repo, ctx.show_gitignored);
                     }
                 }
                 resp.context_menu(|ui| {
@@ -403,7 +405,7 @@ mod tests {
             .iter()
             .map(|c| c.name.clone())
             .collect();
-        assert_eq!(names, ["src"]);
+        assert_eq!(names, ["src", ".gitignore"]);
 
         t.show_gitignored = true;
         t.reload_children();
@@ -415,7 +417,7 @@ mod tests {
             .iter()
             .map(|c| c.name.clone())
             .collect();
-        assert_eq!(names, ["src", "readme.md"]);
+        assert_eq!(names, ["src", ".gitignore", "readme.md"]);
     }
 
     #[test]
@@ -474,6 +476,26 @@ mod tests {
         assert!(!child(&t, "src").is_expanded);
         h.frame(&mut t, vec![]);
         assert!(h.find("lib.rs").is_none());
+    }
+
+    #[test]
+    fn reexpanding_a_folder_shows_changes_made_while_collapsed() {
+        let dir = workspace();
+        let mut t = loaded(dir.path());
+        let mut h = Harness::new();
+        h.click(&mut t, "src", egui::PointerButton::Primary);
+        h.click(&mut t, "src", egui::PointerButton::Primary);
+        assert!(!child(&t, "src").is_expanded);
+
+        fs::create_dir(dir.path().join("src/added")).unwrap();
+        fs::remove_file(dir.path().join("src/lib.rs")).unwrap();
+        h.click(&mut t, "src", egui::PointerButton::Primary);
+        let names: Vec<_> = child(&t, "src")
+            .children
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["added", "inner"]);
     }
 
     #[test]
