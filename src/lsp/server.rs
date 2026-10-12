@@ -24,6 +24,12 @@ pub struct ModuleServer {
     command: String,
     args: Vec<String>,
     download: Option<ArchiveDownload>,
+    /// `initializationOptions`, variables not expanded yet.
+    init_options: Option<toml::Table>,
+    /// The module debugger's download (`[debugger.download]`), fetched with
+    /// the server when the server uses its files (`${debuggerDir}`, e.g. a
+    /// debug plugin the server loads).
+    debugger_download: Option<ArchiveDownload>,
     /// A per-language server (`lsp_servers`): unpacked in its own folder.
     per_language: bool,
 }
@@ -46,6 +52,12 @@ impl ModuleServer {
                 ),
                 None => return None,
             };
+            let init_options = caps.lsp_init_options_for(language).cloned();
+            let debugger_download = e
+                .manifest
+                .debugger
+                .as_ref()
+                .and_then(|d| d.download.clone());
             Some(Self {
                 module: e.manifest.extension.name.clone(),
                 module_id: e.manifest.extension.id.clone(),
@@ -54,6 +66,8 @@ impl ModuleServer {
                 command,
                 args,
                 download,
+                init_options,
+                debugger_download,
                 per_language,
             })
         })
@@ -85,19 +99,40 @@ impl ModuleServer {
             .any(|a| a.contains("${serverDir}"))
     }
 
+    /// Folder of the module debugger's download (`${debuggerDir}`).
+    fn debugger_dir(&self) -> PathBuf {
+        self.dir.join("debugger")
+    }
+
+    /// The debugger's download when the server uses its files.
+    fn debugger_files(&self) -> Option<&ArchiveDownload> {
+        let download = self.debugger_download.as_ref()?;
+        let init = self
+            .init_options
+            .as_ref()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        let used = std::iter::once(&self.command)
+            .chain(&self.args)
+            .chain(std::iter::once(&init))
+            .any(|a| a.contains("${debuggerDir}"));
+        used.then_some(download)
+    }
+
+    /// Whether the debugger files the server uses still have to be fetched.
+    fn needs_debugger_files(&self) -> bool {
+        self.debugger_files().is_some_and(|d| {
+            platform_url(d).is_some()
+                && !marker_paths(&self.debugger_dir(), &d.binary)
+                    .is_some_and(|m| m.iter().any(|p| is_installed(p)))
+        })
+    }
+
     /// The downloaded file marking the install, with or without the
     /// executable suffix. `None` without a download, or when the path would
     /// leave the module's folder.
     fn marker_candidates(&self) -> Option<[PathBuf; 2]> {
-        let rel = Path::new(&self.download.as_ref()?.binary);
-        // The manifest comes from the module: keep the path inside its folder.
-        if !rel.components().all(|c| matches!(c, Component::Normal(_))) {
-            return None;
-        }
-        let plain = rel.components().fold(self.server_dir(), |p, c| p.join(c));
-        let mut exe = plain.clone();
-        exe.as_mut_os_string().push(std::env::consts::EXE_SUFFIX);
-        Some([exe, plain])
+        marker_paths(&self.server_dir(), &self.download.as_ref()?.binary)
     }
 
     /// The marker file, when downloaded. A `*` in its name matches any
@@ -115,51 +150,89 @@ impl ModuleServer {
 
     /// Download URL for the running platform (`*` serves every platform).
     pub fn download_url(&self) -> Option<&str> {
-        let urls = &self.download.as_ref()?.urls;
-        urls.get(&crate::extension::remote_registry::platform_key())
-            .or_else(|| urls.get("*"))
-            .map(String::as_str)
+        platform_url(self.download.as_ref()?)
     }
 
-    /// Whether the archive must be fetched before starting the server.
-    pub fn needs_download(&self) -> bool {
+    fn needs_server_files(&self) -> bool {
         self.download_url().is_some()
             && self.installed_file().is_none()
             && (self.needs_files() || find_on_path(&self.command).is_none())
     }
 
-    /// Download and unpack the server's archive (blocking).
+    /// Whether files must be fetched before starting the server: its own
+    /// archive, or the debugger files it uses.
+    pub fn needs_download(&self) -> bool {
+        self.needs_server_files() || self.needs_debugger_files()
+    }
+
+    /// Download what the server needs (blocking).
     pub fn download(&self) -> Result<(), String> {
-        let (Some(url), true) = (self.download_url(), self.marker_candidates().is_some()) else {
-            return Err("no download for this platform".into());
-        };
-        let binary = self.download.as_ref().map_or("", |d| d.binary.as_str());
-        crate::extension::archive::download(url, &self.server_dir(), binary)?;
-        match self.installed_file() {
-            Some(_) => Ok(()),
-            None => Err(format!(
-                "{} not found in the downloaded archive",
-                self.download.as_ref().map_or("", |d| d.binary.as_str())
-            )),
+        if self.needs_server_files() {
+            let (Some(url), true) = (self.download_url(), self.marker_candidates().is_some())
+            else {
+                return Err("no download for this platform".into());
+            };
+            let binary = self.download.as_ref().map_or("", |d| d.binary.as_str());
+            crate::extension::archive::download(url, &self.server_dir(), binary)?;
+            if self.installed_file().is_none() {
+                return Err(format!("{binary} not found in the downloaded archive"));
+            }
         }
+        if self.needs_debugger_files() {
+            let d = self.debugger_files().expect("needed");
+            if marker_paths(&self.debugger_dir(), &d.binary).is_none() {
+                return Err(format!("invalid debugger file {}", d.binary));
+            }
+            let url = platform_url(d).expect("needed");
+            crate::extension::archive::download(url, &self.debugger_dir(), &d.binary)?;
+            if self.needs_debugger_files() {
+                return Err(format!("{} not found in the debugger download", d.binary));
+            }
+        }
+        if self.download_url().is_none() && self.debugger_files().is_none() {
+            return Err("no download for this platform".into());
+        }
+        Ok(())
+    }
+
+    /// `initializationOptions` for `workspace`, with the variables of the
+    /// command line (and `${debuggerDir}`) expanded in its strings.
+    pub fn init_options(&self, workspace: &Path) -> Option<serde_json::Value> {
+        let mut value = serde_json::to_value(self.init_options.as_ref()?).ok()?;
+        let vars = self.vars(workspace);
+        expand_strings(&mut value, &|s| expand_vars(s, &vars));
+        Some(value)
+    }
+
+    /// Variable → value, for the command line and init options.
+    fn vars(&self, workspace: &Path) -> [(&'static str, String); 4] {
+        [
+            (
+                "${serverDir}",
+                self.server_dir().to_string_lossy().into_owned(),
+            ),
+            (
+                "${debuggerDir}",
+                self.debugger_dir().to_string_lossy().into_owned(),
+            ),
+            (
+                "${dataDir}",
+                data_dir(&self.module_id, workspace)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            ("${os}", os_name().to_string()),
+        ]
     }
 
     /// Command and arguments to start the server for `workspace`, variables
     /// expanded. Creates the `${dataDir}` folder when it is used.
     pub fn command_line(&self, workspace: &Path) -> (String, Vec<String>) {
-        let server_dir = self.server_dir().to_string_lossy().into_owned();
-        let data_dir = data_dir(&self.module_id, workspace);
         if self.args.iter().any(|a| a.contains("${dataDir}")) {
-            let _ = std::fs::create_dir_all(&data_dir);
+            let _ = std::fs::create_dir_all(data_dir(&self.module_id, workspace));
         }
-        let data_dir = data_dir.to_string_lossy().into_owned();
-        let expand = |s: &str| {
-            crate::extension::archive::resolve_glob(
-                &s.replace("${serverDir}", &server_dir)
-                    .replace("${dataDir}", &data_dir)
-                    .replace("${os}", os_name()),
-            )
-        };
+        let vars = self.vars(workspace);
+        let expand = |s: &str| expand_vars(s, &vars);
         let mut command = with_exe_suffix(expand(&self.command));
         if !self.needs_files() && find_on_path(&command).is_none() {
             if let Some(file) = self.installed_file() {
@@ -168,6 +241,54 @@ impl ModuleServer {
         }
         (command, self.args.iter().map(|a| expand(a)).collect())
     }
+}
+
+/// `s` with the variables replaced, and a `*` file name resolved.
+fn expand_vars(s: &str, vars: &[(&'static str, String)]) -> String {
+    let s = vars
+        .iter()
+        .fold(s.to_string(), |s, (var, value)| s.replace(var, value));
+    crate::extension::archive::resolve_glob(&s)
+}
+
+/// Apply `f` to every string in `value`.
+fn expand_strings(value: &mut serde_json::Value, f: &dyn Fn(&str) -> String) {
+    match value {
+        serde_json::Value::String(s) => *s = f(s),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| expand_strings(v, f)),
+        serde_json::Value::Object(map) => map.values_mut().for_each(|v| expand_strings(v, f)),
+        _ => {}
+    }
+}
+
+/// `binary` under `dir`, with and without the executable suffix; `None` when
+/// the path would leave `dir` (the manifest comes from the module).
+fn marker_paths(dir: &Path, binary: &str) -> Option<[PathBuf; 2]> {
+    let rel = Path::new(binary);
+    if !rel.components().all(|c| matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    let plain = rel.components().fold(dir.to_path_buf(), |p, c| p.join(c));
+    let mut exe = plain.clone();
+    exe.as_mut_os_string().push(std::env::consts::EXE_SUFFIX);
+    Some([exe, plain])
+}
+
+/// Whether a marker file (a `*` in its name matching any file) is there.
+fn is_installed(marker: &Path) -> bool {
+    Path::new(&crate::extension::archive::resolve_glob(
+        &marker.to_string_lossy(),
+    ))
+    .is_file()
+}
+
+/// A download's URL for the running platform (`*` serves every platform).
+fn platform_url(download: &ArchiveDownload) -> Option<&str> {
+    download
+        .urls
+        .get(&crate::extension::remote_registry::platform_key())
+        .or_else(|| download.urls.get("*"))
+        .map(String::as_str)
 }
 
 /// A command that names a file without its `.exe` (`${serverDir}/srv`) gets
@@ -305,6 +426,57 @@ author = ""
             source: None,
             update_available: None,
         }
+    }
+
+    #[test]
+    fn debugger_files_used_by_the_server_come_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = module(
+            dir.path(),
+            r#"languages = ["java"]
+lsp_server = "java"
+lsp_init_options = { bundles = ["${debuggerDir}/debug-*.jar"], data = "${dataDir}" }
+
+[debugger]
+command = "start"
+transport = "lsp"
+download = { binary = "debug-1.0.jar", urls = { "*" = "https://example.invalid/debug-1.0.jar" } }
+"#,
+        );
+        let s = ModuleServer::for_language([&m], "java").unwrap();
+        assert!(s.needs_download(), "the debug plugin is missing");
+        let jar = dir.path().join("debugger").join("debug-1.0.jar");
+        std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        std::fs::write(&jar, "").unwrap();
+        assert!(!s.needs_download());
+
+        let ws = dir.path().join("ws");
+        let init = s.init_options(&ws).unwrap();
+        assert_eq!(
+            Path::new(init["bundles"][0].as_str().unwrap()),
+            jar,
+            "glob resolved"
+        );
+        assert_eq!(
+            init["data"],
+            data_dir("acme.java", &ws).to_string_lossy().as_ref()
+        );
+
+        // Without a reference to ${debuggerDir}, the debugger is not the
+        // server's business.
+        let plain = module(
+            dir.path(),
+            r#"languages = ["java"]
+lsp_server = "java"
+
+[debugger]
+command = "x"
+download = { binary = "other.jar", urls = { "*" = "https://example.invalid/o.jar" } }
+"#,
+        );
+        let s = ModuleServer::for_language([&plain], "java").unwrap();
+        assert!(!s.needs_download());
+        assert!(s.init_options(&ws).is_none());
     }
 
     const JAVA: &str = r#"languages = ["java"]

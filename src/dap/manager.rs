@@ -33,6 +33,9 @@ pub struct DapManager {
     watches: Vec<String>,
     /// Workspace the watches were loaded from (and are saved to).
     workspace: Option<PathBuf>,
+    /// Language server commands asked for by a preparation, for the UI
+    /// thread to run (see [`Self::take_lsp_commands`]).
+    lsp_commands: Vec<super::lsp_session::LspCommand>,
 }
 
 /// On-disk format of `.coding-unicorns/watches.toml`.
@@ -347,6 +350,7 @@ impl DapManager {
                     push_log(&mut self.log, format!("Debug launch failed: {e}"));
                     ended = true;
                 }
+                LaunchEvent::LspCommand(c) => self.lsp_commands.push(c),
             }
         }
         if ready.is_none() && !ended {
@@ -358,6 +362,12 @@ impl DapManager {
             let (cfg, transport) = *ready;
             self.attach_session(&cfg, transport, &workspace, file.as_deref());
         }
+    }
+
+    /// Language server commands a preparation is waiting for: the caller
+    /// runs each with `workspace/executeCommand` and sends the answer back.
+    pub fn take_lsp_commands(&mut self) -> Vec<super::lsp_session::LspCommand> {
+        std::mem::take(&mut self.lsp_commands)
     }
 
     /// Whether a preparation (download, build task) is running.
@@ -709,6 +719,8 @@ mod tests {
             adapter: None,
             tasks,
             workspace: dir.to_path_buf(),
+            file: None,
+            language: String::new(),
         }
     }
 
@@ -852,6 +864,8 @@ mod tests {
                 adapter: Some(adapter),
                 tasks,
                 workspace: project.clone(),
+                file: Some(file.clone()),
+                language: ext.clone(),
             },
             Some(&file),
         );
@@ -884,6 +898,123 @@ mod tests {
             &|m| m.output_log().iter().any(|l| l.contains("x=42")),
             "no program output",
         );
+        m.shutdown();
+    }
+
+    /// End to end with a debugger started by a module's language server
+    /// (`transport = "lsp"`, e.g. Java). `cargo test e2e_lsp_started_debugger
+    /// -- --ignored --nocapture` with:
+    /// - `CU_E2E_MANIFEST`: the module's manifest.toml
+    /// - `CU_E2E_FILE`: a source file, in its project folder, whose line 2
+    ///   runs and which prints `x=42`
+    /// - `CU_E2E_MODULE_DIR` (optional): module folder kept between runs
+    #[test]
+    #[ignore]
+    fn e2e_lsp_started_debugger_stops_at_breakpoint() {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let file = PathBuf::from(var("CU_E2E_FILE").unwrap());
+        let project = file.parent().unwrap().to_path_buf();
+        let tmp = tempfile::tempdir().unwrap();
+        let module = crate::extension::registry::InstalledExtension {
+            manifest: crate::extension::manifest::ExtensionManifest::parse(
+                &std::fs::read_to_string(var("CU_E2E_MANIFEST").unwrap()).unwrap(),
+            )
+            .unwrap(),
+            path: var("CU_E2E_MODULE_DIR").map_or_else(|| tmp.path().join("module"), PathBuf::from),
+            lib_path: None,
+            enabled: true,
+            source: None,
+            update_available: None,
+        };
+        let ext = file.extension().unwrap().to_string_lossy().to_string();
+
+        // The language server, with the debugger plugin it loads.
+        let server = crate::lsp::server::ModuleServer::for_language([&module], &ext).unwrap();
+        if server.needs_download() {
+            server.download().unwrap();
+        }
+        let (cmd, args) = server.command_line(&project);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let mut lsp = crate::lsp::LspClient::new();
+        lsp.set_init_options(server.init_options(&project));
+        lsp.start(&cmd, &args, &project).unwrap();
+        let start = std::time::Instant::now();
+        while !lsp.is_connected {
+            assert!(start.elapsed().as_secs() < 300, "server never initialized");
+            lsp.poll();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let text = std::fs::read_to_string(&file).unwrap();
+        lsp.did_open(&crate::lsp::client::path_to_uri(&file), &ext, &text);
+
+        let adapter = crate::dap::adapters::DebugAdapter::find([&module], None, &ext).unwrap();
+        let launch = adapter.default_launch().expect("default launch");
+        let mut m = DapManager::new();
+        m.toggle_breakpoint(&file, 2);
+        m.launch(
+            LaunchPlan {
+                config: adapter.config(PathBuf::new(), launch),
+                adapter: Some(adapter),
+                tasks: vec![],
+                workspace: project.clone(),
+                file: Some(file.clone()),
+                language: ext.clone(),
+            },
+            Some(&file),
+        );
+        // What the app does every frame: run the launcher's server commands.
+        let mut sent: HashMap<u64, crossbeam_channel::Sender<Result<Value, String>>> =
+            HashMap::new();
+        let mut step = |m: &mut DapManager, lsp: &mut crate::lsp::LspClient| {
+            m.poll();
+            for c in m.take_lsp_commands() {
+                eprintln!("> {} {}", c.command, Value::Array(c.args.clone()));
+                let id = lsp.request_execute_command(&c.command, c.args);
+                sent.insert(id, c.reply);
+            }
+            for (id, response) in lsp.poll() {
+                if let Some(reply) = sent.remove(&id) {
+                    eprintln!("< {}", response.get("result").unwrap_or(&response));
+                    let _ = reply.send(match response.get("error") {
+                        Some(e) => Err(e.to_string()),
+                        None => Ok(response.get("result").cloned().unwrap_or(Value::Null)),
+                    });
+                }
+            }
+        };
+        let mut wait = |m: &mut DapManager,
+                        lsp: &mut crate::lsp::LspClient,
+                        done: &dyn Fn(&DapManager) -> bool,
+                        what: &str| {
+            while !done(m) {
+                assert!(
+                    start.elapsed().as_secs() < 400,
+                    "{what}: {:?} {:?}",
+                    m.session_state(),
+                    m.output_log()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                step(m, lsp);
+            }
+        };
+        wait(&mut m, &mut lsp, &|m| m.is_paused(), "not paused");
+        wait(
+            &mut m,
+            &mut lsp,
+            &|m| !m.call_stack().is_empty() && !m.scopes().is_empty(),
+            "no stack",
+        );
+        assert_eq!(m.call_stack()[0].line, 2);
+        eprintln!("stack: {:?}", &m.call_stack()[..1]);
+        let tid = m.paused_thread_id().unwrap();
+        m.active_mut().unwrap().continue_execution(tid);
+        wait(
+            &mut m,
+            &mut lsp,
+            &|m| m.output_log().iter().any(|l| l.contains("x=42")),
+            "no program output",
+        );
+        eprintln!("paused and printed after {:?}", start.elapsed());
         m.shutdown();
     }
 

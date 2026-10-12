@@ -88,14 +88,16 @@ pub struct LanguageServer {
 }
 
 /// `[debugger]` section: how to start the language's debug adapter (DAP
-/// over stdio, or over a local TCP port).
+/// over stdio, over a local TCP port, or started by the language server).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebuggerSpec {
     /// VS Code debug `type`s handled (e.g. `["coreclr"]`), matched against
     /// launch configurations.
     #[serde(default)]
     pub types: Vec<String>,
-    /// Executable, or candidates tried in order, looked up on `PATH`.
+    /// Executable, or candidates tried in order, looked up on `PATH`. With
+    /// `transport = "lsp"`: the language server command (`workspace/
+    /// executeCommand`) that starts a debug session and returns its port.
     pub command: OneOrMany,
     /// Arguments. `${debuggerDir}` is the folder the download is unpacked
     /// in, `${port}` the TCP port to listen on (`transport = "tcp"`).
@@ -120,6 +122,38 @@ pub struct DebuggerSpec {
     /// not on `PATH` (the downloaded binary is then the command).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download: Option<ArchiveDownload>,
+    /// With `transport = "lsp"`: language server commands run in order
+    /// before starting the session, each completing the launch arguments
+    /// (e.g. the main class, then its classpath).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lsp_resolve: Vec<LspResolveStep>,
+}
+
+/// One `[[debugger.lsp_resolve]]` step: a `workspace/executeCommand` whose
+/// result fills launch arguments. In `args`, strings can use `${file}`,
+/// `${fileUri}`, `${workspaceFolder}`, `${workspaceFolderUri}` and
+/// `${launch:<key>}` (a launch argument, e.g. one set by an earlier step).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LspResolveStep {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<toml::Value>,
+    /// Skip the step when the launch arguments already have this key (set
+    /// by the launch configuration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unless: Option<String>,
+    /// The result is a list of objects: take the one whose `pick` field is
+    /// the current file, else the first. An empty list is retried while
+    /// the server loads the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<String>,
+    /// Fields of the (picked) result object copied into the launch arguments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merge: Vec<String>,
+    /// Launch arguments set from the result: one key takes the whole
+    /// result, several take the items of a list result in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub set: Vec<String>,
 }
 
 /// An archive a module downloads on first use (`[debugger.download]`,
@@ -145,6 +179,9 @@ pub enum DebuggerTransport {
     /// The adapter listens on `127.0.0.1:${port}`; the IDE connects to it.
     /// Child sessions (`startDebugging`) open more connections.
     Tcp,
+    /// The language server starts the session (`command` run with
+    /// `workspace/executeCommand` returns the port); the IDE connects to it.
+    Lsp,
 }
 
 /// A string or a list of strings.

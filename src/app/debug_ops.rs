@@ -1,4 +1,8 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crossbeam_channel::Sender;
+use serde_json::Value;
 
 use super::CodingUnicorns;
 use crate::dap::adapters::DebugAdapter;
@@ -6,7 +10,60 @@ use crate::dap::launcher::LaunchPlan;
 use crate::runner::{vscode_tasks, DebugLaunch};
 use crate::ui::layout::SidebarTab;
 
+/// Language server commands asked for by debug launches (sessions started by
+/// the language server, e.g. Java's), waiting for their server or its answer.
+#[derive(Default)]
+pub struct DebugLspBridge {
+    /// Not sent yet: the server is starting (or being downloaded).
+    queued: Vec<crate::dap::lsp_session::LspCommand>,
+    /// Sent: (language, request id) → where the answer goes.
+    sent: HashMap<(String, u64), Sender<Result<Value, String>>>,
+}
+
 impl CodingUnicorns {
+    /// Send the debug launch's language server commands to their server
+    /// (started if needed). Call every frame.
+    pub(crate) fn serve_debug_lsp_commands(&mut self) {
+        let mut pending = std::mem::take(&mut self.debug_lsp.queued);
+        pending.extend(self.dap.take_lsp_commands());
+        for c in pending {
+            self.ensure_lsp_for_language(&c.language);
+            match self.lsp.get_mut(&c.language) {
+                Some(client) if client.is_connected => {
+                    let id = client.request_execute_command(&c.command, c.args);
+                    self.debug_lsp.sent.insert((c.language, id), c.reply);
+                }
+                // Starting: sent once it is up (the launcher gives up after
+                // a while).
+                Some(_) => self.debug_lsp.queued.push(c),
+                None if self.lsp_downloads.is_running() => self.debug_lsp.queued.push(c),
+                None => {
+                    let _ = c
+                        .reply
+                        .send(Err(format!("no language server for .{} files", c.language)));
+                }
+            }
+        }
+    }
+
+    /// Route the answer to a debug launch's command. True when consumed.
+    pub(crate) fn handle_debug_lsp_response(
+        &mut self,
+        ext: &str,
+        id: u64,
+        response: &Value,
+    ) -> bool {
+        let Some(reply) = self.debug_lsp.sent.remove(&(ext.to_string(), id)) else {
+            return false;
+        };
+        let answer = match response.get("error") {
+            Some(e) => Err(e["message"].as_str().unwrap_or("error").to_string()),
+            None => Ok(response.get("result").cloned().unwrap_or(Value::Null)),
+        };
+        let _ = reply.send(answer);
+        true
+    }
+
     /// Start a DAP debug session. Uses the active run configuration's debug
     /// settings (imported from `.vscode/launch.json`) when it has some, else
     /// the first one handled by the current file's module, else the module's
@@ -89,11 +146,20 @@ impl CodingUnicorns {
                 .map_err(|e| format!("preLaunchTask `{label}`: {e}"))?,
             None => vec![],
         };
+        // The language whose server starts an LSP-started session: the
+        // current file's when the module handles it, else the module's first.
+        let language = if adapter.languages.iter().any(|l| l == current_ext) {
+            current_ext.to_string()
+        } else {
+            adapter.languages.first().cloned().unwrap_or_default()
+        };
         Ok(LaunchPlan {
             config: adapter.config(PathBuf::new(), launch),
             adapter: Some(adapter),
             tasks,
             workspace: workspace.to_path_buf(),
+            file: current_file.map(Path::to_path_buf),
+            language,
         })
     }
 

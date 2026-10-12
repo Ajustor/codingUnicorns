@@ -194,42 +194,47 @@ impl CodingUnicorns {
 
     pub(crate) fn ensure_lsp_for_file(&mut self, path: &std::path::Path) {
         if let Some(ext) = crate::language::language_key(path).as_deref() {
-            if let Some(workspace) = self.workspace_path.clone() {
-                if self.lsp.get(ext).is_some() {
-                    return;
+            self.ensure_lsp_for_language(ext);
+        }
+    }
+
+    /// Start the language server of `ext` (a file extension or named
+    /// language) for the workspace, downloading it first when needed.
+    pub(crate) fn ensure_lsp_for_language(&mut self, ext: &str) {
+        let Some(workspace) = self.workspace_path.clone() else {
+            return;
+        };
+        if self.lsp.get(ext).is_some() {
+            return;
+        }
+        // A server declared in a module's manifest: its files are downloaded
+        // first when it has some (the server starts once they are in, see
+        // `poll_lsp_downloads`).
+        let server =
+            crate::lsp::server::ModuleServer::for_language(&self.extension_registry.installed, ext);
+        if let Some(server) = server {
+            if server.needs_download() {
+                if self.lsp_downloads.start(&server, None) {
+                    self.toast(format!(
+                        "Downloading the {} language server (first use)…",
+                        server.module
+                    ));
                 }
-                // A server declared in a module's manifest: its archive is
-                // downloaded first when it has one (the server starts once
-                // it is in, see `poll_lsp_downloads`).
-                let server = crate::lsp::server::ModuleServer::for_language(
-                    &self.extension_registry.installed,
-                    ext,
-                );
-                if let Some(server) = server {
-                    if server.needs_download() {
-                        if self.lsp_downloads.start(&server, None) {
-                            self.toast(format!(
-                                "Downloading the {} language server (first use)…",
-                                server.module
-                            ));
-                        }
-                        return;
-                    }
-                    let (cmd, args) = server.command_line(&workspace);
-                    let init = self.extension_registry.lsp_init_options(ext);
-                    self.lsp
-                        .ensure_started_with_cmd(ext, &cmd, &args, &workspace, init);
-                    return;
-                }
-                // Servers named by a module's library (`lsp_server_command_ffi`).
-                if let Some((cmd, args)) = self.plugin_manager.lsp_server_for_ext(ext) {
-                    let init = self.extension_registry.lsp_init_options(ext);
-                    self.lsp
-                        .ensure_started_with_cmd(ext, &cmd, &args, &workspace, init);
-                } else {
-                    self.lsp.ensure_started(ext, &workspace);
-                }
+                return;
             }
+            let (cmd, args) = server.command_line(&workspace);
+            let init = server.init_options(&workspace);
+            self.lsp
+                .ensure_started_with_cmd(ext, &cmd, &args, &workspace, init);
+            return;
+        }
+        // Servers named by a module's library (`lsp_server_command_ffi`).
+        if let Some((cmd, args)) = self.plugin_manager.lsp_server_for_ext(ext) {
+            let init = self.extension_registry.lsp_init_options(ext);
+            self.lsp
+                .ensure_started_with_cmd(ext, &cmd, &args, &workspace, init);
+        } else {
+            self.lsp.ensure_started(ext, &workspace);
         }
     }
 
