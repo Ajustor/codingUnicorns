@@ -784,6 +784,7 @@ dependencies = [
  "egui_commonmark",
  "egui_extras",
  "env_logger",
+ "flate2",
  "fuzzy-matcher",
  "git2",
  "image",
