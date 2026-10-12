@@ -137,11 +137,14 @@ impl FileTree {
                 } else {
                     ph::FOLDER
                 };
-                let color = egui::Color32::from_rgb(220, 180, 100);
-                let label =
+                let color = dim_if(entry.ignored, egui::Color32::from_rgb(220, 180, 100));
+                let mut label =
                     egui::RichText::new(format!("{} {} {}", arrow, folder_icon, entry.name))
                         .color(color);
-                let resp = ui.selectable_label(false, label);
+                if entry.ignored {
+                    label = label.italics();
+                }
+                let resp = ignored_hint(ui.selectable_label(false, label), entry.ignored);
                 if resp.clicked() {
                     entry.is_expanded = !entry.is_expanded;
                     if entry.is_expanded {
@@ -185,12 +188,16 @@ impl FileTree {
                     .as_ref()
                     .map(|s| s == &entry.path)
                     .unwrap_or(false);
-                let icon_label = egui::RichText::new(icon).color(color);
+                let icon_label = egui::RichText::new(icon).color(dim_if(entry.ignored, color));
                 ui.label(icon_label);
-                let resp = ui.selectable_label(
-                    is_selected,
-                    egui::RichText::new(&entry.name).color(egui::Color32::from_rgb(212, 212, 212)),
-                );
+                let mut name = egui::RichText::new(&entry.name).color(dim_if(
+                    entry.ignored,
+                    egui::Color32::from_rgb(212, 212, 212),
+                ));
+                if entry.ignored {
+                    name = name.italics();
+                }
+                let resp = ignored_hint(ui.selectable_label(is_selected, name), entry.ignored);
                 if resp.clicked() {
                     *ctx.selected = Some(entry.path.clone());
                     *ctx.opened = Some(entry.path.clone());
@@ -228,6 +235,59 @@ impl FileTree {
                 Self::show_entry_recursive(ui, child, ctx);
             }
         }
+    }
+}
+
+/// Colour of an entry, faded when `.gitignore` excludes it.
+fn dim_if(ignored: bool, color: egui::Color32) -> egui::Color32 {
+    if ignored {
+        color.gamma_multiply(0.45)
+    } else {
+        color
+    }
+}
+
+/// Explain the dimmed look on hover.
+fn ignored_hint(resp: egui::Response, ignored: bool) -> egui::Response {
+    if ignored {
+        resp.on_hover_text("Ignored by .gitignore: not part of commits")
+    } else {
+        resp
+    }
+}
+
+/// Show `path` in the system file manager: selected in its folder (Windows
+/// Explorer, macOS Finder), or its folder opened (Linux).
+pub fn reveal(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // Explorer parses `/select,"path"` itself: the argument is passed
+        // raw so a path with spaces stays quoted the way it expects.
+        std::process::Command::new("explorer.exe")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let folder = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        std::process::Command::new("xdg-open")
+            .arg(folder)
+            .spawn()
+            .map(|_| ())
     }
 }
 

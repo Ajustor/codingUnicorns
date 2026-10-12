@@ -661,6 +661,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         .map(|p| p.title.to_uppercase())
                         .unwrap_or_default(),
                 };
+                let mut toggle_gitignored = false;
                 ui.horizontal(|ui| {
                     ui.add_space(4.0);
                     ui.label(
@@ -669,7 +670,27 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             .color(Color32::from_gray(150))
                             .strong(),
                     );
+                    if app.sidebar_tab == SidebarTab::Explorer {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let shown = app.config.editor.show_gitignored;
+                            let (icon, tip) = if shown {
+                                (egui_phosphor::regular::EYE, "Hide gitignored files")
+                            } else {
+                                (
+                                    egui_phosphor::regular::EYE_SLASH,
+                                    "Show gitignored files (dimmed)",
+                                )
+                            };
+                            let resp = ui
+                                .add(egui::Button::new(icon).frame(false).selected(shown))
+                                .on_hover_text(tip);
+                            toggle_gitignored = resp.clicked();
+                        });
+                    }
                 });
+                if toggle_gitignored {
+                    app.toggle_gitignored();
+                }
                 ui.add_space(2.0);
 
                 match app.sidebar_tab.clone() {
@@ -728,13 +749,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                     ctx.copy_text(path.to_string_lossy().to_string());
                                 }
                                 FileTreeAction::RevealInExplorer(path) => {
-                                    let target = if path.is_dir() {
-                                        path.clone()
-                                    } else {
-                                        path.parent().map(|p| p.to_path_buf()).unwrap_or(path)
-                                    };
-                                    let _ =
-                                        std::process::Command::new("xdg-open").arg(&target).spawn();
+                                    if let Err(e) = crate::filetree::reveal(&path) {
+                                        app.toast(format!("Could not open the file manager: {e}"));
+                                    }
                                 }
                             }
                         }

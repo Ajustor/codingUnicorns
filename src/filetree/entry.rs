@@ -22,6 +22,9 @@ pub struct FileEntry {
     pub is_expanded: bool,
     pub children: Vec<FileEntry>,
     pub depth: usize,
+    /// Excluded by `.gitignore` (or the fallback list): listed only when
+    /// gitignored files are shown, dimmed.
+    pub ignored: bool,
 }
 
 impl FileEntry {
@@ -38,6 +41,7 @@ impl FileEntry {
             is_expanded: depth == 0,
             children: vec![],
             depth,
+            ignored: false,
         }
     }
 
@@ -100,24 +104,28 @@ impl FileEntry {
                 if ALWAYS_HIDDEN.contains(&name.as_str()) {
                     continue;
                 }
-                if !show_gitignored && should_ignore(&path, repo) {
+                // Inside an ignored folder everything is ignored.
+                let ignored = self.ignored || should_ignore(&path, repo);
+                if ignored && !show_gitignored {
                     continue;
                 }
                 if path.is_dir() {
-                    dirs.push(path);
+                    dirs.push((path, ignored));
                 } else {
-                    files.push(path);
+                    files.push((path, ignored));
                 }
             }
             // Case-insensitive, like the system file managers ("Zeta" after "alpha").
-            let key = |p: &PathBuf| {
+            let key = |(p, _): &(PathBuf, bool)| {
                 let name = p.file_name().unwrap_or_default().to_string_lossy();
                 (name.to_lowercase(), name.into_owned())
             };
             dirs.sort_by_cached_key(key);
             files.sort_by_cached_key(key);
-            for p in dirs.into_iter().chain(files) {
-                self.children.push(FileEntry::new(p, self.depth + 1));
+            for (p, ignored) in dirs.into_iter().chain(files) {
+                let mut entry = FileEntry::new(p, self.depth + 1);
+                entry.ignored = ignored;
+                self.children.push(entry);
             }
         }
     }
@@ -332,6 +340,37 @@ mod tests {
                 "build"
             ]
         );
+    }
+
+    #[test]
+    fn shown_ignored_entries_are_flagged_and_their_content_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        fs::create_dir_all(dir.path().join("build/out")).unwrap();
+        fs::write(dir.path().join("build/out/app.jar"), "").unwrap();
+        fs::write(dir.path().join("kept.rs"), "").unwrap();
+        fs::write(dir.path().join(".gitignore"), "/build/
+").unwrap();
+        let mut root = FileEntry::new(dir.path().to_path_buf(), 0);
+        root.load_children(Some(&repo), true);
+        let flags: Vec<_> = root
+            .children
+            .iter()
+            .map(|c| (c.name.as_str(), c.ignored))
+            .collect();
+        assert_eq!(
+            flags,
+            [("build", true), (".gitignore", false), ("kept.rs", false)]
+        );
+        let build = child(&mut root, "build");
+        build.load_children(Some(&repo), true);
+        let out = child(build, "out");
+        assert!(out.ignored, "inside an ignored folder");
+        out.load_children(Some(&repo), true);
+        assert!(out.children[0].ignored);
+
+        root.load_children(Some(&repo), false);
+        assert_eq!(names(&root), [".gitignore", "kept.rs"]);
     }
 
     #[test]
