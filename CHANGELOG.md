@@ -8,6 +8,19 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Image viewer tools: zoom with the mouse wheel (around the pointer), the toolbar or +/-, fit to the view (0) or actual size (1), double-click to switch between the two, and drag to pan. Images can be rotated and flipped for viewing (the file is not changed), shown on a checkerboard, dark or light background to judge transparency, and pixels stay crisp when zoomed in. The status line shows the pixel under the pointer with its colour (click to copy the hex code), and the toolbar the image's size, file size and format.
+- The image viewer now opens GIF (first frame), and BMP and ICO files, which were listed but failed with "Unable to load image".
+
+### Fixed
+
+- File tree: dot-folders and dot-files (`.github`, `.vscode`, `.claude`, `.env`, `.gitignore`…) are listed again, following the .gitignore like the rest; only `.git` and OS clutter (`.DS_Store`, `Thumbs.db`) stay hidden.
+- File tree: a folder collapsed and opened again now shows its current content instead of what it held when first opened. When the system drops file-change events (many changes at once, e.g. `npm install`), the tree is fully refreshed instead of missing them.
+- File tree: names are sorted regardless of case, so `Zeta` no longer comes before `alpha`.
+
 ## [0.13.0] - 2026-10-11
 
 ### Added

@@ -8,6 +8,19 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Ajouts
+
+- Outils du visualiseur d'images : zoom à la molette (autour du pointeur), depuis la barre d'outils ou avec +/-, ajustement à la vue (0) ou taille réelle (1), double-clic pour passer de l'un à l'autre, et glisser pour se déplacer. Les images peuvent être pivotées et retournées pour l'affichage (le fichier n'est pas modifié), affichées sur un damier, un fond sombre ou clair pour juger la transparence, et les pixels restent nets en zoom avant. La ligne d'état montre le pixel sous le pointeur avec sa couleur (clic pour copier le code hexa), et la barre d'outils les dimensions, le poids du fichier et le format.
+- Le visualiseur ouvre désormais les GIF (première image), ainsi que les BMP et ICO, qui étaient reconnus mais échouaient avec « Unable to load image ».
+
+### Corrections
+
+- Explorateur : les dossiers et fichiers commençant par un point (`.github`, `.vscode`, `.claude`, `.env`, `.gitignore`…) sont de nouveau affichés, en suivant le .gitignore comme le reste ; seuls `.git` et les fichiers système (`.DS_Store`, `Thumbs.db`) restent masqués.
+- Explorateur : un dossier replié puis rouvert affiche son contenu actuel, et non plus celui de sa première ouverture. Quand le système perd des événements de modification (beaucoup de changements d'un coup, par ex. `npm install`), l'arbre est entièrement rafraîchi au lieu de les manquer.
+- Explorateur : les noms sont triés sans tenir compte de la casse, `Zeta` ne passe plus avant `alpha`.
+
 ## [0.13.0] - 2026-10-11
 
 ### Ajouts
