@@ -35,6 +35,13 @@ impl StatusBar {
         egui::Frame::new().fill(bg).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
+                    egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                        .color(palette.on_accent)
+                        .small(),
+                )
+                .on_hover_text("Coding Unicorns version");
+                ui.separator();
+                ui.label(
                     egui::RichText::new(format!("⎇ {}", git.branch))
                         .color(palette.on_accent)
                         .small(),
@@ -219,7 +226,12 @@ mod tests {
     fn no_file_shows_branch_and_cursor_only() {
         let editor = Editor::new();
         let t = rendered(&editor, "main", LspStatus::Inactive);
-        assert_eq!(t.len(), 2, "{t:?}");
+        assert_eq!(t.len(), 3, "{t:?}");
+        assert_eq!(
+            t[0],
+            concat!("v", env!("CARGO_PKG_VERSION")),
+            "version first"
+        );
         assert!(has(&t, "⎇ main"));
         assert!(has(&t, "Ln 1, Col 1"));
     }
@@ -283,7 +295,7 @@ mod tests {
         ] {
             let t = rendered(&editor, "main", status.clone());
             assert!(has(&t, label), "{status:?}: {t:?}");
-            assert_eq!(t.len(), 3, "{status:?}: {t:?}");
+            assert_eq!(t.len(), 4, "{status:?}: {t:?}");
         }
     }
 
@@ -292,7 +304,7 @@ mod tests {
         let editor = Editor::new();
         let t = rendered_with(&editor, "main", LspStatus::Inactive, Some((2, 7)));
         assert!(has(&t, "⊗ 2  ⚠ 7"), "{t:?}");
-        assert_eq!(t.len(), 3, "{t:?}");
+        assert_eq!(t.len(), 4, "{t:?}");
         let t = rendered(&editor, "main", LspStatus::Inactive);
         assert!(!t.iter().any(|s| s.contains('⚠')));
     }
