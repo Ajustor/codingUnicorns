@@ -90,10 +90,11 @@ pub fn resolve_glob(arg: &str) -> String {
     }
 }
 
-/// `binary` with the platform's executable suffix, unless it has one.
+/// `binary` with the platform's executable suffix, unless its file name has
+/// an extension already (`srv.exe`, a `.jar`).
 fn executable_name(binary: &str) -> String {
     let suffix = std::env::consts::EXE_SUFFIX;
-    if suffix.is_empty() || binary.to_ascii_lowercase().ends_with(suffix) {
+    if suffix.is_empty() || Path::new(binary).extension().is_some() {
         binary.to_string()
     } else {
         format!("{binary}{suffix}")
@@ -188,9 +189,8 @@ mod tests {
     fn executable_name_adds_the_suffix_once() {
         let exe = std::env::consts::EXE_SUFFIX;
         assert_eq!(executable_name("bin/srv"), format!("bin/srv{exe}"));
-        if !exe.is_empty() {
-            assert_eq!(executable_name("srv.EXE"), "srv.EXE");
-        }
+        assert_eq!(executable_name("srv.EXE"), "srv.EXE");
+        assert_eq!(executable_name("debug/plugin.jar"), "debug/plugin.jar");
     }
 
     #[test]

@@ -450,6 +450,22 @@ impl LspClient {
         }));
     }
 
+    /// Run a server command (`workspace/executeCommand`). Returns the
+    /// request id; match it in `poll()` results.
+    pub fn request_execute_command(&mut self, command: &str, arguments: Vec<Value>) -> u64 {
+        let Some(inner) = &mut self.inner else {
+            return 0;
+        };
+        let id = Self::next_id(inner);
+        let _ = inner.transport.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "workspace/executeCommand",
+            "params": { "command": command, "arguments": arguments }
+        }));
+        id
+    }
+
     /// Request hover info. Returns the request id; match it in `poll()` results.
     pub fn request_hover(&mut self, uri: &str, line: u32, character: u32) -> u64 {
         let Some(inner) = &mut self.inner else {

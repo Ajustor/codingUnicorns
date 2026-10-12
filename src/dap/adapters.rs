@@ -19,6 +19,8 @@ pub struct DebugAdapter {
     pub spec: DebuggerSpec,
     /// Folder of the installed module.
     pub dir: PathBuf,
+    /// The module's languages (file extensions).
+    pub languages: Vec<String>,
 }
 
 impl DebugAdapter {
@@ -51,6 +53,7 @@ impl DebugAdapter {
                 module: e.manifest.extension.name.clone(),
                 spec: e.manifest.debugger.clone().expect("checked above"),
                 dir: e.path.clone(),
+                languages: e.manifest.capabilities.languages.clone(),
             })
     }
 

@@ -8,6 +8,17 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.16.0] - 2026-10-12
+
+### Ajouts
+
+- Débogage Java, avec le module Java : F5 sur un fichier `.java` (ou une configuration de lancement `java`) demande au serveur de langage la classe principale du fichier ouvert, son classpath et le Java du projet, puis le débogue avec points d'arrêt, pas à pas, pile d'appels et variables. Le débogueur (java-debug) est téléchargé avec le serveur de langage, rien à installer.
+- Les modules peuvent faire démarrer leur débogueur par leur serveur de langage (`transport = "lsp"`) : l'IDE exécute les commandes `[[debugger.lsp_resolve]]` du module pour compléter les arguments de lancement, puis la commande qui démarre la session et renvoie son port. Les `initializationOptions` du serveur acceptent les mêmes variables que ses arguments, ainsi que `${debuggerDir}`.
+
+### Corrections
+
+- Débogueur : les points d'arrêt d'un fichier ouvert par un chemin avec des `/` sous Windows (un dossier ouvert avec `cu C:/projet`, par exemple) ne sont plus ignorés par des débogueurs comme java-debug.
+
 ## [0.15.0] - 2026-10-12
 
 ### Ajouts

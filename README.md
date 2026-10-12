@@ -353,7 +353,7 @@ dotnet = ["some-tool@1.2.3"]  # dotnet tool update --global (version épinglable
 types = ["mylang"]          # `type` des configurations de launch.json servies
 command = ["mylang-dap"]    # binaire (ou candidats dans l'ordre), cherché dans le PATH
 args = ["--stdio"]          # ${debuggerDir} = dossier du téléchargement, ${port} = port TCP
-transport = "stdio"         # ou "tcp" : l'adaptateur écoute sur 127.0.0.1:${port}
+transport = "stdio"         # ou "tcp" : l'adaptateur écoute sur 127.0.0.1:${port} ; ou "lsp" (voir plus bas)
 type_map = { mylang-old = "mylang" }        # optionnel : renomme le `type` des configurations
 install_hint = "cargo install mylang-dap"   # affiché si introuvable
 
@@ -365,6 +365,14 @@ binary = "mylang-dap/mylang-dap"            # fichier qui atteste l'installation
 [debugger.download.urls]    # .zip ou .tar.gz par plateforme
 windows-x86_64 = "https://example.com/mylang-dap-win64.zip"
 linux-x86_64 = "https://example.com/mylang-dap-linux.tar.gz"
+
+[[debugger.lsp_resolve]]    # optionnel, transport "lsp" : commande du serveur avant le lancement
+command = "mylang.resolveMain"              # workspace/executeCommand
+args = ["${workspaceFolderUri}", "${launch:mainClass}"]  # ${file}, ${fileUri}, ${workspaceFolder}…
+unless = "mainClass"        # sautée si la configuration a déjà cette clé
+pick = "filePath"           # résultat liste : l'élément dont ce champ est le fichier ouvert, sinon le premier
+merge = ["mainClass"]       # champs du résultat copiés dans les arguments de `launch`
+set = ["classPaths"]        # ou : une clé reçoit tout le résultat, plusieurs les éléments d'une liste
 
 [[panels]]                  # optionnel : interfaces du module (voir plus bas)
 id = "mylang.tools"         # unique, passé à ui_view_ffi / ui_event_ffi
@@ -389,7 +397,7 @@ Le crate exporte des fonctions C :
 | `ui_event_ffi(panel_id, event)` | Reçoit un événement JSON du panneau, renvoie un tableau JSON d'actions (ou null) |
 | `free_string(ptr)` | Libère **toute** chaîne renvoyée par les fonctions ci-dessus |
 
-Le serveur LSP et le débogueur sont déclarés dans le manifeste, pas exportés : un module peut fournir un débogueur sans bibliothèque. Au lancement (F5), l'IDE prend le module dont `types` contient le `type` de la configuration de debug, sinon celui du langage du fichier ouvert ; sans `default_launch`, une configuration dans `launch.toml` ou `.vscode/launch.json` est nécessaire. L'archive est téléchargée au premier lancement quand `args` utilise `${debuggerDir}`, ou quand `command` n'est pas dans le `PATH` (le binaire téléchargé sert alors de commande). Le serveur LSP suit la même logique : son archive (`lsp_download`) est téléchargée en arrière-plan à l'ouverture du premier fichier de ses langages quand `lsp_server` ou `lsp_args` utilisent `${serverDir}`, ou quand `lsp_server` n'est pas dans le `PATH`, puis le serveur démarre. Dans ses arguments, `${serverDir}` est le dossier de l'archive, `${dataDir}` un dossier de données propre au module et au workspace (hors du workspace), `${os}` vaut `win`, `linux` ou `mac`, et un chemin dont le nom de fichier contient `*` est remplacé par le fichier correspondant (y compris dans `binary`). Le téléchargement peut être un `.zip`, un `.tar.gz`, un fichier `.gz` seul ou l'exécutable lui-même, enregistré sous le nom `binary` (un jar nommé d'après sa version, par exemple ; voir le module Java). En TCP, les sessions enfants demandées par l'adaptateur (`startDebugging`, utilisé par vscode-js-debug) sont ouvertes automatiquement. Les [modules officiels](https://github.com/Ajustor/coding-unicorns-modules) sont les meilleurs exemples à copier.
+Le serveur LSP et le débogueur sont déclarés dans le manifeste, pas exportés : un module peut fournir un débogueur sans bibliothèque. Au lancement (F5), l'IDE prend le module dont `types` contient le `type` de la configuration de debug, sinon celui du langage du fichier ouvert ; sans `default_launch`, une configuration dans `launch.toml` ou `.vscode/launch.json` est nécessaire. L'archive est téléchargée au premier lancement quand `args` utilise `${debuggerDir}`, ou quand `command` n'est pas dans le `PATH` (le binaire téléchargé sert alors de commande). Le serveur LSP suit la même logique : son archive (`lsp_download`) est téléchargée en arrière-plan à l'ouverture du premier fichier de ses langages quand `lsp_server` ou `lsp_args` utilisent `${serverDir}`, ou quand `lsp_server` n'est pas dans le `PATH`, puis le serveur démarre. Dans ses arguments, `${serverDir}` est le dossier de l'archive, `${dataDir}` un dossier de données propre au module et au workspace (hors du workspace), `${os}` vaut `win`, `linux` ou `mac`, et un chemin dont le nom de fichier contient `*` est remplacé par le fichier correspondant (y compris dans `binary`). Le téléchargement peut être un `.zip`, un `.tar.gz`, un fichier `.gz` seul ou l'exécutable lui-même, enregistré sous le nom `binary` (un jar nommé d'après sa version, par exemple ; voir le module Java). Avec `transport = "lsp"`, c'est le serveur de langage qui démarre la session (comme java-debug, un plugin de jdtls) : `command` est la commande du serveur (`workspace/executeCommand`) qui renvoie le port auquel l'IDE se connecte. Avant elle, les étapes `[[debugger.lsp_resolve]]` complètent dans l'ordre les arguments de `launch` (une liste vide renvoyée avec `pick` est redemandée le temps que le serveur charge le projet). Les `lsp_init_options` acceptent les mêmes variables que `lsp_args`, plus `${debuggerDir}` : quand le serveur l'utilise (pour charger le plugin de debug), le téléchargement du débogueur se fait avec celui du serveur. En TCP, les sessions enfants demandées par l'adaptateur (`startDebugging`, utilisé par vscode-js-debug) sont ouvertes automatiquement. Les [modules officiels](https://github.com/Ajustor/coding-unicorns-modules) sont les meilleurs exemples à copier.
 
 #### Panneaux et pages
 

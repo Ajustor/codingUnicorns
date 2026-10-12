@@ -193,6 +193,8 @@ pub struct CodingUnicorns {
     pub session: session::SessionState,
     /// External file change detection (workspace watcher + save guard).
     pub file_watch: file_watch::FileWatchState,
+    /// Language server commands of debug launches being prepared.
+    pub debug_lsp: debug_ops::DebugLspBridge,
     /// Language server archives being downloaded (first use of a module).
     pub lsp_downloads: crate::lsp::server::ServerDownloads,
     /// Workspace-wide LSP diagnostics (bottom panel, Ctrl+Shift+M).
@@ -368,6 +370,7 @@ impl CodingUnicorns {
             image_texture: None,
             image_view: Default::default(),
             lsp_downloads: Default::default(),
+            debug_lsp: Default::default(),
             pending_delete: None,
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),
@@ -793,7 +796,8 @@ impl eframe::App for CodingUnicorns {
         // Poll the DAP session every frame; adapter events arrive without
         // any input, so keep frames coming while a session is active.
         self.dap.poll();
-        if self.dap.is_active() {
+        self.serve_debug_lsp_commands();
+        if self.dap.is_active() || self.dap.is_preparing() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if want_close_tab && self.close_tab_id_pending.is_none() {
@@ -839,7 +843,9 @@ impl eframe::App for CodingUnicorns {
         }
         for (ext, msgs) in lsp_responses {
             for (id, response) in msgs {
-                if self.handle_palette_lsp_response(&ext, id, &response) {
+                if self.handle_debug_lsp_response(&ext, id, &response)
+                    || self.handle_palette_lsp_response(&ext, id, &response)
+                {
                     continue;
                 }
                 if lsp_ops::PendingLsp::answers(&self.pending_hover_id, &ext, id) {

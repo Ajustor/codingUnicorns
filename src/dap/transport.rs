@@ -38,6 +38,11 @@ impl DapTransport {
         match cfg.transport {
             DebuggerTransport::Stdio => Self::spawn(&cfg.adapter_cmd, &args, workspace),
             DebuggerTransport::Tcp => Self::spawn_tcp(&cfg.adapter_cmd, &args, workspace),
+            // The language server starts it: the launcher asks for the port
+            // and connects (`DapTransport::connect`).
+            DebuggerTransport::Lsp => {
+                anyhow::bail!("this debugger is started through the language server")
+            }
         }
     }
 

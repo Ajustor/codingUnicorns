@@ -1,6 +1,7 @@
 //! Work done before a debug session starts, off the UI thread: download the
 //! debug adapter when needed, run the `preLaunchTask` (e.g. a build), then
-//! start the adapter and connect to it.
+//! start the adapter and connect to it (or have the language server start
+//! it, see [`super::lsp_session`]).
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -26,6 +27,10 @@ pub struct LaunchPlan {
     /// Tasks to run first, in order.
     pub tasks: Vec<TaskStep>,
     pub workspace: PathBuf,
+    /// The file being debugged, when one is open.
+    pub file: Option<PathBuf>,
+    /// Language whose server starts an LSP-started adapter.
+    pub language: String,
 }
 
 pub enum LaunchEvent {
@@ -34,6 +39,8 @@ pub enum LaunchEvent {
     /// Preparation done: the adapter is started and connected.
     Ready(Box<(DapConfig, DapTransport)>),
     Failed(String),
+    /// A language server command to run on the UI thread.
+    LspCommand(super::lsp_session::LspCommand),
 }
 
 /// A preparation running in the background.
@@ -75,7 +82,11 @@ fn run(
     cancel: &AtomicBool,
 ) -> Result<(DapConfig, DapTransport), String> {
     let mut config = plan.config;
-    if let Some(adapter) = &plan.adapter {
+    let by_lsp = plan
+        .adapter
+        .as_ref()
+        .filter(|a| a.spec.transport == crate::extension::manifest::DebuggerTransport::Lsp);
+    if let (Some(adapter), None) = (&plan.adapter, by_lsp) {
         if adapter.needs_download() {
             let _ = tx.send(LaunchEvent::Log(format!(
                 "Downloading the {} debugger (first use)…",
@@ -97,6 +108,16 @@ fn run(
     }
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".into());
+    }
+    if let Some(adapter) = by_lsp {
+        let ctx = super::lsp_session::Context {
+            language: &plan.language,
+            file: plan.file.as_deref(),
+            workspace: &plan.workspace,
+        };
+        let transport =
+            super::lsp_session::start(adapter, &ctx, &mut config.launch_config, tx, cancel)?;
+        return Ok((config, transport));
     }
     let transport = DapTransport::open(&config, &plan.workspace)
         .map_err(|e| format!("could not start the debugger `{}`: {e}", config.adapter_cmd))?;
@@ -268,6 +289,8 @@ mod tests {
             adapter: None,
             tasks,
             workspace: dir.to_path_buf(),
+            file: None,
+            language: String::new(),
         }
     }
 
@@ -288,6 +311,7 @@ mod tests {
                 LaunchEvent::Log(l) => logs.push(l),
                 LaunchEvent::Ready(ready) => return (logs, Ok(ready.0)),
                 LaunchEvent::Failed(e) => return (logs, Err(e)),
+                LaunchEvent::LspCommand(_) => {}
             }
         }
     }

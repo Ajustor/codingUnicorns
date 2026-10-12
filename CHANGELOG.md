@@ -8,6 +8,17 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] - 2026-10-12
+
+### Added
+
+- Java debugging, with the Java module: F5 on a `.java` file (or a `java` launch configuration) asks the language server for the main class of the open file, its classpath and the project's Java, then debugs it with breakpoints, stepping, the call stack and variables. The debugger (java-debug) is downloaded with the language server, nothing to install.
+- Modules can have their debugger started by their language server (`transport = "lsp"`): the IDE runs the module's `[[debugger.lsp_resolve]]` server commands to complete the launch arguments, then the command that starts the session and returns its port. Language server `initializationOptions` can use the same variables as its arguments, and `${debuggerDir}`.
+
+### Fixed
+
+- Debugger: breakpoints in a file opened through a path with `/` separators on Windows (e.g. a folder opened with `cu C:/project`) are no longer ignored by debuggers such as java-debug.
+
 ## [0.15.0] - 2026-10-12
 
 ### Added
