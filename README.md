@@ -327,7 +327,7 @@ repository = "https://github.com/acme/mylang"  # optionnel
 [capabilities]
 languages = ["ml", "mli"]   # extensions de fichiers, sans le point
 lsp_server = "mylang-lsp"   # optionnel : binaire du serveur LSP
-lsp_args = ["--stdio"]
+lsp_args = ["--stdio"]      # ${serverDir}, ${dataDir}, ${os} : voir plus bas
 language_ids = { mli = "mylang" }  # optionnel : languageId LSP quand il diffère de l'extension
 lsp_init_options = { provideFormatter = true }  # optionnel : initializationOptions du serveur
 file_names = { "MyLangfile" = "ml" }  # optionnel : fichiers reconnus par leur nom (motifs `*`, sans casse)
@@ -336,6 +336,11 @@ file_names = { "MyLangfile" = "ml" }  # optionnel : fichiers reconnus par leur n
 command = "mylang-iface-lsp"
 args = ["--stdio"]
 init_options = {}               # optionnel, remplace lsp_init_options pour ce langage
+download = { binary = "bin/srv", urls = { "*" = "https://…/srv.zip" } }  # optionnel, comme lsp_download
+
+[capabilities.lsp_download]     # optionnel : archive du serveur, décompressée dans ${serverDir}
+binary = "bin/mylang-lsp"       # fichier présent une fois installé (sans .exe)
+urls = { windows-x86_64 = "https://…/win.zip", "*" = "https://…/all.tar.gz" }  # "*" = toutes plateformes
 
 [dependencies]              # optionnel, installé avec le module
 npm = ["mylang-lsp"]        # npm install -g
@@ -384,7 +389,7 @@ Le crate exporte des fonctions C :
 | `ui_event_ffi(panel_id, event)` | Reçoit un événement JSON du panneau, renvoie un tableau JSON d'actions (ou null) |
 | `free_string(ptr)` | Libère **toute** chaîne renvoyée par les fonctions ci-dessus |
 
-Le serveur LSP et le débogueur sont déclarés dans le manifeste, pas exportés : un module peut fournir un débogueur sans bibliothèque. Au lancement (F5), l'IDE prend le module dont `types` contient le `type` de la configuration de debug, sinon celui du langage du fichier ouvert ; sans `default_launch`, une configuration dans `launch.toml` ou `.vscode/launch.json` est nécessaire. L'archive est téléchargée au premier lancement quand `args` utilise `${debuggerDir}`, ou quand `command` n'est pas dans le `PATH` (le binaire téléchargé sert alors de commande). En TCP, les sessions enfants demandées par l'adaptateur (`startDebugging`, utilisé par vscode-js-debug) sont ouvertes automatiquement. Les [modules officiels](https://github.com/Ajustor/coding-unicorns-modules) sont les meilleurs exemples à copier.
+Le serveur LSP et le débogueur sont déclarés dans le manifeste, pas exportés : un module peut fournir un débogueur sans bibliothèque. Au lancement (F5), l'IDE prend le module dont `types` contient le `type` de la configuration de debug, sinon celui du langage du fichier ouvert ; sans `default_launch`, une configuration dans `launch.toml` ou `.vscode/launch.json` est nécessaire. L'archive est téléchargée au premier lancement quand `args` utilise `${debuggerDir}`, ou quand `command` n'est pas dans le `PATH` (le binaire téléchargé sert alors de commande). Le serveur LSP suit la même logique : son archive (`lsp_download`) est téléchargée en arrière-plan à l'ouverture du premier fichier de ses langages quand `lsp_server` ou `lsp_args` utilisent `${serverDir}`, ou quand `lsp_server` n'est pas dans le `PATH`, puis le serveur démarre. Dans ses arguments, `${serverDir}` est le dossier de l'archive, `${dataDir}` un dossier de données propre au module et au workspace (hors du workspace), `${os}` vaut `win`, `linux` ou `mac`, et un chemin dont le nom de fichier contient `*` est remplacé par le fichier correspondant (y compris dans `binary`). Le téléchargement peut être un `.zip`, un `.tar.gz`, un fichier `.gz` seul ou l'exécutable lui-même, enregistré sous le nom `binary` (un jar nommé d'après sa version, par exemple ; voir le module Java). En TCP, les sessions enfants demandées par l'adaptateur (`startDebugging`, utilisé par vscode-js-debug) sont ouvertes automatiquement. Les [modules officiels](https://github.com/Ajustor/coding-unicorns-modules) sont les meilleurs exemples à copier.
 
 #### Panneaux et pages
 

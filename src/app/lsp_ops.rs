@@ -165,10 +165,63 @@ impl CodingUnicorns {
         false
     }
 
+    /// Report finished language server downloads and start the server of
+    /// the current file once its files are in.
+    pub(crate) fn poll_lsp_downloads(&mut self, ctx: &egui::Context) {
+        if !self.lsp_downloads.is_running() {
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        let done = self.lsp_downloads.poll();
+        for (module, result) in &done {
+            match result {
+                Ok(()) => self.toast(format!("{module} language server installed")),
+                Err(e) => {
+                    log::warn!("{module} language server download failed: {e}");
+                    self.toast(format!(
+                        "Could not download the {module} language server: {e}"
+                    ));
+                }
+            }
+        }
+        if done.iter().any(|(_, r)| r.is_ok()) {
+            if let Some(path) = self.editor.current_path.clone() {
+                // Starts the server and sends it the open file.
+                self.notify_lsp_opened(&path);
+            }
+        }
+    }
+
     pub(crate) fn ensure_lsp_for_file(&mut self, path: &std::path::Path) {
         if let Some(ext) = crate::language::language_key(path).as_deref() {
             if let Some(workspace) = self.workspace_path.clone() {
-                // Prefer the plugin manager (covers installed FFI modules), then builtins.
+                if self.lsp.get(ext).is_some() {
+                    return;
+                }
+                // A server declared in a module's manifest: its archive is
+                // downloaded first when it has one (the server starts once
+                // it is in, see `poll_lsp_downloads`).
+                let server = crate::lsp::server::ModuleServer::for_language(
+                    &self.extension_registry.installed,
+                    ext,
+                );
+                if let Some(server) = server {
+                    if server.needs_download() {
+                        if self.lsp_downloads.start(&server, None) {
+                            self.toast(format!(
+                                "Downloading the {} language server (first use)…",
+                                server.module
+                            ));
+                        }
+                        return;
+                    }
+                    let (cmd, args) = server.command_line(&workspace);
+                    let init = self.extension_registry.lsp_init_options(ext);
+                    self.lsp
+                        .ensure_started_with_cmd(ext, &cmd, &args, &workspace, init);
+                    return;
+                }
+                // Servers named by a module's library (`lsp_server_command_ffi`).
                 if let Some((cmd, args)) = self.plugin_manager.lsp_server_for_ext(ext) {
                     let init = self.extension_registry.lsp_init_options(ext);
                     self.lsp
