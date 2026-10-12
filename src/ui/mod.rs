@@ -1,6 +1,7 @@
 pub mod breadcrumbs;
 pub mod debugger;
 pub mod git_panel;
+pub mod image_viewer;
 pub mod layout;
 pub mod merge_panel;
 pub mod minimap;

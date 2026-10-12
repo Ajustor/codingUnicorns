@@ -179,6 +179,8 @@ pub struct CodingUnicorns {
     pub pending_image: Option<ImageData>,
     /// Cached egui texture + original pixel size for the currently-displayed image.
     pub image_texture: Option<(egui::TextureHandle, egui::Vec2)>,
+    /// Zoom / pan / rotation of the image viewer.
+    pub image_view: crate::ui::image_viewer::ImageView,
     /// Path queued for deletion — held until the confirmation dialog resolves.
     pub pending_delete: Option<std::path::PathBuf>,
     /// Transient toast notifications (shown bottom-centre, fade out after 2 s).
@@ -204,6 +206,10 @@ pub struct ImageData {
     pub pixels: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    /// Size of the file on disk.
+    pub file_size: Option<u64>,
+    /// Format name shown in the viewer ("PNG", "JPEG"…).
+    pub format: String,
 }
 
 impl CodingUnicorns {
@@ -358,6 +364,7 @@ impl CodingUnicorns {
             split_ratio: 0.5,
             pending_image: None,
             image_texture: None,
+            image_view: Default::default(),
             pending_delete: None,
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),

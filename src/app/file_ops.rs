@@ -9,7 +9,7 @@ pub(crate) fn is_image_file(path: &std::path::Path) -> bool {
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .as_deref(),
-        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "ico")
+        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "ico" | "gif")
     )
 }
 
@@ -145,6 +145,7 @@ impl CodingUnicorns {
         // Always clear any previous image state when opening a new file.
         self.pending_image = None;
         self.image_texture = None;
+        self.image_view.reset();
 
         // Handle image files separately — load pixel data now, create texture during render.
         if is_image_file(&path) {
@@ -158,6 +159,11 @@ impl CodingUnicorns {
                         pixels: rgba.into_raw(),
                         width: w,
                         height: h,
+                        file_size: std::fs::metadata(&path).ok().map(|m| m.len()),
+                        format: path
+                            .extension()
+                            .map(|e| e.to_string_lossy().to_uppercase())
+                            .unwrap_or_default(),
                     });
                 }
             }
