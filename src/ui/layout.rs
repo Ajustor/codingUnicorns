@@ -715,6 +715,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             });
                     }
                     SidebarTab::Explorer => {
+                        app.file_tree.sync_git_marks(&app.git_status.files);
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             if let Some(path) = app.file_tree.show(ui) {
                                 if app.active_pane == 1 && app.editor2.is_some() {

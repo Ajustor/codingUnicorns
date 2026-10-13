@@ -73,6 +73,15 @@ pub fn window_opened() {
     step("app ready");
 }
 
+/// The first frame is being drawn (after the fonts and the GPU are set up):
+/// logged once.
+pub fn first_frame() {
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if !DONE.swap(true, Ordering::Relaxed) {
+        step("first frame");
+    }
+}
+
 /// Whether [`start`] ran (not in the `--claude-permission-server` helper).
 pub fn is_started() -> bool {
     START.get().is_some()
