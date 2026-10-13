@@ -4,9 +4,10 @@ use super::Editor;
 impl Editor {
     /// Recompute git diff indicators for the current file.
     pub fn refresh_line_diff(&mut self) {
+        // Diffing a large file against git would stall the UI.
         let path = match &self.current_path {
-            Some(p) => p.clone(),
-            None => {
+            Some(p) if !self.large_file => p.clone(),
+            _ => {
                 self.line_diff.clear();
                 return;
             }

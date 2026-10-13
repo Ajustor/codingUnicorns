@@ -47,12 +47,33 @@ impl Editor {
     }
 
     /// Collect all words of length ≥ 2 present in the buffer (for autocomplete suggestions).
+    /// Words of the document for local completion. In a big document only
+    /// the lines around the cursor are read, and of a very long line only the
+    /// text around the cursor: every keystroke asks for them.
     pub(super) fn buffer_words(&self) -> Vec<String> {
+        const AROUND_CURSOR: usize = 2_000;
+        const LONG_LINE_CHARS: usize = 20_000;
+        let total = self.buffer.num_lines();
+        let lines = if total > 2 * AROUND_CURSOR {
+            let start = self.cursor.row.saturating_sub(AROUND_CURSOR);
+            start..(self.cursor.row + AROUND_CURSOR).min(total)
+        } else {
+            0..total
+        };
         let mut seen = std::collections::HashSet::new();
-        for i in 0..self.buffer.num_lines() {
+        for i in lines {
             let line = self.buffer.line(i);
+            let chars: Box<dyn Iterator<Item = char>> =
+                if self.buffer.line_char_len_fast(i) <= LONG_LINE_CHARS {
+                    Box::new(line.chars())
+                } else if i == self.cursor.row {
+                    let from = self.cursor.col.saturating_sub(LONG_LINE_CHARS / 2);
+                    Box::new(line.chars().skip(from).take(LONG_LINE_CHARS))
+                } else {
+                    continue;
+                };
             let mut word = String::new();
-            for ch in line.chars() {
+            for ch in chars {
                 if ch.is_alphanumeric() || ch == '_' {
                     word.push(ch);
                 } else {
@@ -221,6 +242,16 @@ mod tests {
     }
 
     // ── buffer_words ────────────────────────────────────────────────────────
+
+    #[test]
+    fn buffer_words_of_a_long_line_come_from_around_the_cursor() {
+        let line = format!("{} near {}", "far ".repeat(10_000), "end ".repeat(10_000));
+        let mut ed = editor(&line);
+        assert_eq!(ed.buffer_words(), ["far"], "other long lines are skipped");
+        ed.cursor.set_position(0, 40_003);
+        let words = ed.buffer_words();
+        assert!(words.contains(&"near".to_string()) && words.contains(&"far".to_string()));
+    }
 
     #[test]
     fn buffer_words_are_unique_sorted_and_at_least_two_chars() {

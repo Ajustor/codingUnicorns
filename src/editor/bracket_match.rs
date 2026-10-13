@@ -1,5 +1,9 @@
 use super::buffer::Buffer;
 
+/// Lines searched for a match before giving up: an unmatched bracket would
+/// otherwise scan to the end (or start) of a big file.
+const MAX_SCAN_LINES: usize = 5_000;
+
 /// Find the matching bracket for the char at `(row, col)` in the buffer.
 /// Returns `(open_row, open_col, close_row, close_col)` or `None`.
 pub(super) fn find_matching_bracket(
@@ -39,7 +43,7 @@ pub(super) fn find_matching_bracket(
                         c += 1;
                     }
                     r += 1;
-                    if r >= buffer.num_lines() {
+                    if r >= buffer.num_lines() || r - row > MAX_SCAN_LINES {
                         break;
                     }
                     c = 0;
@@ -68,7 +72,7 @@ pub(super) fn find_matching_bracket(
                             }
                         }
                     }
-                    if r == 0 {
+                    if r == 0 || row - r > MAX_SCAN_LINES {
                         break;
                     }
                     r -= 1;

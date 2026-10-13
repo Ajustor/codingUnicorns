@@ -1,7 +1,44 @@
 use egui_phosphor::regular as ph;
 
+/// Icons of files known by their name (build files, git, Docker…).
+fn named_icon(name: &str) -> Option<(&'static str, egui::Color32)> {
+    let lower = name.to_lowercase();
+    let docker = (ph::CUBE, egui::Color32::from_rgb(33, 150, 243));
+    Some(match lower.as_str() {
+        "dockerfile" | "containerfile" | ".dockerignore" => docker,
+        n if n.starts_with("dockerfile.")
+            || n.starts_with("docker-compose.")
+            || n.starts_with("compose.") && (n.ends_with(".yml") || n.ends_with(".yaml")) =>
+        {
+            docker
+        }
+        ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitkeep" => {
+            (ph::GIT_BRANCH, egui::Color32::from_rgb(240, 80, 50))
+        }
+        n if n == ".env" || n.starts_with(".env.") => {
+            (ph::KEY, egui::Color32::from_rgb(236, 210, 60))
+        }
+        "license" | "licence" | "license.md" | "license.txt" | "copying" => {
+            (ph::CERTIFICATE, egui::Color32::from_rgb(218, 175, 60))
+        }
+        "package.json" => (ph::PACKAGE, egui::Color32::from_rgb(203, 56, 55)),
+        "cargo.toml" => (ph::PACKAGE, egui::Color32::from_rgb(222, 99, 52)),
+        "pom.xml" => (ph::PACKAGE, egui::Color32::from_rgb(176, 114, 25)),
+        "makefile" | "gnumakefile" | "cmakelists.txt" | "justfile" => {
+            (ph::WRENCH, egui::Color32::from_rgb(110, 160, 110))
+        }
+        "gradlew" | "gradlew.bat" | "build.gradle" | "settings.gradle" | "gradle.properties" => {
+            (ph::GEAR, egui::Color32::from_rgb(64, 160, 150))
+        }
+        _ => return None,
+    })
+}
+
 /// Returns (phosphor icon char, color) for a given filename.
 pub fn file_icon(name: &str) -> (&'static str, egui::Color32) {
+    if let Some(icon) = named_icon(name) {
+        return icon;
+    }
     // `Path::extension` semantics: `go`, `lock` and `.go` have no extension.
     let ext = std::path::Path::new(name)
         .extension()
@@ -12,13 +49,39 @@ pub fn file_icon(name: &str) -> (&'static str, egui::Color32) {
         "rs" => (ph::FILE_RS, egui::Color32::from_rgb(222, 99, 52)),
         "py" => (ph::FILE_PY, egui::Color32::from_rgb(53, 114, 165)),
         "js" | "mjs" | "cjs" => (ph::FILE_JS, egui::Color32::from_rgb(240, 219, 79)),
-        "ts" => (ph::FILE_TS, egui::Color32::from_rgb(49, 120, 198)),
+        "ts" | "mts" | "cts" => (ph::FILE_TS, egui::Color32::from_rgb(49, 120, 198)),
         "jsx" => (ph::FILE_JSX, egui::Color32::from_rgb(97, 218, 251)),
         "tsx" => (ph::FILE_TSX, egui::Color32::from_rgb(97, 218, 251)),
         "json" | "jsonc" => (ph::BRACKETS_CURLY, egui::Color32::from_rgb(255, 196, 88)),
         "toml" => (ph::FILE_CODE, egui::Color32::from_rgb(156, 220, 254)),
         "yaml" | "yml" => (ph::FILE_CODE, egui::Color32::from_rgb(206, 145, 120)),
-        "md" | "mdx" => (ph::FILE_MD, egui::Color32::from_rgb(100, 200, 255)),
+        "md" | "mdx" | "markdown" => (ph::FILE_MD, egui::Color32::from_rgb(100, 200, 255)),
+        "vue" => (ph::FILE_VUE, egui::Color32::from_rgb(65, 184, 131)),
+        "svelte" => (ph::FILE_CODE, egui::Color32::from_rgb(255, 62, 0)),
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" | "avif" | "tiff" => {
+            (ph::FILE_IMAGE, egui::Color32::from_rgb(166, 123, 212))
+        }
+        "pdf" => (ph::FILE_PDF, egui::Color32::from_rgb(230, 70, 60)),
+        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "jar" | "war" => {
+            (ph::FILE_ZIP, egui::Color32::from_rgb(190, 160, 90))
+        }
+        "csv" | "tsv" => (ph::FILE_CSV, egui::Color32::from_rgb(90, 180, 100)),
+        "mp3" | "wav" | "ogg" | "flac" => (ph::FILE_AUDIO, egui::Color32::from_rgb(230, 120, 170)),
+        "mp4" | "mov" | "webm" | "mkv" | "avi" => {
+            (ph::FILE_VIDEO, egui::Color32::from_rgb(230, 120, 170))
+        }
+        "doc" | "docx" | "odt" => (ph::FILE_DOC, egui::Color32::from_rgb(43, 87, 154)),
+        "xls" | "xlsx" | "ods" => (ph::FILE_XLS, egui::Color32::from_rgb(33, 115, 70)),
+        "ppt" | "pptx" | "odp" => (ph::FILE_PPT, egui::Color32::from_rgb(208, 68, 35)),
+        "ini" | "cfg" | "conf" | "properties" | "editorconfig" => {
+            (ph::FILE_INI, egui::Color32::from_rgb(150, 150, 170))
+        }
+        "dockerfile" => (ph::CUBE, egui::Color32::from_rgb(33, 150, 243)),
+        "gradle" => (ph::GEAR, egui::Color32::from_rgb(64, 160, 150)),
+        "ps1" | "psm1" | "psd1" | "bat" | "cmd" => {
+            (ph::TERMINAL, egui::Color32::from_rgb(83, 145, 254))
+        }
+        "spd" => (ph::LIGHTNING, egui::Color32::from_rgb(255, 200, 40)),
         "html" | "htm" => (ph::FILE_HTML, egui::Color32::from_rgb(228, 79, 38)),
         "css" => (ph::FILE_CSS, egui::Color32::from_rgb(86, 156, 214)),
         "scss" | "sass" | "less" => (ph::FILE_CSS, egui::Color32::from_rgb(205, 103, 153)),
@@ -31,7 +94,8 @@ pub fn file_icon(name: &str) -> (&'static str, egui::Color32) {
         "txt" | "log" => (ph::FILE_TXT, egui::Color32::GRAY),
         "lock" => (ph::FILE_LOCK, egui::Color32::GRAY),
         "go" => (ph::FILE_CODE, egui::Color32::from_rgb(0, 173, 216)),
-        "java" => (ph::FILE_CODE, egui::Color32::from_rgb(176, 114, 25)),
+        "java" => (ph::COFFEE, egui::Color32::from_rgb(176, 114, 25)),
+        "class" => (ph::COFFEE, egui::Color32::GRAY),
         "kt" | "kts" => (ph::FILE_CODE, egui::Color32::from_rgb(169, 121, 227)),
         "swift" => (ph::FILE_CODE, egui::Color32::from_rgb(240, 81, 56)),
         "rb" => (ph::FILE_CODE, egui::Color32::from_rgb(204, 52, 45)),
@@ -67,7 +131,8 @@ mod tests {
             ("a.tsx", ph::FILE_TSX, rgb(97, 218, 251)),
             ("a.json", ph::BRACKETS_CURLY, rgb(255, 196, 88)),
             ("a.jsonc", ph::BRACKETS_CURLY, rgb(255, 196, 88)),
-            ("Cargo.toml", ph::FILE_CODE, rgb(156, 220, 254)),
+            ("Cargo.toml", ph::PACKAGE, rgb(222, 99, 52)),
+            ("pyproject.toml", ph::FILE_CODE, rgb(156, 220, 254)),
             ("a.yaml", ph::FILE_CODE, rgb(206, 145, 120)),
             ("a.yml", ph::FILE_CODE, rgb(206, 145, 120)),
             ("README.md", ph::FILE_MD, rgb(100, 200, 255)),
@@ -95,7 +160,7 @@ mod tests {
             ("a.log", ph::FILE_TXT, Color32::GRAY),
             ("Cargo.lock", ph::FILE_LOCK, Color32::GRAY),
             ("a.go", ph::FILE_CODE, rgb(0, 173, 216)),
-            ("A.java", ph::FILE_CODE, rgb(176, 114, 25)),
+            ("A.java", ph::COFFEE, rgb(176, 114, 25)),
             ("a.kt", ph::FILE_CODE, rgb(169, 121, 227)),
             ("build.gradle.kts", ph::FILE_CODE, rgb(169, 121, 227)),
             ("a.swift", ph::FILE_CODE, rgb(240, 81, 56)),
@@ -124,9 +189,8 @@ mod tests {
     #[test]
     fn unknown_or_missing_extension_uses_generic_icon() {
         let generic = (ph::FILE, Color32::from_gray(160));
-        assert_eq!(file_icon("photo.png"), generic);
-        assert_eq!(file_icon("Makefile"), generic);
-        assert_eq!(file_icon(".gitignore"), generic);
+        assert_eq!(file_icon("photo.xyz"), generic);
+        assert_eq!(file_icon("Procfile"), generic);
         assert_eq!(file_icon(""), generic);
         assert_eq!(file_icon("trailingdot."), generic);
     }
@@ -144,5 +208,37 @@ mod tests {
         assert_eq!(file_icon(".go"), generic);
         assert_eq!(file_icon(".lock"), generic);
         assert_eq!(file_icon(".eslintrc.json").0, ph::BRACKETS_CURLY);
+    }
+
+    #[test]
+    fn recognised_files_get_their_own_icon() {
+        let cases: &[(&str, &str)] = &[
+            ("App.vue", ph::FILE_VUE),
+            ("Page.svelte", ph::FILE_CODE),
+            ("photo.PNG", ph::FILE_IMAGE),
+            ("doc.pdf", ph::FILE_PDF),
+            ("lib.jar", ph::FILE_ZIP),
+            ("data.csv", ph::FILE_CSV),
+            ("setup.ps1", ph::TERMINAL),
+            ("Dockerfile", ph::CUBE),
+            ("Dockerfile.dev", ph::CUBE),
+            ("docker-compose.yml", ph::CUBE),
+            ("compose.yaml", ph::CUBE),
+            (".gitignore", ph::GIT_BRANCH),
+            (".env", ph::KEY),
+            (".env.local", ph::KEY),
+            ("LICENSE", ph::CERTIFICATE),
+            ("package.json", ph::PACKAGE),
+            ("Makefile", ph::WRENCH),
+            ("build.gradle", ph::GEAR),
+            ("gradlew", ph::GEAR),
+            ("gradle.properties", ph::GEAR),
+            ("app.properties", ph::FILE_INI),
+        ];
+        for (name, icon) in cases {
+            assert_eq!(file_icon(name).0, *icon, "for {name}");
+        }
+        // Other YAML files keep the YAML icon.
+        assert_eq!(file_icon("ci.yml").0, ph::FILE_CODE);
     }
 }

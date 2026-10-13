@@ -20,6 +20,45 @@ mod wrap;
 
 use autocomplete::Autocomplete;
 use bracket_match::find_matching_bracket;
+
+/// Documents longer than this rebuild their whole-file data (folds, minimap)
+/// only once typing pauses for [`SCAN_PAUSE`].
+const BIG_DOCUMENT_LINES: usize = 5_000;
+const SCAN_PAUSE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Past this size a document is a large file ([`Editor::large_file`]).
+pub const LARGE_FILE_BYTES: usize = 10 * 1024 * 1024;
+pub const LARGE_FILE_LINES: usize = 200_000;
+
+/// Lines longer than this (bytes) are drawn only where visible and measured
+/// as monospace: laying out a megabyte-long line (minified JSON…) every frame
+/// freezes the editor.
+const LONG_LINE_BYTES: usize = 4_000;
+/// Documents with a line longer than this (chars) are not syntax highlighted,
+/// like VS Code's `editor.maxTokenizationLineLength`.
+const MAX_TOKENIZED_LINE_CHARS: usize = 20_000;
+
+/// Pixel width of the first `cols` chars of `line`.
+fn prefix_width(
+    ui: &egui::Ui,
+    line: &str,
+    cols: usize,
+    font_id: &egui::FontId,
+    char_width: f32,
+) -> f32 {
+    if line.len() > LONG_LINE_BYTES {
+        return cols as f32 * char_width;
+    }
+    ui.fonts(|f| {
+        f.layout_no_wrap(
+            line.chars().take(cols).collect(),
+            font_id.clone(),
+            egui::Color32::WHITE,
+        )
+        .size()
+        .x
+    })
+}
 use buffer::Buffer;
 use cursor::Cursor;
 use diff::{DIFF_ADDED, DIFF_MODIFIED, DIFF_UNCHANGED};
@@ -199,6 +238,16 @@ pub struct Editor {
     // ── Bracket matching ────────────────────────────────────────────────────
     /// (open_row, open_col, close_row, close_col) of the matching bracket pair.
     bracket_match: Option<(usize, usize, usize, usize)>,
+    /// Content version and cursor `bracket_match` was found for: a long line
+    /// is not rescanned every frame.
+    bracket_match_key: Option<(i32, usize, usize)>,
+    /// A very large document (see [`LARGE_FILE_BYTES`]): folding and the
+    /// minimap are off, and the app opens it without a language server or a
+    /// git diff, so editing stays responsive.
+    pub large_file: bool,
+    /// Last content change seen and when: big documents rescan the whole file
+    /// (folds, minimap) only once typing pauses.
+    last_change_seen: (i32, std::time::Instant),
     /// Row (0-based) whose breakpoint was toggled by a click in the gutter this
     /// frame. Breakpoints belong to the debugger, so the app takes it from here.
     pub breakpoint_toggle_request: Option<usize>,
@@ -312,6 +361,9 @@ impl Editor {
             find_case_sensitive: false,
             find_use_regex: false,
             bracket_match: None,
+            bracket_match_key: None,
+            large_file: false,
+            last_change_seen: (0, std::time::Instant::now() - SCAN_PAUSE),
             breakpoint_toggle_request: None,
             folded_lines: std::collections::HashSet::new(),
             fold_regions: Vec::new(),
@@ -345,12 +397,16 @@ impl Editor {
         self.text_format = format;
         self.decoded_lossy = false;
         self.buffer = Buffer::from_str(&content);
+        self.large_file =
+            content.len() > LARGE_FILE_BYTES || self.buffer.num_lines() > LARGE_FILE_LINES;
         self.cursor = Cursor::new();
         self.extra_cursors.clear();
         self.autocomplete = Autocomplete::new();
         self.current_path = path;
         self.is_modified = false;
         self.content_version = 0;
+        self.last_change_seen = (0, std::time::Instant::now() - SCAN_PAUSE);
+        self.bracket_match_key = None;
         self.hover_lsp_request_pending = false;
         self.hover_signature = None;
         self.hover_word = None;
@@ -500,7 +556,37 @@ impl Editor {
         )
     }
 
+    /// Whether derived data scanning the whole document (folds, minimap) may
+    /// be rebuilt now: always for ordinary files; for big ones, once typing
+    /// pauses, so each keystroke stays cheap.
+    fn whole_file_scan_due(&mut self, ctx: &egui::Context) -> bool {
+        if self.buffer.num_lines() <= BIG_DOCUMENT_LINES {
+            return true;
+        }
+        if self.last_change_seen.0 != self.content_version {
+            self.last_change_seen = (self.content_version, std::time::Instant::now());
+        }
+        let wait = SCAN_PAUSE.saturating_sub(self.last_change_seen.1.elapsed());
+        if wait.is_zero() {
+            true
+        } else {
+            ctx.request_repaint_after(wait);
+            false
+        }
+    }
+
     fn cached_max_line_chars(&mut self) -> usize {
+        if self.large_file
+            && self.max_line_chars_version != -1
+            && self.max_line_chars_version != self.content_version
+        {
+            // Measured once on load; then only the edited lines can grow it
+            // (a full scan of a large file costs hundreds of ms per keystroke).
+            for row in self.all_cursor_rows() {
+                self.max_line_chars = self.max_line_chars.max(self.buffer.line_char_len_fast(row));
+            }
+            self.max_line_chars_version = self.content_version;
+        }
         if self.max_line_chars_version != self.content_version {
             self.max_line_chars = (0..self.buffer.num_lines())
                 .map(|i| self.buffer.line_char_len_fast(i))
@@ -841,7 +927,7 @@ impl Editor {
                 // Soft wrap: rows hold as many chars as fit between the gutter and
                 // the vertical scrollbar / minimap overlay.
                 let wrap_cols = if config.editor.word_wrap {
-                    let minimap_w = if config.editor.show_minimap {
+                    let minimap_w = if config.editor.show_minimap && !self.large_file {
                         crate::ui::minimap::MINIMAP_WIDTH
                     } else {
                         0.0
@@ -2317,11 +2403,16 @@ impl Editor {
                 };
                 let visible_count = (rect.height() / line_height) as usize + 2;
 
-                // Bracket match: recompute every frame based on cursor position
+                // Bracket match: recomputed when the cursor or the content moves.
                 {
                     let (cur_row, cur_col) = self.cursor.position();
-                    self.bracket_match = find_matching_bracket(&self.buffer, cur_row, cur_col);
+                    let key = Some((self.content_version, cur_row, cur_col));
+                    if self.bracket_match_key != key {
+                        self.bracket_match = find_matching_bracket(&self.buffer, cur_row, cur_col);
+                        self.bracket_match_key = key;
+                    }
                 }
+                let whole_file_scan = self.whole_file_scan_due(&response.ctx);
 
                 // Rebuild the highlight cache when content changes.
                 //
@@ -2332,6 +2423,8 @@ impl Editor {
                 // typing in a moderately large file stays smooth.
                 const VIEWPORT_THRESHOLD: usize = 4000;
                 let total_lines_hl = self.buffer.num_lines();
+                let tokenizer = (self.cached_max_line_chars() <= MAX_TOKENIZED_LINE_CHARS)
+                    .then_some(plugin_manager);
                 if total_lines_hl > VIEWPORT_THRESHOLD {
                     let vis_start = first_visible;
                     let vis_end = (first_visible + visible_count).min(total_lines_hl);
@@ -2352,7 +2445,7 @@ impl Editor {
                             total_lines_hl,
                             self.content_version,
                             (start, end),
-                            Some(plugin_manager),
+                            tokenizer,
                         );
                     }
                 } else if self.highlighter.needs_update(self.content_version) {
@@ -2380,7 +2473,7 @@ impl Editor {
                         self.highlighter.highlight_document(
                             &source,
                             self.content_version,
-                            Some(plugin_manager),
+                            tokenizer,
                         );
                     }
                 }
@@ -2388,7 +2481,10 @@ impl Editor {
                 // Fold regions: recompute only when the content changed — NOT every
                 // frame. (The old `is_empty()` check recomputed on every frame for
                 // files with no foldable regions, an O(file) per-frame cost.)
-                if self.fold_regions_version != self.content_version {
+                if self.fold_regions_version != self.content_version
+                    && whole_file_scan
+                    && !self.large_file
+                {
                     self.fold_regions = compute_fold_regions(&self.buffer);
                     self.fold_regions_version = self.content_version;
                 }
@@ -2749,17 +2845,8 @@ impl Editor {
                         } else {
                             find_highlight
                         };
-                        let measure = |cols: usize| {
-                            ui.fonts(|f| {
-                                f.layout_no_wrap(
-                                    line.chars().take(cols).collect(),
-                                    font_id.clone(),
-                                    egui::Color32::WHITE,
-                                )
-                                .size()
-                                .x
-                            })
-                        };
+                        let measure =
+                            |cols: usize| prefix_width(ui, &line, cols, &font_id, char_width);
                         let pre_w = measure(m.start);
                         let span_w = measure(m.end) - pre_w;
                         let hx = x_start + pre_w - self.scroll_offset.x;
@@ -2778,20 +2865,10 @@ impl Editor {
                     // Word occurrence highlighting
                     for &(occ_row, occ_start, occ_end) in &self.word_occurrences {
                         if occ_row == line_idx {
-                            let occ_sx = x_start
-                                + ui.fonts(|f| {
-                                    let text: String = line.chars().take(occ_start).collect();
-                                    f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
-                                        .size()
-                                        .x
-                                });
-                            let occ_ex = x_start
-                                + ui.fonts(|f| {
-                                    let text: String = line.chars().take(occ_end).collect();
-                                    f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
-                                        .size()
-                                        .x
-                                });
+                            let occ_sx =
+                                x_start + prefix_width(ui, &line, occ_start, &font_id, char_width);
+                            let occ_ex =
+                                x_start + prefix_width(ui, &line, occ_end, &font_id, char_width);
                             if occ_ex > occ_sx {
                                 painter.rect_filled(
                                     egui::Rect::from_min_max(
@@ -2816,19 +2893,9 @@ impl Editor {
                             };
                             // Measure pixel positions using font layout for accuracy
                             let sx = x_start
-                                + ui.fonts(|f| {
-                                    let text: String = line.chars().take(sel_start_col).collect();
-                                    f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
-                                        .size()
-                                        .x
-                                });
+                                + prefix_width(ui, &line, sel_start_col, &font_id, char_width);
                             let ex = x_start
-                                + ui.fonts(|f| {
-                                    let text: String = line.chars().take(sel_end_col).collect();
-                                    f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
-                                        .size()
-                                        .x
-                                });
+                                + prefix_width(ui, &line, sel_end_col, &font_id, char_width);
                             if ex > sx {
                                 painter.rect_filled(
                                     egui::Rect::from_min_max(
@@ -2853,28 +2920,9 @@ impl Editor {
                                     self.buffer.line_len(line_idx)
                                 };
                                 let sx = x_start
-                                    + ui.fonts(|f| {
-                                        let text: String =
-                                            line.chars().take(sel_start_col).collect();
-                                        f.layout_no_wrap(
-                                            text,
-                                            font_id.clone(),
-                                            egui::Color32::WHITE,
-                                        )
-                                        .size()
-                                        .x
-                                    });
+                                    + prefix_width(ui, &line, sel_start_col, &font_id, char_width);
                                 let ex = x_start
-                                    + ui.fonts(|f| {
-                                        let text: String = line.chars().take(sel_end_col).collect();
-                                        f.layout_no_wrap(
-                                            text,
-                                            font_id.clone(),
-                                            egui::Color32::WHITE,
-                                        )
-                                        .size()
-                                        .x
-                                    });
+                                    + prefix_width(ui, &line, sel_end_col, &font_id, char_width);
                                 if ex > sx {
                                     painter.rect_filled(
                                         egui::Rect::from_min_max(
@@ -2892,17 +2940,7 @@ impl Editor {
                     let (cur_row, cur_col) = self.cursor.position();
                     if line_idx == cur_row {
                         // Cursor: measure actual pixel offset of char col in the line
-                        let text_to_cursor: String = line.chars().take(cur_col).collect();
-                        let cx = x_start
-                            + ui.fonts(|f| {
-                                f.layout_no_wrap(
-                                    text_to_cursor,
-                                    font_id.clone(),
-                                    egui::Color32::WHITE,
-                                )
-                                .size()
-                                .x
-                            });
+                        let cx = x_start + prefix_width(ui, &line, cur_col, &font_id, char_width);
                         // Blink: 530ms on / 530ms off, reset on any input event.
                         let blink_ms = self.cursor_blink_epoch.elapsed().as_millis() % 1060;
                         let cursor_visible = blink_ms < 530;
@@ -2934,17 +2972,7 @@ impl Editor {
                     for extra_cur in &self.extra_cursors {
                         let (ecr, ecc) = extra_cur.position();
                         if line_idx == ecr {
-                            let text_to_cur: String = line.chars().take(ecc).collect();
-                            let ecx = x_start
-                                + ui.fonts(|f| {
-                                    f.layout_no_wrap(
-                                        text_to_cur,
-                                        font_id.clone(),
-                                        egui::Color32::WHITE,
-                                    )
-                                    .size()
-                                    .x
-                                });
+                            let ecx = x_start + prefix_width(ui, &line, ecc, &font_id, char_width);
                             painter.line_segment(
                                 [egui::pos2(ecx, y), egui::pos2(ecx, y + line_height)],
                                 egui::Stroke::new(2.0_f32, accent_color),
@@ -2990,16 +3018,7 @@ impl Editor {
                         for (br, bc) in [(or, oc), (cr, cc)] {
                             if line_idx == br {
                                 let bx = x_start
-                                    + ui.fonts(|f| {
-                                        let text: String = line.chars().take(bc).collect();
-                                        f.layout_no_wrap(
-                                            text,
-                                            font_id.clone(),
-                                            egui::Color32::WHITE,
-                                        )
-                                        .size()
-                                        .x
-                                    })
+                                    + prefix_width(ui, &line, bc, &font_id, char_width)
                                     - self.scroll_offset.x;
                                 painter.rect_filled(
                                     egui::Rect::from_min_size(
@@ -3029,10 +3048,36 @@ impl Editor {
                     let tokens =
                         self.highlighter
                             .tokens_for_line(line_idx, &line, Some(plugin_manager));
+                    // A long line: only its visible columns (and a margin).
+                    let visible_cols = if line.len() > LONG_LINE_BYTES {
+                        let first =
+                            ((self.scroll_offset.x / char_width) as usize).saturating_sub(16);
+                        Some(first..first + (rect.width() / char_width) as usize + 32)
+                    } else {
+                        None
+                    };
                     let mut job = egui::text::LayoutJob::default();
+                    let mut col = 0;
                     for tok in &tokens {
+                        let text: std::borrow::Cow<str> = match &visible_cols {
+                            None => tok.text.as_str().into(),
+                            Some(cols) => {
+                                let len = tok.text.chars().count();
+                                let (start, end) = (col, col + len);
+                                col = end;
+                                if end <= cols.start || start >= cols.end {
+                                    continue;
+                                }
+                                tok.text
+                                    .chars()
+                                    .skip(cols.start.saturating_sub(start))
+                                    .take(cols.end.min(end) - cols.start.max(start))
+                                    .collect::<String>()
+                                    .into()
+                            }
+                        };
                         job.append(
-                            &tok.text,
+                            &text,
                             0.0,
                             egui::TextFormat {
                                 font_id: font_id.clone(),
@@ -3041,6 +3086,7 @@ impl Editor {
                             },
                         );
                     }
+                    let text_x = visible_cols.map_or(0.0, |c| c.start as f32 * char_width);
                     let galley = ui.fonts(|f| f.layout_job(job));
                     // Clip to the content area (right of the gutter) so horizontally
                     // scrolled text doesn't draw over the line-number gutter.
@@ -3049,7 +3095,10 @@ impl Editor {
                         egui::pos2(rect.max.x, rect.max.y),
                     );
                     painter.with_clip_rect(text_clip).galley(
-                        egui::pos2(x_start - self.scroll_offset.x, y + line_height * 0.15),
+                        egui::pos2(
+                            x_start - self.scroll_offset.x + text_x,
+                            y + line_height * 0.15,
+                        ),
                         galley,
                         fg_color,
                     );
@@ -3270,8 +3319,8 @@ impl Editor {
                 }
 
                 // ── Minimap ──────────────────────────────────────────────────────
-                if config.editor.show_minimap {
-                    if self.minimap_lines_version != self.content_version {
+                if config.editor.show_minimap && !self.large_file {
+                    if self.minimap_lines_version != self.content_version && whole_file_scan {
                         self.minimap_lines = (0..total_lines)
                             .map(|i| {
                                 let line = self.buffer.line(i);
@@ -5999,5 +6048,60 @@ bar",
         h.frame(&mut ed, vec![btn(false)], NONE);
         h.idle(&mut ed);
         assert_eq!(text(&ed), "hello");
+    }
+
+    #[test]
+    fn large_documents_switch_the_heavy_features_off() {
+        let mut ed = Editor::new();
+        ed.set_content(
+            "a
+"
+            .repeat(10),
+            Some(PathBuf::from("small.txt")),
+        );
+        assert!(!ed.large_file);
+        ed.set_content(
+            "x
+"
+            .repeat(LARGE_FILE_LINES + 1),
+            Some(PathBuf::from("big.txt")),
+        );
+        assert!(ed.large_file);
+        ed.refresh_line_diff();
+        assert!(ed.line_diff.is_empty(), "no git diff for a large file");
+        let mut h = Harness::new();
+        h.frame(&mut ed, vec![], Modifiers::NONE);
+        assert!(ed.fold_regions.is_empty() && ed.minimap_lines.is_empty());
+        ed.set_content(
+            "y
+"
+            .repeat(10),
+            None,
+        );
+        assert!(!ed.large_file, "reset by the next document");
+    }
+
+    #[test]
+    fn long_lines_are_measured_as_monospace_and_not_tokenized() {
+        let long = "a".repeat(LONG_LINE_BYTES + 1);
+        let h = Harness::new();
+        let font = egui::FontId::monospace(14.0);
+        let mut width = 0.0;
+        let _ = h.ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                width = prefix_width(ui, &long, 10, &font, 7.0);
+            });
+        });
+        assert_eq!(width, 70.0);
+
+        // A huge minified line: rendered, cursor at its end, without hanging.
+        let mut ed = Editor::new();
+        let line = format!("{{{}}}", "\"k\":1,".repeat(MAX_TOKENIZED_LINE_CHARS));
+        ed.set_content(line.clone(), Some(PathBuf::from("min.json")));
+        ed.cursor.set_position(0, line.chars().count());
+        let mut h = Harness::new();
+        h.frame(&mut ed, vec![], Modifiers::NONE);
+        h.frame(&mut ed, vec![Event::Text("x".into())], Modifiers::NONE);
+        assert!(ed.buffer.line(0).ends_with("}x"));
     }
 }

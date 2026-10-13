@@ -2,39 +2,48 @@ use super::buffer::Buffer;
 
 /// Compute foldable regions from buffer by indent level.
 /// Returns list of `(start_line, end_line)`.
+///
+/// A region runs from a line to the last line before the next non-blank line
+/// indented as much or less. Each line's indent is read once and the next
+/// such line found with a stack: linear in the document, which matters for
+/// big files (the former scan was quadratic in the nesting).
 pub(super) fn compute_fold_regions(buffer: &Buffer) -> Vec<(usize, usize)> {
     let total = buffer.num_lines();
-    let indent = |i: usize| -> usize {
+    let indent = |i: usize| -> Option<usize> {
         let line = buffer.line(i);
         if line.trim().is_empty() {
-            return usize::MAX;
+            return None;
         }
         let tabs = line.chars().take_while(|&c| c == '\t').count();
         let spaces = line.chars().take_while(|&c| c == ' ').count();
-        tabs.max(spaces / 2)
+        Some(tabs.max(spaces / 2))
     };
+    let indents: Vec<Option<usize>> = (0..total).map(indent).collect();
+    // next_le[i]: the next non-blank line after i indented <= line i.
+    let mut next_le = vec![None; total];
+    let mut stack: Vec<usize> = Vec::new();
+    for i in (0..total).rev() {
+        let Some(ind) = indents[i] else {
+            continue;
+        };
+        while stack
+            .last()
+            .is_some_and(|&j| indents[j].is_some_and(|d| d > ind))
+        {
+            stack.pop();
+        }
+        next_le[i] = stack.last().copied();
+        stack.push(i);
+    }
     let mut regions = Vec::new();
-    let mut i = 0;
-    while i + 1 < total {
-        let cur_ind = indent(i);
-        if cur_ind == usize::MAX {
-            i += 1;
+    for i in 0..total.saturating_sub(1) {
+        if indents[i].is_none() {
             continue;
         }
-        let mut end = i + 1;
-        while end < total {
-            let next_ind = indent(end);
-            if next_ind == usize::MAX || next_ind > cur_ind {
-                end += 1;
-            } else {
-                break;
-            }
-        }
-        end -= 1;
+        let end = next_le[i].unwrap_or(total) - 1;
         if end > i + 1 {
             regions.push((i, end));
         }
-        i += 1;
     }
     regions
 }
