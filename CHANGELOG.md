@@ -8,6 +8,19 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] - 2026-10-13
+
+### Added
+
+- Explorer and tabs: icons for many more files: Vue, Svelte, images, PDF, archives, CSV, audio and video, Office documents, config files, PowerShell, Java, Dockerfile and Compose files, `.gitignore`, `.env`, `LICENSE`, `package.json`, `Cargo.toml`, Makefile, Gradle.
+
+### Fixed
+
+- Large files no longer freeze the editor:
+  - Typing in a 50,000-line file took about 190 ms per keystroke, now about 17 ms. Folding, the minimap and completion words no longer rescan the whole file on each keystroke.
+  - Files over 10 MB or 200,000 lines open in large file mode: no language server, git markers, folding or minimap. A 50 MB file now takes about 16 ms per keystroke.
+  - Very long lines (minified JSON…) are drawn only where visible: about 10 ms per keystroke on a 2 MB line, instead of 260 ms. Files with lines over 20,000 characters are not syntax highlighted, like in VS Code.
+
 ## [0.17.1] - 2026-10-13
 
 ### Changed

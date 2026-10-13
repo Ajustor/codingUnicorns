@@ -202,6 +202,9 @@ impl CodingUnicorns {
                 log::warn!("{} is not valid UTF-8; decoded lossily", path.display());
                 self.toast("File is not valid UTF-8: invalid bytes shown as \u{FFFD}");
             }
+            if self.editor.large_file {
+                self.toast("Large file: language server, git markers, folding and minimap are off");
+            }
             self.config.last_file = Some(path.to_string_lossy().to_string());
             self.config.save();
             self.notify_lsp_opened(&path);
@@ -214,6 +217,11 @@ impl CodingUnicorns {
 
     /// Start the language server for `path` and send it the editor's text.
     pub(super) fn notify_lsp_opened(&mut self, path: &std::path::Path) {
+        self.last_lsp_content_version = 0;
+        // A large file would be sent whole to the server on every keystroke.
+        if self.editor.large_file {
+            return;
+        }
         self.ensure_lsp_for_file(path);
         // Notify LSP server that a file was opened — with the normalized
         // (LF-only) buffer text, so later edits line up with it.
@@ -224,7 +232,6 @@ impl CodingUnicorns {
                 client.did_open(&uri, &lang_id, &self.editor.buffer.to_string());
             }
         }
-        self.last_lsp_content_version = 0;
     }
 
     /// Park the editor's document if it has unsaved changes and another file

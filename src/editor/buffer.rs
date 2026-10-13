@@ -43,9 +43,10 @@ impl Buffer {
         if idx >= self.rope.len_lines() {
             return String::new();
         }
-        let line = self.rope.line(idx);
-        let s: String = line.chars().collect();
-        s.trim_end_matches('\n').trim_end_matches('\r').to_string()
+        let mut s = String::from(self.rope.line(idx));
+        let len = s.trim_end_matches('\n').trim_end_matches('\r').len();
+        s.truncate(len);
+        s
     }
 
     pub fn line_len(&self, idx: usize) -> usize {

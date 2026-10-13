@@ -8,6 +8,19 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.18.0] - 2026-10-13
+
+### Ajouts
+
+- Explorateur et onglets : des icônes pour bien plus de fichiers : Vue, Svelte, images, PDF, archives, CSV, audio et vidéo, documents Office, fichiers de configuration, PowerShell, Java, Dockerfile et fichiers Compose, `.gitignore`, `.env`, `LICENSE`, `package.json`, `Cargo.toml`, Makefile, Gradle.
+
+### Corrections
+
+- Les gros fichiers ne figent plus l'éditeur :
+  - Taper dans un fichier de 50 000 lignes prenait environ 190 ms par touche, contre environ 17 ms désormais. Le pliage, la minimap et les mots de l'autocomplétion ne relisent plus tout le fichier à chaque frappe.
+  - Les fichiers de plus de 10 Mo ou 200 000 lignes s'ouvrent en mode « gros fichier » : pas de serveur de langage, de marqueurs git, de pliage ni de minimap. Un fichier de 50 Mo prend désormais environ 16 ms par touche.
+  - Les lignes très longues (JSON minifié…) ne sont dessinées que sur leur partie visible : environ 10 ms par touche sur une ligne de 2 Mo, au lieu de 260 ms. Les fichiers ayant des lignes de plus de 20 000 caractères ne sont pas colorés, comme dans VS Code.
+
 ## [0.17.1] - 2026-10-13
 
 ### Modifications

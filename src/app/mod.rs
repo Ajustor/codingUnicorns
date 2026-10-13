@@ -853,7 +853,7 @@ impl eframe::App for CodingUnicorns {
         if !reconnected_exts.is_empty() {
             if let Some(ref path) = self.editor.current_path.clone() {
                 let ext = crate::language::language_key(path).unwrap_or_default();
-                if reconnected_exts.contains(&ext) {
+                if reconnected_exts.contains(&ext) && !self.editor.large_file {
                     let uri = crate::lsp::client::path_to_uri(path);
                     let content = self.editor.buffer.to_string();
                     let lang_id = self.extension_registry.lsp_language_id(&ext);
@@ -956,7 +956,8 @@ impl eframe::App for CodingUnicorns {
 
         // Send didChange to LSP when the buffer was modified.
         if self.editor.content_version != self.last_lsp_content_version {
-            if let Some(path) = self.editor.current_path.clone() {
+            let large = self.editor.large_file;
+            if let Some(path) = self.editor.current_path.clone().filter(|_| !large) {
                 let content = self.editor.buffer.to_string();
                 let version = self.editor.content_version;
                 self.notify_lsp_change(&path, &content, version);
