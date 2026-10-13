@@ -609,6 +609,19 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     }
                 }
 
+                // Databases: opens storingUnicorns, a separate app.
+                let databases = activity_button(
+                    ui,
+                    egui_phosphor::regular::DATABASE,
+                    "Databases (storingUnicorns)",
+                    false,
+                    hover_bg,
+                    accent,
+                );
+                if databases.clicked() {
+                    app.open_databases();
+                }
+
                 // Bottom-aligned settings gear
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -1518,6 +1531,23 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 }
             }
         });
+
+    if app.storing_install_prompt {
+        if let Some(open) = crate::ui::widgets::action_dialog(
+            ctx,
+            app.palette,
+            "storing_install_modal",
+            "storingUnicorns is not installed",
+            "Databases are managed with storingUnicorns, the Unicorns' database client \
+             (PostgreSQL, MySQL, SQLite, SQL Server). Open its download page?",
+            "Open download page",
+        ) {
+            if open {
+                ctx.open_url(egui::OpenUrl::new_tab(crate::storing::INSTALL_PAGE));
+            }
+            app.storing_install_prompt = false;
+        }
+    }
 
     if let Some(path) = app.pending_delete.clone() {
         let name = path
