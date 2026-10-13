@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-10-13
+
+### Added
+
+- Databases: a database icon in the activity bar (and the palette command "Databases: Open storingUnicorns") opens storingUnicorns, the Unicorns' database client. When it isn't installed, the IDE offers to open its download page.
+
 ## [0.16.1] - 2026-10-12
 
 ### Added

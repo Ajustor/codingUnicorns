@@ -24,9 +24,40 @@ pub fn confirm_dialog(
     title: &str,
     message: &str,
 ) -> Option<bool> {
+    // White on the red `error` fill stays readable on every theme
+    // (on_accent would be near-black on light-accent presets).
+    let delete = egui::Button::new(egui::RichText::new("Delete").color(egui::Color32::WHITE))
+        .fill(palette.error);
+    choice_dialog(ctx, palette, "confirm_modal", title, message, delete)
+}
+
+/// Like [`confirm_dialog`], for a non-destructive action named `action`.
+pub fn action_dialog(
+    ctx: &egui::Context,
+    palette: Palette,
+    id: &str,
+    title: &str,
+    message: &str,
+    action: &str,
+) -> Option<bool> {
+    let button = egui::Button::new(egui::RichText::new(action).color(palette.on_accent))
+        .fill(palette.accent);
+    choice_dialog(ctx, palette, id, title, message, button)
+}
+
+/// A modal with Cancel and `confirm`: `Some(true)` / `Some(false)` once
+/// chosen, `None` while open.
+fn choice_dialog(
+    ctx: &egui::Context,
+    palette: Palette,
+    id: &str,
+    title: &str,
+    message: &str,
+    confirm: egui::Button<'_>,
+) -> Option<bool> {
     // egui::Modal renders a dimming, input-blocking backdrop, so clicks/keys can't
     // reach the editor or file tree behind it — a real modal, unlike a bare Window.
-    let modal = egui::Modal::new(egui::Id::new("confirm_modal")).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::new(id)).show(ctx, |ui| {
         ui.set_max_width(360.0);
         ui.heading(title);
         ui.add_space(8.0);
@@ -37,15 +68,7 @@ pub fn confirm_dialog(
             if ui.button("Cancel").clicked() {
                 choice = Some(false);
             }
-            // White on the red `error` fill stays readable on every theme
-            // (on_accent would be near-black on light-accent presets).
-            if ui
-                .add(
-                    egui::Button::new(egui::RichText::new("Delete").color(egui::Color32::WHITE))
-                        .fill(palette.error),
-                )
-                .clicked()
-            {
+            if ui.add(confirm).clicked() {
                 choice = Some(true);
             }
         });

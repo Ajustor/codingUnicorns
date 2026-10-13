@@ -58,6 +58,7 @@ pub enum PaletteCommand {
     GoToFileSymbol,
     ToggleSplit,
     ToggleGitignored,
+    OpenDatabases,
 }
 
 impl PaletteCommand {
@@ -80,6 +81,7 @@ impl PaletteCommand {
             PaletteCommand::GoToFileSymbol,
             PaletteCommand::ToggleSplit,
             PaletteCommand::ToggleGitignored,
+            PaletteCommand::OpenDatabases,
         ]
     }
 
@@ -102,6 +104,7 @@ impl PaletteCommand {
             Self::GoToFileSymbol => "Go to Symbol in File…",
             Self::ToggleSplit => "Split Editor: Toggle",
             Self::ToggleGitignored => "Explorer: Show/Hide Gitignored Files",
+            Self::OpenDatabases => "Databases: Open storingUnicorns",
         }
     }
 
@@ -124,6 +127,7 @@ impl PaletteCommand {
             Self::GoToFileSymbol => "",
             Self::ToggleSplit => "Ctrl+\\",
             Self::ToggleGitignored => "",
+            Self::OpenDatabases => "",
         }
     }
 
@@ -146,6 +150,7 @@ impl PaletteCommand {
             Self::GoToFileSymbol => "@ outline jump navigate function method current",
             Self::ToggleSplit => "side by side panes, second editor",
             Self::ToggleGitignored => "file tree ignored hidden folders build gitignore",
+            Self::OpenDatabases => "database sql client postgres mysql sqlite storing",
         }
     }
 }
@@ -777,7 +782,7 @@ mod tests {
     #[test]
     fn every_command_has_metadata() {
         let all = PaletteCommand::all();
-        assert_eq!(all.len(), 17);
+        assert_eq!(all.len(), 18);
         let mut labels = std::collections::HashSet::new();
         for cmd in all {
             assert!(!cmd.label().trim().is_empty(), "{cmd:?} label");
@@ -817,9 +822,10 @@ mod tests {
                 PaletteCommand::GoToFileSymbol => 14,
                 PaletteCommand::ToggleSplit => 15,
                 PaletteCommand::ToggleGitignored => 16,
+                PaletteCommand::OpenDatabases => 17,
             }
         }
-        let mut seen = [false; 17];
+        let mut seen = [false; 18];
         for c in PaletteCommand::all() {
             assert!(!seen[index(c)], "{c:?} listed twice");
             seen[index(c)] = true;

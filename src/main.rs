@@ -19,6 +19,7 @@ pub mod plugin;
 mod process_ext;
 pub mod runner;
 mod single_instance;
+mod storing;
 mod tabs;
 mod terminal;
 mod ui;

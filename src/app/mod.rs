@@ -181,6 +181,8 @@ pub struct CodingUnicorns {
     pub image_texture: Option<(egui::TextureHandle, egui::Vec2)>,
     /// Zoom / pan / rotation of the image viewer.
     pub image_view: crate::ui::image_viewer::ImageView,
+    /// storingUnicorns was asked for but is not installed: offer its page.
+    pub storing_install_prompt: bool,
     /// Path queued for deletion — held until the confirmation dialog resolves.
     pub pending_delete: Option<std::path::PathBuf>,
     /// Transient toast notifications (shown bottom-centre, fade out after 2 s).
@@ -372,6 +374,7 @@ impl CodingUnicorns {
             lsp_downloads: Default::default(),
             debug_lsp: Default::default(),
             pending_delete: None,
+            storing_install_prompt: false,
             toasts: Vec::new(),
             updater: crate::updater::Updater::new(),
             single_instance: {
@@ -449,6 +452,18 @@ impl CodingUnicorns {
         }
 
         app
+    }
+
+    /// Open the databases in storingUnicorns: start it when installed, else
+    /// offer its download page.
+    pub fn open_databases(&mut self) {
+        match crate::storing::locate() {
+            Some(install) => match crate::storing::launch(&install) {
+                Ok(()) => self.toast("Opening storingUnicorns…"),
+                Err(e) => self.toast(format!("Could not start storingUnicorns: {e}")),
+            },
+            None => self.storing_install_prompt = true,
+        }
     }
 
     /// Show or hide the files `.gitignore` excludes in the explorer (shown
@@ -1328,6 +1343,7 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::ToggleClaude => self.show_claude = !self.show_claude,
                     PaletteCommand::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
                     PaletteCommand::ToggleGitignored => self.toggle_gitignored(),
+                    PaletteCommand::OpenDatabases => self.open_databases(),
                     PaletteCommand::GoToLine => self.editor.show_goto_line = true,
                     PaletteCommand::SaveFile => {
                         if self.save_editor_guarded(true) {

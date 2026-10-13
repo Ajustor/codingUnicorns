@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.17.0] - 2026-10-13
+
+### Ajouts
+
+- Bases de données : une icône dans la barre d'activité (et la commande de palette « Databases: Open storingUnicorns ») ouvre storingUnicorns, le client de bases de données des Unicorns. S'il n'est pas installé, l'IDE propose d'ouvrir sa page de téléchargement.
+
 ## [0.16.1] - 2026-10-12
 
 ### Ajouts
