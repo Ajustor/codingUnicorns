@@ -5,7 +5,8 @@ pub use entry::FileEntry;
 pub use icons::file_icon;
 
 use egui_phosphor::regular as ph;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Context passed through recursive file tree rendering.
 struct ShowContext<'a> {
@@ -15,6 +16,7 @@ struct ShowContext<'a> {
     rename_state: &'a mut Option<(PathBuf, String)>,
     repo: Option<&'a git2::Repository>,
     show_gitignored: bool,
+    marks: &'a GitMarks,
 }
 
 pub struct FileTree {
@@ -28,6 +30,63 @@ pub struct FileTree {
     repo: Option<git2::Repository>,
     /// When true, show files that are gitignored.
     pub show_gitignored: bool,
+    /// Git changes, colouring the changed files and the folders holding them.
+    marks: GitMarks,
+}
+
+/// What git says about an explorer entry, shown by its colour. Ordered by
+/// importance: a folder takes the most important mark below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GitMark {
+    /// New: untracked, or added to the index.
+    Added,
+    Modified,
+    Conflicted,
+}
+
+impl GitMark {
+    fn color(self) -> egui::Color32 {
+        match self {
+            Self::Added => egui::Color32::from_rgb(115, 201, 145),
+            Self::Modified => egui::Color32::from_rgb(220, 180, 100),
+            Self::Conflicted => egui::Color32::from_rgb(228, 103, 107),
+        }
+    }
+
+    fn of(f: &crate::git::FileStatus) -> Self {
+        use crate::git::FileChangeKind as K;
+        if f.conflicted {
+            Self::Conflicted
+        } else if f.wt_status == K::Untracked
+            || (f.index_status == K::Added && f.wt_status == K::None)
+        {
+            Self::Added
+        } else {
+            Self::Modified
+        }
+    }
+}
+
+/// Git marks of the tree's paths, rebuilt when the status changes.
+#[derive(Default)]
+struct GitMarks {
+    /// The status they were computed from.
+    source: Vec<crate::git::FileStatus>,
+    /// Changed files and every folder above them, up to the tree's root.
+    by_path: HashMap<PathBuf, GitMark>,
+    /// Untracked folders (git lists them, not their files): all new inside.
+    new_dirs: Vec<PathBuf>,
+}
+
+impl GitMarks {
+    fn get(&self, path: &Path) -> Option<GitMark> {
+        self.by_path.get(path).copied().or_else(|| {
+            self.new_dirs
+                .iter()
+                .any(|d| path.starts_with(d))
+                .then_some(GitMark::Added)
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +109,47 @@ impl FileTree {
             rename_state: None,
             repo: None,
             show_gitignored: false,
+            marks: GitMarks::default(),
         }
+    }
+
+    /// Colour the entries git reports as changed, and the folders holding
+    /// them; untouched folders stay neutral. Cheap when `files` is unchanged.
+    pub fn sync_git_marks(&mut self, files: &[crate::git::FileStatus]) {
+        if self.marks.source == files {
+            return;
+        }
+        let mut marks = GitMarks {
+            source: files.to_vec(),
+            ..GitMarks::default()
+        };
+        let base = self.root.as_ref().map(|r| r.path.clone());
+        let workdir = self.repo.as_ref().and_then(|r| r.workdir());
+        if let (Some(base), Some(workdir)) = (base, workdir) {
+            // Status paths are relative to the repository; the tree may show
+            // a folder inside it. Built on the tree's own root path so the
+            // keys match its entries exactly.
+            if let Some(prefix) = crate::git::relative_to_workdir(&base, workdir) {
+                for f in files {
+                    let rel = Path::new(f.path.trim_end_matches('/'));
+                    let Ok(rel) = rel.strip_prefix(&prefix) else {
+                        continue;
+                    };
+                    let path = base.join(rel);
+                    if f.path.ends_with('/') {
+                        marks.new_dirs.push(path.clone());
+                    }
+                    let mark = GitMark::of(f);
+                    let mut cur = Some(path.as_path());
+                    while let Some(p) = cur.filter(|p| *p != base) {
+                        let m = marks.by_path.entry(p.to_path_buf()).or_insert(mark);
+                        *m = (*m).max(mark);
+                        cur = p.parent();
+                    }
+                }
+            }
+        }
+        self.marks = marks;
     }
 
     pub fn load(&mut self, path: PathBuf) {
@@ -58,6 +157,8 @@ impl FileTree {
         let mut root = FileEntry::new(path, 0);
         root.load_children(self.repo.as_ref(), self.show_gitignored);
         self.root = Some(root);
+        // Recomputed against the new root on the next sync.
+        self.marks = GitMarks::default();
     }
 
     /// Reload children of the root entry and all expanded subdirectories.
@@ -78,6 +179,7 @@ impl FileTree {
             rename_state: &mut rename_state,
             repo: self.repo.as_ref(),
             show_gitignored: self.show_gitignored,
+            marks: &self.marks,
         };
         if let Some(root) = &mut self.root {
             Self::show_entry_recursive(ui, root, &mut ctx);
@@ -137,7 +239,11 @@ impl FileTree {
                 } else {
                     ph::FOLDER
                 };
-                let color = dim_if(entry.ignored, egui::Color32::from_rgb(220, 180, 100));
+                let mark = ctx.marks.get(&entry.path);
+                let color = dim_if(
+                    entry.ignored,
+                    mark.map_or(egui::Color32::from_rgb(212, 212, 212), GitMark::color),
+                );
                 let mut label =
                     egui::RichText::new(format!("{} {} {}", arrow, folder_icon, entry.name))
                         .color(color);
@@ -190,9 +296,10 @@ impl FileTree {
                     .unwrap_or(false);
                 let icon_label = egui::RichText::new(icon).color(dim_if(entry.ignored, color));
                 ui.label(icon_label);
+                let mark = ctx.marks.get(&entry.path);
                 let mut name = egui::RichText::new(&entry.name).color(dim_if(
                     entry.ignored,
-                    egui::Color32::from_rgb(212, 212, 212),
+                    mark.map_or(egui::Color32::from_rgb(212, 212, 212), GitMark::color),
                 ));
                 if entry.ignored {
                     name = name.italics();
@@ -438,6 +545,68 @@ mod tests {
         let mut h = Harness::new();
         assert!(h.frame(&mut t, vec![]).is_none());
         assert!(h.texts.is_empty());
+    }
+
+    fn status(path: &str, wt: crate::git::FileChangeKind) -> crate::git::FileStatus {
+        crate::git::FileStatus {
+            path: path.into(),
+            wt_status: wt,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_folders_holding_changes_are_marked() {
+        use crate::git::FileChangeKind as K;
+        let dir = workspace();
+        git2::Repository::init(dir.path()).unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        let mut t = loaded(dir.path());
+        t.sync_git_marks(&[
+            status("src/inner/deep.rs", K::Modified),
+            status("src/new.rs", K::Untracked),
+            status("fresh/", K::Untracked),
+        ]);
+        let root = dir.path();
+        let m = |t: &FileTree, p: &str| t.marks.get(&root.join(p));
+        assert_eq!(m(&t, "src/inner/deep.rs"), Some(GitMark::Modified));
+        assert_eq!(m(&t, "src/inner"), Some(GitMark::Modified));
+        // A folder takes the most important change below it.
+        assert_eq!(m(&t, "src"), Some(GitMark::Modified));
+        assert_eq!(m(&t, "src/new.rs"), Some(GitMark::Added));
+        assert_eq!(m(&t, "src/lib.rs"), None);
+        assert_eq!(m(&t, "docs"), None, "untouched folder stays neutral");
+        assert_eq!(m(&t, "readme.md"), None);
+        assert_eq!(
+            m(&t, "fresh/a/b.rs"),
+            Some(GitMark::Added),
+            "inside a new folder"
+        );
+        assert_eq!(t.marks.get(root), None, "the root is not coloured");
+
+        // A conflict outranks a modification; a clean status clears all.
+        t.sync_git_marks(&[crate::git::FileStatus {
+            conflicted: true,
+            ..status("src/lib.rs", K::Modified)
+        }]);
+        assert_eq!(m(&t, "src"), Some(GitMark::Conflicted));
+        t.sync_git_marks(&[]);
+        assert_eq!(m(&t, "src"), None);
+    }
+
+    #[test]
+    fn marks_follow_a_tree_opened_inside_the_repository() {
+        use crate::git::FileChangeKind as K;
+        let dir = workspace();
+        git2::Repository::init(dir.path()).unwrap();
+        let mut t = loaded(&dir.path().join("src"));
+        t.sync_git_marks(&[
+            status("src/inner/deep.rs", K::Modified),
+            status("readme.md", K::Modified),
+        ]);
+        let src = dir.path().join("src");
+        assert_eq!(t.marks.get(&src.join("inner")), Some(GitMark::Modified));
+        assert_eq!(t.marks.by_path.len(), 2, "readme.md is outside the tree");
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub fn relative_to_workdir(path: &Path, workdir: &Path) -> Option<PathBuf> {
     path.strip_prefix(workdir).ok().map(Path::to_path_buf)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FileStatus {
     pub path: String,
     pub index_status: FileChangeKind,

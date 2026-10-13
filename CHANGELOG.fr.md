@@ -8,6 +8,14 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.17.1] - 2026-10-13
+
+### Modifications
+
+- Explorateur : les dossiers ne sont plus tous jaunes. Seuls les dossiers qui contiennent des modifications sont colorés, comme les fichiers modifiés eux-mêmes : jaune pour modifié, vert pour nouveau, rouge pour un conflit.
+- Explorateur : les fichiers ignorés par git sont affichés (grisés) par défaut. Le bouton œil les masque toujours.
+- Le journal de lancement note chaque étape du démarrage (modules, espace de travail, première image), pour savoir ce qui ralentit un lancement.
+
 ## [0.17.0] - 2026-10-13
 
 ### Ajouts

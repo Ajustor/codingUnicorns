@@ -239,6 +239,10 @@ impl CodingUnicorns {
                 }
             }
         }
+        crate::launch_log::step(&format!(
+            "{} modules loaded",
+            extension_registry.installed.len()
+        ));
         let initial_terminal_height = config.terminal_height;
         let shell_override = config.shell.clone();
 
@@ -445,6 +449,8 @@ impl CodingUnicorns {
             }
         }
 
+        crate::launch_log::step("workspace and session restored");
+
         // Debug builds live in target/ — never self-update those automatically.
         if app.config.check_updates && !cfg!(debug_assertions) {
             let skipped = app.config.skipped_update_version.clone();
@@ -548,6 +554,7 @@ impl eframe::App for CodingUnicorns {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::launch_log::first_frame();
         // Handle window close request — warn about unsaved files
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let any_unsaved =

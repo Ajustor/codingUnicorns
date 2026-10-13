@@ -356,7 +356,7 @@ pub struct EditorConfig {
     pub auto_save: bool,
     #[serde(default = "default_true")]
     pub auto_close_brackets: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub show_gitignored: bool,
     #[serde(default = "default_true")]
     pub show_minimap: bool,
@@ -373,7 +373,7 @@ impl Default for EditorConfig {
             line_numbers: true,
             auto_save: false,
             auto_close_brackets: true,
-            show_gitignored: false,
+            show_gitignored: true,
             show_minimap: true,
             highlight_current_line: true,
         }
@@ -710,7 +710,7 @@ mod tests {
         assert!(c.editor.line_numbers);
         assert!(!c.editor.auto_save);
         assert!(c.editor.auto_close_brackets);
-        assert!(!c.editor.show_gitignored);
+        assert!(c.editor.show_gitignored);
         assert!(c.editor.show_minimap);
         assert!(c.editor.highlight_current_line);
         assert_eq!(c.font.size, 14.0);
@@ -733,7 +733,7 @@ mod tests {
         c.editor.tab_size = 2;
         c.editor.word_wrap = true;
         c.editor.show_minimap = false;
-        c.editor.show_gitignored = true;
+        c.editor.show_gitignored = false;
         c.font.size = 18.5;
         c.font.family = "Fira Code".into();
         c.keybindings.save = KeyBinding::new("F2", false, true, true);
@@ -800,7 +800,7 @@ mod tests {
         assert_eq!(c.font.family, "Consolas");
         // Missing fields take their documented defaults (not bool::default()).
         assert!(c.editor.auto_close_brackets);
-        assert!(!c.editor.show_gitignored);
+        assert!(c.editor.show_gitignored);
         assert!(c.editor.show_minimap);
         assert!(c.editor.highlight_current_line);
         assert_eq!(c.terminal_height, 200.0);

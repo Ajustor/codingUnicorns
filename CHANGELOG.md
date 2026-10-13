@@ -8,6 +8,14 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.17.1] - 2026-10-13
+
+### Changed
+
+- Explorer: folders are no longer all yellow. Only the folders holding changes are colored, like the changed files themselves: yellow for modified, green for new, red for conflicts.
+- Explorer: gitignored files are shown (dimmed) by default. The eye button still hides them.
+- The launch log records each startup phase (modules, workspace, first frame), to tell what makes a launch slow.
+
 ## [0.17.0] - 2026-10-13
 
 ### Added
