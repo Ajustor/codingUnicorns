@@ -8,6 +8,17 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.19.0] - 2026-10-14
+
+### Added
+
+- Welcome tour: on the first launch, a short tour spotlights each part of the window (activity bar, Explorer, Extensions, editor, command palette, terminal, status bar) and explains how the IDE works: the editor ships bare, and languages come from extensions. Replay it any time with View → Welcome Tour or the palette command "Help: Welcome Tour".
+- Close tabs in one go: right-click a tab for Close Others, Close to the Right, Close Saved and Close All, or press Ctrl+Shift+W to close every tab (also in the palette). Tabs with unsaved changes always stay open.
+
+### Fixed
+
+- Sidebar: the scrollbar of the Explorer (and of the Search, Git, Extensions and Outline views) sat in the middle of the panel and covered the end of long file names. It is now against the right edge.
+
 ## [0.18.0] - 2026-10-13
 
 ### Added

@@ -118,104 +118,116 @@ impl GitPanel {
         self.show_stashes(ui, git);
         ui.separator();
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            // --- STAGED CHANGES ---
-            let staged: Vec<String> = git
-                .files
-                .iter()
-                .filter(|f| f.index_status != FileChangeKind::None)
-                .map(|f| f.path.clone())
-                .collect();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                // --- STAGED CHANGES ---
+                let staged: Vec<String> = git
+                    .files
+                    .iter()
+                    .filter(|f| f.index_status != FileChangeKind::None)
+                    .map(|f| f.path.clone())
+                    .collect();
 
-            if !staged.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("STAGED CHANGES").strong().small());
-                    if ui.small_button("Unstage All").clicked() {
-                        git.unstage_all();
-                    }
-                });
-                let mut unstage_path: Option<String> = None;
-                for path in &staged {
-                    let kind = git
-                        .files
-                        .iter()
-                        .find(|f| &f.path == path)
-                        .map(|f| &f.index_status)
-                        .cloned()
-                        .unwrap_or(FileChangeKind::None);
-                    let (icon, color) = file_kind_icon(&kind);
+                if !staged.is_empty() {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(icon).color(color).monospace().small());
-                        ui.label(egui::RichText::new(path).small());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .small_button(egui::RichText::new("−").color(egui::Color32::RED))
-                                .on_hover_text("Unstage")
-                                .clicked()
-                            {
-                                unstage_path = Some(path.clone());
-                            }
-                        });
+                        ui.label(egui::RichText::new("STAGED CHANGES").strong().small());
+                        if ui.small_button("Unstage All").clicked() {
+                            git.unstage_all();
+                        }
                     });
-                }
-                if let Some(p) = unstage_path {
-                    git.unstage_file(&p);
-                }
-                ui.add_space(4.0);
-            }
-
-            // --- UNSTAGED CHANGES ---
-            let unstaged: Vec<String> = git
-                .files
-                .iter()
-                .filter(|f| f.wt_status != FileChangeKind::None)
-                .map(|f| f.path.clone())
-                .collect();
-
-            if !unstaged.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("CHANGES").strong().small());
-                    if ui.small_button("Stage All").clicked() {
-                        git.stage_all();
+                    let mut unstage_path: Option<String> = None;
+                    for path in &staged {
+                        let kind = git
+                            .files
+                            .iter()
+                            .find(|f| &f.path == path)
+                            .map(|f| &f.index_status)
+                            .cloned()
+                            .unwrap_or(FileChangeKind::None);
+                        let (icon, color) = file_kind_icon(&kind);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon).color(color).monospace().small());
+                            ui.label(egui::RichText::new(path).small());
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button(
+                                            egui::RichText::new("−").color(egui::Color32::RED),
+                                        )
+                                        .on_hover_text("Unstage")
+                                        .clicked()
+                                    {
+                                        unstage_path = Some(path.clone());
+                                    }
+                                },
+                            );
+                        });
                     }
-                });
-                let mut stage_path: Option<String> = None;
-                for path in &unstaged {
-                    let kind = git
-                        .files
-                        .iter()
-                        .find(|f| &f.path == path)
-                        .map(|f| &f.wt_status)
-                        .cloned()
-                        .unwrap_or(FileChangeKind::None);
-                    let (icon, color) = file_kind_icon(&kind);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(icon).color(color).monospace().small());
-                        ui.label(egui::RichText::new(path).small());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .small_button(egui::RichText::new("+").color(egui::Color32::GREEN))
-                                .on_hover_text("Stage")
-                                .clicked()
-                            {
-                                stage_path = Some(path.clone());
-                            }
-                        });
-                    });
+                    if let Some(p) = unstage_path {
+                        git.unstage_file(&p);
+                    }
+                    ui.add_space(4.0);
                 }
-                if let Some(p) = stage_path {
-                    git.stage_file(&p);
-                }
-            }
 
-            if staged.is_empty() && unstaged.is_empty() {
-                ui.label(
-                    egui::RichText::new("No changes")
-                        .color(egui::Color32::GRAY)
-                        .small(),
-                );
-            }
-        });
+                // --- UNSTAGED CHANGES ---
+                let unstaged: Vec<String> = git
+                    .files
+                    .iter()
+                    .filter(|f| f.wt_status != FileChangeKind::None)
+                    .map(|f| f.path.clone())
+                    .collect();
+
+                if !unstaged.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("CHANGES").strong().small());
+                        if ui.small_button("Stage All").clicked() {
+                            git.stage_all();
+                        }
+                    });
+                    let mut stage_path: Option<String> = None;
+                    for path in &unstaged {
+                        let kind = git
+                            .files
+                            .iter()
+                            .find(|f| &f.path == path)
+                            .map(|f| &f.wt_status)
+                            .cloned()
+                            .unwrap_or(FileChangeKind::None);
+                        let (icon, color) = file_kind_icon(&kind);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon).color(color).monospace().small());
+                            ui.label(egui::RichText::new(path).small());
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button(
+                                            egui::RichText::new("+").color(egui::Color32::GREEN),
+                                        )
+                                        .on_hover_text("Stage")
+                                        .clicked()
+                                    {
+                                        stage_path = Some(path.clone());
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    if let Some(p) = stage_path {
+                        git.stage_file(&p);
+                    }
+                }
+
+                if staged.is_empty() && unstaged.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No changes")
+                            .color(egui::Color32::GRAY)
+                            .small(),
+                    );
+                }
+            });
 
         // Show conflicts section and return any clicked conflict file path
         self.show_conflicts(ui, git)
@@ -252,6 +264,7 @@ impl GitPanel {
         self.show_branch_dialog(ui, git);
 
         egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
             .id_salt("branches")
             .max_height(250.0)
             .show(ui, |ui| {

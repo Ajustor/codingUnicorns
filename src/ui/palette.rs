@@ -59,6 +59,10 @@ pub enum PaletteCommand {
     ToggleSplit,
     ToggleGitignored,
     OpenDatabases,
+    WelcomeTour,
+    CloseAllTabs,
+    CloseOtherTabs,
+    CloseSavedTabs,
 }
 
 impl PaletteCommand {
@@ -82,6 +86,10 @@ impl PaletteCommand {
             PaletteCommand::ToggleSplit,
             PaletteCommand::ToggleGitignored,
             PaletteCommand::OpenDatabases,
+            PaletteCommand::WelcomeTour,
+            PaletteCommand::CloseAllTabs,
+            PaletteCommand::CloseOtherTabs,
+            PaletteCommand::CloseSavedTabs,
         ]
     }
 
@@ -105,6 +113,10 @@ impl PaletteCommand {
             Self::ToggleSplit => "Split Editor: Toggle",
             Self::ToggleGitignored => "Explorer: Show/Hide Gitignored Files",
             Self::OpenDatabases => "Databases: Open storingUnicorns",
+            Self::WelcomeTour => "Help: Welcome Tour",
+            Self::CloseAllTabs => "Close All Tabs",
+            Self::CloseOtherTabs => "Close Other Tabs",
+            Self::CloseSavedTabs => "Close Saved Tabs",
         }
     }
 
@@ -128,6 +140,10 @@ impl PaletteCommand {
             Self::ToggleSplit => "Ctrl+\\",
             Self::ToggleGitignored => "",
             Self::OpenDatabases => "",
+            Self::WelcomeTour => "",
+            Self::CloseAllTabs => "Ctrl+Shift+W",
+            Self::CloseOtherTabs => "",
+            Self::CloseSavedTabs => "",
         }
     }
 
@@ -151,6 +167,10 @@ impl PaletteCommand {
             Self::ToggleSplit => "side by side panes, second editor",
             Self::ToggleGitignored => "file tree ignored hidden folders build gitignore",
             Self::OpenDatabases => "database sql client postgres mysql sqlite storing",
+            Self::WelcomeTour => "onboarding introduction walkthrough help",
+            Self::CloseAllTabs => "editors files every window",
+            Self::CloseOtherTabs => "editors files except current keep window",
+            Self::CloseSavedTabs => "editors files unmodified clean window",
         }
     }
 }
@@ -782,7 +802,7 @@ mod tests {
     #[test]
     fn every_command_has_metadata() {
         let all = PaletteCommand::all();
-        assert_eq!(all.len(), 18);
+        assert_eq!(all.len(), 22);
         let mut labels = std::collections::HashSet::new();
         for cmd in all {
             assert!(!cmd.label().trim().is_empty(), "{cmd:?} label");
@@ -823,9 +843,13 @@ mod tests {
                 PaletteCommand::ToggleSplit => 15,
                 PaletteCommand::ToggleGitignored => 16,
                 PaletteCommand::OpenDatabases => 17,
+                PaletteCommand::WelcomeTour => 18,
+                PaletteCommand::CloseAllTabs => 19,
+                PaletteCommand::CloseOtherTabs => 20,
+                PaletteCommand::CloseSavedTabs => 21,
             }
         }
-        let mut seen = [false; 18];
+        let mut seen = [false; 22];
         for c in PaletteCommand::all() {
             assert!(!seen[index(c)], "{c:?} listed twice");
             seen[index(c)] = true;

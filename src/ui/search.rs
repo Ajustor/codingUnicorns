@@ -382,50 +382,52 @@ impl WorkspaceSearch {
                 }
             }
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for (file_path, file_matches) in &by_file {
-                    let file_name = file_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (file_path, file_matches) in &by_file {
+                        let file_name = file_path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| file_path.to_string_lossy().to_string());
 
-                    ui.collapsing(
-                        egui::RichText::new(format!("{} ({})", file_name, file_matches.len()))
-                            .size(12.0)
-                            .color(egui::Color32::from_rgb(100, 160, 255)),
-                        |ui| {
-                            for m in file_matches {
-                                let text = format!("{}: {}", m.line_number, m.line_text.trim());
-                                // Cut on a char boundary: byte 80 can fall inside
-                                // an accented letter, and slicing there panics.
-                                let truncated = match text.char_indices().nth(80) {
-                                    Some((end, _)) => &text[..end],
-                                    None => text.as_str(),
-                                };
+                        ui.collapsing(
+                            egui::RichText::new(format!("{} ({})", file_name, file_matches.len()))
+                                .size(12.0)
+                                .color(egui::Color32::from_rgb(100, 160, 255)),
+                            |ui| {
+                                for m in file_matches {
+                                    let text = format!("{}: {}", m.line_number, m.line_text.trim());
+                                    // Cut on a char boundary: byte 80 can fall inside
+                                    // an accented letter, and slicing there panics.
+                                    let truncated = match text.char_indices().nth(80) {
+                                        Some((end, _)) => &text[..end],
+                                        None => text.as_str(),
+                                    };
 
-                                let resp = ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(truncated)
-                                            .monospace()
-                                            .size(11.0)
-                                            .color(egui::Color32::from_rgb(200, 200, 200)),
-                                    )
-                                    .sense(egui::Sense::click()),
-                                );
-                                if resp.clicked() {
-                                    open_file = Some((
-                                        m.file_path.clone(),
-                                        m.line_number.saturating_sub(1),
-                                    ));
+                                    let resp = ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(truncated)
+                                                .monospace()
+                                                .size(11.0)
+                                                .color(egui::Color32::from_rgb(200, 200, 200)),
+                                        )
+                                        .sense(egui::Sense::click()),
+                                    );
+                                    if resp.clicked() {
+                                        open_file = Some((
+                                            m.file_path.clone(),
+                                            m.line_number.saturating_sub(1),
+                                        ));
+                                    }
+                                    if resp.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
                                 }
-                                if resp.hovered() {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                }
-                            }
-                        },
-                    );
-                }
-            });
+                            },
+                        );
+                    }
+                });
         }
 
         open_file

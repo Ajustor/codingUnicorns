@@ -13,6 +13,18 @@ pub struct Tab {
     pub is_deleted: bool,
 }
 
+/// Which tabs a bulk close acts on, relative to an anchor tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseScope {
+    /// Every tab but the anchor.
+    Others,
+    /// The tabs after the anchor.
+    ToTheRight,
+    /// Every tab without unsaved changes.
+    Saved,
+    All,
+}
+
 pub struct TabManager {
     pub tabs: Vec<Tab>,
     pub active_tab: Option<usize>,
@@ -20,6 +32,8 @@ pub struct TabManager {
     /// A modified tab the user asked to close (× or middle-click): left open
     /// for the caller to confirm, like Ctrl+W.
     pub close_request: Option<usize>,
+    /// A bulk close picked in a tab's context menu, with that tab's id.
+    pub bulk_close: Option<(CloseScope, usize)>,
 }
 
 impl TabManager {
@@ -29,6 +43,7 @@ impl TabManager {
             active_tab: None,
             next_id: 0,
             close_request: None,
+            bulk_close: None,
         }
     }
 
@@ -170,6 +185,25 @@ impl TabManager {
         }
     }
 
+    /// Ids of the tabs `scope` covers around `anchor` (the active tab when
+    /// `None`), in tab order. Tabs with unsaved changes are included: the
+    /// caller decides what to do with them.
+    pub fn ids_in_scope(&self, scope: CloseScope, anchor: Option<usize>) -> Vec<usize> {
+        let anchor = anchor.or(self.active_tab);
+        let pos = anchor.and_then(|a| self.tabs.iter().position(|t| t.id == a));
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| match scope {
+                CloseScope::Others => Some(t.id) != anchor,
+                CloseScope::ToTheRight => pos.is_some_and(|p| *i > p),
+                CloseScope::Saved => !t.is_modified,
+                CloseScope::All => true,
+            })
+            .map(|(_, t)| t.id)
+            .collect()
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
         let mut to_open: Option<PathBuf> = None;
         let mut activate_id: Option<usize> = None;
@@ -235,13 +269,32 @@ impl TabManager {
                                 egui::Color32::from_rgb(160, 160, 160)
                             })
                         };
-                        if ui.selectable_label(is_active, tab_label).clicked() {
+                        let label_resp = ui.selectable_label(is_active, tab_label);
+                        if label_resp.clicked() {
                             if *tab_is_settings {
                                 activate_id = Some(*tab_id);
                             } else {
                                 to_open = Some(tab_path.clone());
                             }
                         }
+                        label_resp.context_menu(|ui| {
+                            if ui.button("Close").clicked() {
+                                to_close = Some(*tab_id);
+                                ui.close_menu();
+                            }
+                            let scopes = [
+                                ("Close Others", CloseScope::Others),
+                                ("Close to the Right", CloseScope::ToTheRight),
+                                ("Close Saved", CloseScope::Saved),
+                                ("Close All", CloseScope::All),
+                            ];
+                            for (label, scope) in scopes {
+                                if ui.button(label).clicked() {
+                                    self.bulk_close = Some((scope, *tab_id));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                         if ui.small_button("×").clicked() {
                             to_close = Some(*tab_id);
                         }
@@ -625,6 +678,35 @@ mod tests {
         assert_eq!(tm.tabs.len(), 1);
         assert_eq!(tm.tabs[0].title, "a.rs");
         assert_eq!(r, Some(PathBuf::from("a.rs")));
+    }
+
+    #[test]
+    fn close_scopes_pick_tabs_around_the_anchor() {
+        let mut tm = manager_with(&["a.rs", "b.rs", "c.rs", "d.rs"]);
+        let ids: Vec<usize> = tm.tabs.iter().map(|t| t.id).collect();
+        tm.tabs[3].is_modified = true;
+        let b = Some(ids[1]);
+        assert_eq!(
+            tm.ids_in_scope(CloseScope::Others, b),
+            [ids[0], ids[2], ids[3]]
+        );
+        assert_eq!(tm.ids_in_scope(CloseScope::ToTheRight, b), [ids[2], ids[3]]);
+        assert_eq!(tm.ids_in_scope(CloseScope::Saved, b), &ids[..3]);
+        assert_eq!(tm.ids_in_scope(CloseScope::All, b), ids);
+        // Without an anchor, the active tab (the last opened) is the anchor.
+        assert_eq!(tm.ids_in_scope(CloseScope::Others, None), &ids[..3]);
+        assert!(tm.ids_in_scope(CloseScope::ToTheRight, None).is_empty());
+    }
+
+    #[test]
+    fn tab_context_menu_requests_a_bulk_close() {
+        let mut tm = manager_with(&["a.rs", "b.rs", "c.rs"]);
+        let a_id = tm.tabs[0].id;
+        let mut h = Harness::new();
+        h.click(&mut tm, "a.rs", egui::PointerButton::Secondary);
+        h.click(&mut tm, "Close to the Right", egui::PointerButton::Primary);
+        assert_eq!(tm.bulk_close, Some((CloseScope::ToTheRight, a_id)));
+        assert_eq!(tm.tabs.len(), 3, "the app does the closing");
     }
 
     #[test]

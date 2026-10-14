@@ -13,4 +13,5 @@ pub mod settings;
 pub mod shortcuts;
 pub mod statusbar;
 pub mod theme;
+pub mod tour;
 pub mod widgets;

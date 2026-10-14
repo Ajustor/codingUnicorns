@@ -77,6 +77,8 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     let (palette, spacing) = crate::ui::theme::apply_theme(ctx, &app.config);
     app.palette = palette;
     app.spacing = spacing;
+    // Panels record where they are drawn below; hidden ones stay `None`.
+    app.tour.anchors = Default::default();
 
     // ── Auto-save (2-second inactivity), only when enabled in the settings ───
     if app.editor.content_version != app.last_edit_version_seen {
@@ -254,6 +256,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     app.shortcuts_help.toggle();
                     ui.close_menu();
                 }
+                if ui.button("Welcome Tour").clicked() {
+                    app.tour.start();
+                    ui.close_menu();
+                }
                 if ui.button("Settings   Ctrl+,").clicked() {
                     app.tab_manager.open_settings();
                     app.settings_panel.open = true;
@@ -306,7 +312,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
         });
     });
 
-    TopBottomPanel::bottom("status_bar")
+    let status = TopBottomPanel::bottom("status_bar")
         .exact_height(22.0)
         .show(ctx, |ui| {
             let lsp_status = {
@@ -338,6 +344,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 app.problems_panel.open = !app.problems_panel.open;
             }
         });
+    app.tour.anchors.status_bar = Some(status.response.rect);
 
     if app.show_terminal {
         let panel_response = TopBottomPanel::bottom("terminal_panel")
@@ -491,6 +498,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     term.show_content(ui, &app.config);
                 }
             });
+        app.tour.anchors.terminal = Some(panel_response.response.rect);
 
         // Persist the panel height so it survives hide/show cycles and app restarts.
         let new_height = panel_response.response.rect.height();
@@ -519,7 +527,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             app.config.theme.background[2].saturating_add(20),
         );
 
-        SidePanel::left("activity_bar")
+        let activity = SidePanel::left("activity_bar")
             .exact_width(48.0)
             .resizable(false)
             .frame(
@@ -650,10 +658,11 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     }
                 });
             });
+        app.tour.anchors.activity_bar = Some(activity.response.rect);
     }
 
     if app.show_sidebar {
-        SidePanel::left("sidebar")
+        let sidebar = SidePanel::left("sidebar")
             .resizable(true)
             .min_width(150.0)
             .default_width(app.sidebar_width)
@@ -709,6 +718,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 match app.sidebar_tab.clone() {
                     SidebarTab::Module(id) => {
                         egui::ScrollArea::vertical()
+                            .auto_shrink([false, true])
                             .id_salt(("module-panel", id.as_str()))
                             .show(ui, |ui| {
                                 app.ext_ui.show(ui, &id, &app.plugin_manager, app.palette);
@@ -716,15 +726,17 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     }
                     SidebarTab::Explorer => {
                         app.file_tree.sync_git_marks(&app.git_status.files);
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            if let Some(path) = app.file_tree.show(ui) {
-                                if app.active_pane == 1 && app.editor2.is_some() {
-                                    app.open_file_in_pane2(path);
-                                } else {
-                                    app.open_file(path);
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                if let Some(path) = app.file_tree.show(ui) {
+                                    if app.active_pane == 1 && app.editor2.is_some() {
+                                        app.open_file_in_pane2(path);
+                                    } else {
+                                        app.open_file(path);
+                                    }
                                 }
-                            }
-                        });
+                            });
                         // Handle context menu actions from the file tree
                         if let Some(action) = app.file_tree.context_action.take() {
                             use crate::filetree::FileTreeAction;
@@ -871,32 +883,35 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                 egui::RichText::new("No symbols found").color(egui::Color32::GRAY),
                             );
                         } else {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                let mut nav_to: Option<(std::path::PathBuf, usize)> = None;
-                                for sym in &symbols {
-                                    let icon = match sym.kind.as_str() {
-                                        "Function" | "Method" => "ƒ",
-                                        "Class" | "Struct" => "◻",
-                                        "Enum" => "⊞",
-                                        "Variable" | "Constant" => "≡",
-                                        "Interface" => "Ι",
-                                        _ => "•",
-                                    };
-                                    let label = format!("{} {} ({})", icon, sym.name, sym.kind);
-                                    if ui.selectable_label(false, label).clicked() {
-                                        if let Some(ref path) = current_path {
-                                            nav_to = Some((path.clone(), sym.line as usize));
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    let mut nav_to: Option<(std::path::PathBuf, usize)> = None;
+                                    for sym in &symbols {
+                                        let icon = match sym.kind.as_str() {
+                                            "Function" | "Method" => "ƒ",
+                                            "Class" | "Struct" => "◻",
+                                            "Enum" => "⊞",
+                                            "Variable" | "Constant" => "≡",
+                                            "Interface" => "Ι",
+                                            _ => "•",
+                                        };
+                                        let label = format!("{} {} ({})", icon, sym.name, sym.kind);
+                                        if ui.selectable_label(false, label).clicked() {
+                                            if let Some(ref path) = current_path {
+                                                nav_to = Some((path.clone(), sym.line as usize));
+                                            }
                                         }
                                     }
-                                }
-                                if let Some((path, line)) = nav_to {
-                                    app.push_nav_and_goto(path, line);
-                                }
-                            });
+                                    if let Some((path, line)) = nav_to {
+                                        app.push_nav_and_goto(path, line);
+                                    }
+                                });
                         }
                     }
                 }
             });
+        app.tour.anchors.sidebar = Some(sidebar.response.rect);
     }
 
     // Problems panel (bottom, Ctrl+Shift+M)
@@ -1040,7 +1055,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     }
 
     // Use a zero-margin frame so there's no gap/padding around the editor area
-    CentralPanel::default()
+    let central = CentralPanel::default()
         .frame(
             egui::Frame::new()
                 .fill(egui::Color32::from_rgb(
@@ -1532,6 +1547,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                 }
             }
         });
+    app.tour.anchors.editor = Some(central.response.rect);
 
     if app.storing_install_prompt {
         if let Some(open) = crate::ui::widgets::action_dialog(

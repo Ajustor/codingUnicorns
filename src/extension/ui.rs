@@ -435,7 +435,8 @@ impl ExtensionsPanel {
         }
 
         let max_w = ui.available_width();
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true]).show(ui, |ui| {
             ui.set_max_width(max_w);
 
             // Updates, at the top so they are seen without scrolling.

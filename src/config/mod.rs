@@ -128,6 +128,7 @@ pub struct KeyBindings {
     pub settings: KeyBinding,
     pub find: KeyBinding,
     pub close_tab: KeyBinding,
+    pub close_all_tabs: KeyBinding,
     pub go_to_line: KeyBinding,
     pub indent: KeyBinding,
     pub unindent: KeyBinding,
@@ -183,6 +184,7 @@ impl Default for KeyBindings {
             settings: KeyBinding::new("Comma", true, false, false),
             find: KeyBinding::new("F", true, false, false),
             close_tab: KeyBinding::new("W", true, false, false),
+            close_all_tabs: KeyBinding::new("W", true, true, false),
             go_to_line: KeyBinding::new("G", true, false, false),
             indent: KeyBinding::new("CloseBracket", true, false, false),
             unindent: KeyBinding::new("OpenBracket", true, false, false),
@@ -262,6 +264,10 @@ pub struct Config {
     pub recent_commands: Vec<String>,
     #[serde(default)]
     pub extensions: ExtensionsConfig,
+    /// Whether the welcome tour was shown. A config written before the tour
+    /// existed counts as seen: only fresh installs get it on first launch.
+    #[serde(default = "default_true")]
+    pub tour_seen: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,6 +424,7 @@ impl Default for Config {
             recent_workspaces: Vec::new(),
             recent_commands: Vec::new(),
             extensions: ExtensionsConfig::default(),
+            tour_seen: false,
         }
     }
 }
@@ -829,6 +836,16 @@ mod tests {
         assert_eq!(c.recent_workspaces, ["/w"]);
         assert_eq!(c.keybindings.save.display(), "F2");
         assert_eq!(c.keybindings.find.display(), "Ctrl+F");
+    }
+
+    #[test]
+    fn welcome_tour_only_for_fresh_installs() {
+        assert!(!Config::default().tour_seen, "no config file: first launch");
+        let old: Config = toml::from_str("[editor]\ntab_size = 2\n").unwrap();
+        assert!(old.tour_seen, "config from before the tour: already set up");
+        let back: Config =
+            toml::from_str(&toml::to_string_pretty(&Config::default()).unwrap()).unwrap();
+        assert!(!back.tour_seen, "an unfinished tour is shown again");
     }
 
     #[test]
