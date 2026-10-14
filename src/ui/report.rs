@@ -4,9 +4,10 @@
 use crate::ui::theme::Palette;
 use std::sync::mpsc::Receiver;
 
-/// Relay endpoint compiled into release builds. Empty: reporting is off
-/// unless `report_url` is set in the config.
-pub const DEFAULT_REPORT_URL: &str = "";
+/// Relay endpoint (the Cloudflare Worker of `relay/notion-reports`). The
+/// `report_url` config setting overrides it; empty turns reporting off.
+pub const DEFAULT_REPORT_URL: &str =
+    "https://coding-unicorns-reports.minecities.workers.dev/report";
 
 /// Limits checked by the relay too; enforced here so the user sees them.
 const MAX_TITLE: usize = 120;

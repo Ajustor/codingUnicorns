@@ -8,6 +8,16 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.20.0] - 2026-10-14
+
+### Ajouts
+
+- Signaler un problème : le nouveau menu Help (et la commande de palette « Help: Report an Issue… ») ouvre un formulaire pour envoyer un bug ou une idée directement aux développeurs. La version de l'app, le système d'exploitation et, si la case reste cochée, la fin du log de lancement sont joints.
+
+### Modifications
+
+- Welcome Tour et Keyboard Shortcuts passent du menu View au nouveau menu Help.
+
 ## [0.19.0] - 2026-10-14
 
 ### Ajouts
