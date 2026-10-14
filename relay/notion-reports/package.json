@@ -1,0 +1,12 @@
+{
+  "name": "coding-unicorns-reports",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/index.test.js",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.40.0"
+  }
+}

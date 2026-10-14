@@ -8,6 +8,16 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.20.0] - 2026-10-14
+
+### Added
+
+- Report an Issue: the new Help menu (and the palette command "Help: Report an Issue…") opens a form to send a bug or an idea straight to the developers. The app version, the operating system and, if you leave the box checked, the end of the launch log are sent with it.
+
+### Changed
+
+- Welcome Tour and Keyboard Shortcuts moved from the View menu to the new Help menu.
+
 ## [0.19.0] - 2026-10-14
 
 ### Added

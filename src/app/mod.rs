@@ -77,6 +77,7 @@ pub struct CodingUnicorns {
     pub command_palette: CommandPalette,
     pub shortcuts_help: ShortcutsHelp,
     pub tour: crate::ui::tour::Tour,
+    pub report_dialog: crate::ui::report::ReportDialog,
     pub settings_panel: SettingsPanel,
     pub sidebar_tab: SidebarTab,
     pub show_terminal: bool,
@@ -311,6 +312,7 @@ impl CodingUnicorns {
             command_palette,
             shortcuts_help: ShortcutsHelp::new(),
             tour: crate::ui::tour::Tour::new(),
+            report_dialog: crate::ui::report::ReportDialog::new(),
             settings_panel: SettingsPanel::new(),
             sidebar_tab: SidebarTab::default(),
             show_terminal: true,
@@ -1428,6 +1430,7 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::ToggleGitignored => self.toggle_gitignored(),
                     PaletteCommand::OpenDatabases => self.open_databases(),
                     PaletteCommand::WelcomeTour => self.tour.start(),
+                    PaletteCommand::ReportIssue => self.report_dialog.open(),
                     PaletteCommand::CloseAllTabs => self.close_tabs(CloseScope::All, None),
                     PaletteCommand::CloseOtherTabs => self.close_tabs(CloseScope::Others, None),
                     PaletteCommand::CloseSavedTabs => self.close_tabs(CloseScope::Saved, None),
@@ -1473,6 +1476,11 @@ impl eframe::App for CodingUnicorns {
         }
 
         self.shortcuts_help.show(ctx, &self.config.keybindings);
+
+        let report_url = self.config.report_url.clone();
+        if let Some(msg) = self.report_dialog.show(ctx, self.palette, &report_url) {
+            self.toast(msg);
+        }
 
         if self
             .tour

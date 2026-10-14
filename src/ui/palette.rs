@@ -63,6 +63,7 @@ pub enum PaletteCommand {
     CloseAllTabs,
     CloseOtherTabs,
     CloseSavedTabs,
+    ReportIssue,
 }
 
 impl PaletteCommand {
@@ -90,6 +91,7 @@ impl PaletteCommand {
             PaletteCommand::CloseAllTabs,
             PaletteCommand::CloseOtherTabs,
             PaletteCommand::CloseSavedTabs,
+            PaletteCommand::ReportIssue,
         ]
     }
 
@@ -117,6 +119,7 @@ impl PaletteCommand {
             Self::CloseAllTabs => "Close All Tabs",
             Self::CloseOtherTabs => "Close Other Tabs",
             Self::CloseSavedTabs => "Close Saved Tabs",
+            Self::ReportIssue => "Help: Report an Issue…",
         }
     }
 
@@ -144,6 +147,7 @@ impl PaletteCommand {
             Self::CloseAllTabs => "Ctrl+Shift+W",
             Self::CloseOtherTabs => "",
             Self::CloseSavedTabs => "",
+            Self::ReportIssue => "",
         }
     }
 
@@ -171,6 +175,7 @@ impl PaletteCommand {
             Self::CloseAllTabs => "editors files every window",
             Self::CloseOtherTabs => "editors files except current keep window",
             Self::CloseSavedTabs => "editors files unmodified clean window",
+            Self::ReportIssue => "bug feedback idea problem send developers",
         }
     }
 }
@@ -802,7 +807,7 @@ mod tests {
     #[test]
     fn every_command_has_metadata() {
         let all = PaletteCommand::all();
-        assert_eq!(all.len(), 22);
+        assert_eq!(all.len(), 23);
         let mut labels = std::collections::HashSet::new();
         for cmd in all {
             assert!(!cmd.label().trim().is_empty(), "{cmd:?} label");
@@ -847,9 +852,10 @@ mod tests {
                 PaletteCommand::CloseAllTabs => 19,
                 PaletteCommand::CloseOtherTabs => 20,
                 PaletteCommand::CloseSavedTabs => 21,
+                PaletteCommand::ReportIssue => 22,
             }
         }
-        let mut seen = [false; 22];
+        let mut seen = [false; 23];
         for c in PaletteCommand::all() {
             assert!(!seen[index(c)], "{c:?} listed twice");
             seen[index(c)] = true;
