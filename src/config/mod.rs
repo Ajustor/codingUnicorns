@@ -268,6 +268,13 @@ pub struct Config {
     /// existed counts as seen: only fresh installs get it on first launch.
     #[serde(default = "default_true")]
     pub tour_seen: bool,
+    /// Relay receiving "Report an Issue" submissions (see `relay/notion-reports`).
+    #[serde(default = "default_report_url")]
+    pub report_url: String,
+}
+
+fn default_report_url() -> String {
+    crate::ui::report::DEFAULT_REPORT_URL.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,6 +432,7 @@ impl Default for Config {
             recent_commands: Vec::new(),
             extensions: ExtensionsConfig::default(),
             tour_seen: false,
+            report_url: default_report_url(),
         }
     }
 }

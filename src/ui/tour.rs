@@ -162,7 +162,8 @@ const STEPS: &[Step] = &[
                  (needs the claude CLI).\n\n\
                  {} lists every shortcut, and the Settings ({}) change the theme, the \
                  editor options and the keybindings.\n\n\
-                 Replay this tour any time from the command palette: \"Help: Welcome Tour\".",
+                 Found a bug or have an idea? Help → Report an Issue sends it to the \
+                 developers. Replay this tour any time from the Help menu.",
                 kb.shortcuts_help.display(),
                 kb.settings.display()
             )

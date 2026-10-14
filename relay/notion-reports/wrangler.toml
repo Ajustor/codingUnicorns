@@ -1,0 +1,14 @@
+name = "coding-unicorns-reports"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Data source of the "Coding Unicorns — Tickets" Notion database.
+NOTION_DATA_SOURCE_ID = "516e38a2-b1f4-4e66-978d-b58d41319f95"
+
+# At most 5 reports per minute from one IP address.
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }

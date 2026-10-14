@@ -252,14 +252,6 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Keyboard Shortcuts  F1").clicked() {
-                    app.shortcuts_help.toggle();
-                    ui.close_menu();
-                }
-                if ui.button("Welcome Tour").clicked() {
-                    app.tour.start();
-                    ui.close_menu();
-                }
                 if ui.button("Settings   Ctrl+,").clicked() {
                     app.tab_manager.open_settings();
                     app.settings_panel.open = true;
@@ -270,6 +262,22 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             ui.menu_button("Git", |ui| {
                 if ui.button("Refresh Status").clicked() {
                     app.git_status.refresh();
+                    ui.close_menu();
+                }
+            });
+
+            ui.menu_button("Help", |ui| {
+                if ui.button("Report an Issue…").clicked() {
+                    app.report_dialog.open();
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Welcome Tour").clicked() {
+                    app.tour.start();
+                    ui.close_menu();
+                }
+                if ui.button("Keyboard Shortcuts  F1").clicked() {
+                    app.shortcuts_help.toggle();
                     ui.close_menu();
                 }
             });

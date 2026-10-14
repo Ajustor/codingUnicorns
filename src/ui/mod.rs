@@ -7,6 +7,7 @@ pub mod merge_panel;
 pub mod minimap;
 pub mod palette;
 pub mod problems;
+pub mod report;
 pub mod run_panel;
 pub mod search;
 pub mod settings;

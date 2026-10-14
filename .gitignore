@@ -2,3 +2,5 @@
 # Claude Code: only the project skills are shared (worktrees, local settings stay out).
 .claude/*
 !.claude/skills/
+/relay/notion-reports/node_modules
+/relay/notion-reports/.wrangler
