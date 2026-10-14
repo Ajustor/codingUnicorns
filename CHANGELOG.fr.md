@@ -8,6 +8,17 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.19.0] - 2026-10-14
+
+### Ajouts
+
+- Visite guidée : au premier lancement, une courte visite met en lumière chaque partie de la fenêtre (barre d'activité, explorateur, extensions, éditeur, palette de commandes, terminal, barre d'état) et explique le principe de l'IDE : l'éditeur est livré nu, les langages viennent des extensions. Elle se relance à tout moment avec View → Welcome Tour ou la commande de palette « Help: Welcome Tour ».
+- Fermer les onglets d'un coup : clic droit sur un onglet pour Close Others, Close to the Right, Close Saved et Close All, ou Ctrl+Shift+W pour fermer tous les onglets (aussi dans la palette). Les onglets non enregistrés restent toujours ouverts.
+
+### Corrections
+
+- Barre latérale : la barre de défilement de l'explorateur (et des vues Recherche, Git, Extensions et Outline) se trouvait au milieu du panneau et masquait la fin des noms de fichiers longs. Elle est maintenant contre le bord droit.
+
 ## [0.18.0] - 2026-10-13
 
 ### Ajouts
