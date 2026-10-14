@@ -11,6 +11,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 
 ### Éditeur
 - ✏️ Éditeur de texte avec undo/redo, sélection, word wrap
+- 🗂️ Fermeture rapide des onglets : clic droit sur un onglet (Close Others, Close to the Right, Close Saved, Close All) ou Ctrl+Shift+W pour tout fermer — les fichiers non enregistrés restent ouverts
 - 🔀 Split editor — vue côte à côte : bouton à droite des onglets, commande « Split Editor: Toggle » ou Ctrl+\\
 - 🔢 Multi-curseurs (Ctrl+D, Ctrl+Shift+L, Alt+↑/↓, Ctrl+Clic)
 - 📋 Multi-cursor paste — colle une ligne par curseur quand le nombre correspond
@@ -64,7 +65,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 
 ### Configuration
 - ⚙️ Thèmes personnalisables (Dark, Monokai, Solarized Dark, One Dark + custom RGB)
-- ⌨️ **43 raccourcis clavier configurables** dans Settings → Keybindings
+- ⌨️ **45 raccourcis clavier configurables** dans Settings → Keybindings
 - 💾 Auto-save optionnel
 - 🔄 Mises à jour automatiques via GitHub Pages (vérification au démarrage, checksum SHA-256)
 

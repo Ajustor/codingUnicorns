@@ -81,6 +81,11 @@ impl ShortcutsHelp {
                     row(ui, "Ctrl+Shift+↓", "Move line down");
                     row(ui, &keybindings.save.display(), "Save file");
                     row(ui, &keybindings.close_tab.display(), "Close tab");
+                    row(
+                        ui,
+                        &keybindings.close_all_tabs.display(),
+                        "Close all tabs (unsaved ones stay open)",
+                    );
 
                     ui.add_space(8.0);
                     section(ui, "Navigation");

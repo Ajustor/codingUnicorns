@@ -11,7 +11,7 @@ use crate::plugin::builtin::word_count::WordCountPlugin;
 use crate::plugin::manager::PluginManager;
 use crate::plugin::PluginContext;
 use crate::runner::RunManager;
-use crate::tabs::TabManager;
+use crate::tabs::{CloseScope, TabManager};
 use crate::terminal::Terminal;
 use crate::ui::debugger::DebuggerPanel;
 use crate::ui::layout::SidebarTab;
@@ -76,6 +76,7 @@ pub struct CodingUnicorns {
     pub spacing: crate::ui::theme::Spacing,
     pub command_palette: CommandPalette,
     pub shortcuts_help: ShortcutsHelp,
+    pub tour: crate::ui::tour::Tour,
     pub settings_panel: SettingsPanel,
     pub sidebar_tab: SidebarTab,
     pub show_terminal: bool,
@@ -309,6 +310,7 @@ impl CodingUnicorns {
             spacing: crate::ui::theme::Spacing::default(),
             command_palette,
             shortcuts_help: ShortcutsHelp::new(),
+            tour: crate::ui::tour::Tour::new(),
             settings_panel: SettingsPanel::new(),
             sidebar_tab: SidebarTab::default(),
             show_terminal: true,
@@ -451,6 +453,10 @@ impl CodingUnicorns {
 
         crate::launch_log::step("workspace and session restored");
 
+        if !app.config.tour_seen {
+            app.tour.start();
+        }
+
         // Debug builds live in target/ — never self-update those automatically.
         if app.config.check_updates && !cfg!(debug_assertions) {
             let skipped = app.config.skipped_update_version.clone();
@@ -469,6 +475,62 @@ impl CodingUnicorns {
                 Err(e) => self.toast(format!("Could not start storingUnicorns: {e}")),
             },
             None => self.storing_install_prompt = true,
+        }
+    }
+
+    /// Close the tabs `scope` covers around `anchor` (the active tab when
+    /// `None`). Tabs with unsaved changes stay open, so nothing is lost; a
+    /// toast says how many.
+    pub fn close_tabs(&mut self, scope: CloseScope, anchor: Option<usize>) {
+        let active_before = self.tab_manager.active_tab;
+        let mut kept = 0;
+        for id in self.tab_manager.ids_in_scope(scope, anchor) {
+            let modified = self
+                .tab_manager
+                .tabs
+                .iter()
+                .any(|t| t.id == id && t.is_modified);
+            if modified {
+                kept += 1;
+            } else {
+                self.tab_manager.close(id);
+            }
+        }
+        if self.tab_manager.active_tab != active_before {
+            // The tab the menu was opened on takes over when it is still open.
+            if let Some(a) = anchor.filter(|a| self.tab_manager.tabs.iter().any(|t| t.id == *a)) {
+                self.tab_manager.active_tab = Some(a);
+            }
+            self.load_active_tab();
+        }
+        if kept > 0 {
+            let s = if kept == 1 { "" } else { "s" };
+            self.toast(format!("{kept} tab{s} with unsaved changes kept open"));
+        }
+    }
+
+    /// Show the panel the current tour step points at.
+    fn show_tour_target(&mut self) {
+        use crate::ui::tour::Target;
+        match self.tour.target() {
+            Some(Target::Explorer) => {
+                self.show_sidebar = true;
+                self.sidebar_tab = SidebarTab::Explorer;
+            }
+            Some(Target::Extensions) => {
+                self.show_sidebar = true;
+                self.sidebar_tab = SidebarTab::Extensions;
+            }
+            Some(Target::Terminal) => self.show_terminal = true,
+            _ => {}
+        }
+    }
+
+    /// The tour was finished or skipped: don't show it again on startup.
+    fn end_tour(&mut self) {
+        if !self.config.tour_seen {
+            self.config.tour_seen = true;
+            self.config.save();
         }
     }
 
@@ -567,6 +629,11 @@ impl eframe::App for CodingUnicorns {
         self.update_updater(ctx);
         self.open_forwarded_paths(ctx);
 
+        if self.tour.handle_keys(ctx) {
+            self.end_tour();
+        }
+        self.show_tour_target();
+
         // App-quit unsaved-changes dialog
         if self.show_close_warning {
             egui::Window::new("Unsaved Changes")
@@ -661,6 +728,7 @@ impl eframe::App for CodingUnicorns {
             want_settings,
             want_search,
             want_close_tab,
+            want_close_all_tabs,
             want_run,
             want_debug_f5,
             want_breakpoint_f9,
@@ -685,6 +753,7 @@ impl eframe::App for CodingUnicorns {
                 self.config.keybindings.settings.matches(i),
                 self.config.keybindings.format_document.matches(i),
                 self.config.keybindings.close_tab.matches(i),
+                self.config.keybindings.close_all_tabs.matches(i),
                 // F5 without shift = run (existing) or debug continue
                 self.config.keybindings.debug_start.matches(i) && !i.modifiers.shift,
                 // F5 = debug start/continue
@@ -821,6 +890,9 @@ impl eframe::App for CodingUnicorns {
         self.serve_debug_lsp_commands();
         if self.dap.is_active() || self.dap.is_preparing() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        if want_close_all_tabs {
+            self.close_tabs(CloseScope::All, None);
         }
         if want_close_tab && self.close_tab_id_pending.is_none() {
             if let Some(id) = self.tab_manager.active_tab {
@@ -1202,6 +1274,9 @@ impl eframe::App for CodingUnicorns {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
         crate::ui::layout::render(self, ctx);
+        if let Some((scope, anchor)) = self.tab_manager.bulk_close.take() {
+            self.close_tabs(scope, Some(anchor));
+        }
         self.run_extension_actions(ctx);
         self.apply_gutter_breakpoint_clicks();
         self.tick_session();
@@ -1352,6 +1427,10 @@ impl eframe::App for CodingUnicorns {
                     PaletteCommand::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
                     PaletteCommand::ToggleGitignored => self.toggle_gitignored(),
                     PaletteCommand::OpenDatabases => self.open_databases(),
+                    PaletteCommand::WelcomeTour => self.tour.start(),
+                    PaletteCommand::CloseAllTabs => self.close_tabs(CloseScope::All, None),
+                    PaletteCommand::CloseOtherTabs => self.close_tabs(CloseScope::Others, None),
+                    PaletteCommand::CloseSavedTabs => self.close_tabs(CloseScope::Saved, None),
                     PaletteCommand::GoToLine => self.editor.show_goto_line = true,
                     PaletteCommand::SaveFile => {
                         if self.save_editor_guarded(true) {
@@ -1394,6 +1473,13 @@ impl eframe::App for CodingUnicorns {
         }
 
         self.shortcuts_help.show(ctx, &self.config.keybindings);
+
+        if self
+            .tour
+            .show(ctx, self.palette, self.spacing, &self.config.keybindings)
+        {
+            self.end_tour();
+        }
 
         if self.settings_panel.show(ctx, &mut self.config) {
             self.config.save();

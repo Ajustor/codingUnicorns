@@ -464,6 +464,7 @@ impl SettingsPanel {
                         ("Open File", &mut kb.open_file),
                         ("Save", &mut kb.save),
                         ("Close Tab", &mut kb.close_tab),
+                        ("Close All Tabs", &mut kb.close_all_tabs),
                         ("Command Palette", &mut kb.command_palette),
                         ("Settings", &mut kb.settings),
                         ("Shortcuts Help", &mut kb.shortcuts_help),
