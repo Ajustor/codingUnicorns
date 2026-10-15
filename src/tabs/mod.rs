@@ -154,6 +154,14 @@ impl TabManager {
         self.tabs.iter().find(|t| t.id == id)?.page.as_deref()
     }
 
+    /// The active tab is edited in the editor: a file or an untitled buffer,
+    /// not the settings or a module page.
+    pub fn active_is_document(&self) -> bool {
+        self.active_tab
+            .and_then(|id| self.tabs.iter().find(|t| t.id == id))
+            .is_some_and(|t| !t.is_settings && t.page.is_none())
+    }
+
     /// Close the page tabs whose panel is not in `panels` any more.
     pub fn retain_pages(&mut self, panels: &[String]) {
         let gone: Vec<usize> = self
@@ -483,6 +491,20 @@ mod tests {
         assert_ne!(tm.tabs[0].path, tm.tabs[1].path);
         assert!(tm.tabs.iter().all(|t| t.is_modified && !t.is_settings));
         assert_eq!(tm.active_tab, Some(b));
+    }
+
+    #[test]
+    fn active_is_document_for_files_and_untitled_buffers_only() {
+        let mut tm = TabManager::new();
+        assert!(!tm.active_is_document());
+        tm.open_untitled();
+        assert!(tm.active_is_document());
+        tm.open_settings();
+        assert!(!tm.active_is_document());
+        tm.open_page("docker.images", "Docker");
+        assert!(!tm.active_is_document());
+        tm.open(PathBuf::from("/a.rs"), String::new());
+        assert!(tm.active_is_document());
     }
 
     #[test]
