@@ -13,6 +13,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - New File (Ctrl+N) ouvre un document vide où l'on peut écrire tout de suite, au lieu de réafficher l'écran d'accueil.
+- Ouvrir un autre dossier (Open Folder, Open Recent, ou `cu .` depuis un autre répertoire) ferme les fichiers du précédent, même quand le nouveau dossier n'a pas d'onglets enregistrés ou qu'un fichier a des modifications non enregistrées. Les fichiers non enregistrés restent ouverts, et un message indique combien.
 
 ## [0.21.0] - 2026-10-15
 
