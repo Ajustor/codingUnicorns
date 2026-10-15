@@ -24,16 +24,26 @@ pub struct DapTransport {
     /// Port of a TCP adapter, to open child sessions on.
     pub port: Option<u16>,
     child: Option<Child>,
+    /// The original TCP stream, shut down on drop (the writer and reader
+    /// hold clones, which would keep the connection open).
+    socket: Option<TcpStream>,
 }
 
 /// How long a TCP adapter may take to start listening. Longer in tests: on a busy CI
 /// runner (Windows above all) the first `node` start can take more than 15 s.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 60 } else { 15 });
 
+/// How long connecting to an adapter that is already running may take.
+const ATTACH_TIMEOUT: Duration = Duration::from_secs(3);
+
 impl DapTransport {
     /// Start the adapter of `cfg` and connect to it. For a TCP adapter this
-    /// blocks until it listens (call it off the UI thread).
+    /// blocks until it listens (call it off the UI thread). An adapter
+    /// already running at `cfg.connect` is connected to, not started.
     pub fn open(cfg: &DapConfig, workspace: &Path) -> anyhow::Result<Self> {
+        if let Some(addr) = &cfg.connect {
+            return Self::attach(addr);
+        }
         let args: Vec<&str> = cfg.adapter_args.iter().map(String::as_str).collect();
         match cfg.transport {
             DebuggerTransport::Stdio => Self::spawn(&cfg.adapter_cmd, &args, workspace),
@@ -77,6 +87,7 @@ impl DapTransport {
             is_alive: alive,
             port: None,
             child: Some(child),
+            socket: None,
         })
     }
 
@@ -148,8 +159,25 @@ impl DapTransport {
         Ok(transport)
     }
 
+    /// Connect to an adapter already listening on `addr` (`host:port`), such
+    /// as the Godot editor's. Nothing is started, so nothing is stopped when
+    /// the session ends.
+    pub fn attach(addr: &str) -> anyhow::Result<Self> {
+        let stream = crate::lsp::transport::connect_tcp(addr, ATTACH_TIMEOUT)?;
+        let peer = stream.peer_addr()?;
+        let (tx, rx) = unbounded::<Value>();
+        let mut transport = Self::over_tcp(stream, tx, rx)?;
+        // Child sessions (`startDebugging`) reconnect to 127.0.0.1:port, so
+        // only an IPv4 loopback adapter can have them.
+        if peer.is_ipv4() && peer.ip().is_loopback() {
+            transport.port = Some(peer.port());
+        }
+        Ok(transport)
+    }
+
     fn over_tcp(stream: TcpStream, tx: Sender<Value>, rx: Receiver<Value>) -> anyhow::Result<Self> {
         let reader = stream.try_clone()?;
+        let writer = stream.try_clone()?;
         let alive = Arc::new(AtomicBool::new(true));
         let alive_clone = alive.clone();
         std::thread::spawn(move || {
@@ -157,11 +185,12 @@ impl DapTransport {
             alive_clone.store(false, Ordering::Relaxed);
         });
         Ok(Self {
-            stdin: Box::new(stream),
+            stdin: Box::new(writer),
             receiver: rx,
             is_alive: alive,
             port: None,
             child: None,
+            socket: Some(stream),
         })
     }
 
@@ -178,6 +207,7 @@ impl DapTransport {
             is_alive,
             port: None,
             child: None,
+            socket: None,
         }
     }
 
@@ -187,11 +217,23 @@ impl DapTransport {
 }
 
 impl DapTransport {
-    /// Wait for the adapter process to exit until `deadline`, then kill it
-    /// (blocking). Used when the IDE quits: a background wait would be cut
-    /// short and leave the adapter running.
+    /// Used when the IDE quits: a background wait would be cut short and
+    /// leave the adapter running. Blocks until `deadline` at most.
+    ///
+    /// - An adapter the IDE started: wait for it to exit, then kill it.
+    /// - An adapter the IDE only connected to (no process): send FIN after
+    ///   the queued data and wait until the adapter closes the connection.
     pub fn close(&mut self, deadline: Instant) {
         let Some(mut child) = self.child.take() else {
+            // An adapter the IDE did not start: send FIN after the queued
+            // data and give it time to read it and close (exiting at once
+            // would reset the connection and could lose the `disconnect`).
+            if let Some(socket) = self.socket.take() {
+                let _ = socket.shutdown(std::net::Shutdown::Write);
+                while self.is_alive.load(Ordering::Relaxed) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
             return;
         };
         while Instant::now() < deadline {
@@ -206,9 +248,19 @@ impl DapTransport {
 }
 
 impl Drop for DapTransport {
-    /// Stop the adapter process. It gets a moment to handle the last
-    /// `disconnect` (and terminate the debuggee) before being killed.
+    /// Close the TCP connection, if any, and stop the adapter process. The
+    /// adapter gets a moment to handle the last `disconnect` (and terminate
+    /// the debuggee) before being killed.
+    ///
+    /// Only the sending side is shut down (a FIN after the queued data):
+    /// `Shutdown::Both` makes Windows reset the connection when the adapter
+    /// still answers, and the adapter then loses what it has received but not
+    /// read yet, such as that `disconnect`. The reader thread ends when the
+    /// adapter closes its side.
     fn drop(&mut self) {
+        if let Some(socket) = &self.socket {
+            let _ = socket.shutdown(std::net::Shutdown::Write);
+        }
         let Some(mut child) = self.child.take() else {
             return;
         };
@@ -494,5 +546,80 @@ setTimeout(() => process.exit(0), 90000);
             .to_string();
         assert!(err.contains("exited") && err.contains("boom"), "{err}");
         assert!(!err.contains("${port}"), "port substituted: {err}");
+    }
+
+    #[test]
+    fn attach_connects_to_a_running_adapter_and_owns_no_process() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let reader = stream.try_clone().unwrap();
+            let (tx, rx) = unbounded();
+            std::thread::spawn(move || read_messages(BufReader::new(reader), &tx));
+            let msg = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            write_message(&mut stream, &msg).unwrap();
+        });
+        let cfg = DapConfig {
+            connect: Some(format!("127.0.0.1:{port}")),
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = DapTransport::open(&cfg, dir.path()).unwrap();
+        assert_eq!(t.port, Some(port));
+        assert!(t.child.is_none(), "nothing started");
+        t.send(&json!({"seq": 1})).unwrap();
+        assert_eq!(
+            t.receiver.recv_timeout(Duration::from_secs(10)).unwrap()["seq"],
+            1
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn attach_fails_when_nothing_listens() {
+        // Port 1 is outside the ephemeral range (never handed out by
+        // `bind(0)`), and nothing listens on it.
+        assert!(DapTransport::attach("127.0.0.1:1").is_err());
+    }
+
+    #[test]
+    fn dropping_an_attached_transport_closes_the_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let t = DapTransport::attach(&listener.local_addr().unwrap().to_string()).unwrap();
+        let (mut accepted, _) = listener.accept().unwrap();
+        accepted
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        drop(t);
+        let mut buf = [0u8; 1];
+        assert_eq!(accepted.read(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn dropping_an_attached_transport_keeps_queued_messages_readable() {
+        // The adapter answers late: if the client had shut down its receiving
+        // side, Windows would reset the connection and the adapter would
+        // lose the last message (`disconnect`) it has not read yet.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let reader = stream.try_clone().unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+            let _ = write_message(&mut stream, &json!({"seq": 100}));
+            std::thread::sleep(Duration::from_millis(100));
+            let (tx, rx) = unbounded();
+            std::thread::spawn(move || read_messages(BufReader::new(reader), &tx));
+            let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let second = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            (first["seq"].clone(), second["seq"].clone())
+        });
+        let mut t = DapTransport::attach(&addr).unwrap();
+        t.send(&json!({"seq": 1})).unwrap();
+        t.send(&json!({"seq": 2})).unwrap();
+        drop(t);
+        let (a, b) = server.join().unwrap();
+        assert_eq!((a, b), (json!(1), json!(2)));
     }
 }

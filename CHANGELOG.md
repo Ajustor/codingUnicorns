@@ -8,6 +8,17 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Language modules can connect to a language server or debug adapter that another program already runs, such as the ones built into the Godot editor (`connect = "host:port"` instead of `command` in the manifest). While the server is not reachable, hovering the LSP indicator of the status bar shows the address it waits for, and the IDE connects as soon as it answers.
+
+### Fixed
+
+- A language server that fails on its very first start is retried, like one that crashes later, instead of staying off until the IDE restarts.
+- Language servers that do not exit when the IDE stops them (Restart LSP, a start that gives up) are now killed after 2 seconds instead of being left running.
+
 ## [0.20.0] - 2026-10-14
 
 ### Added

@@ -332,7 +332,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .unwrap_or_default();
                 match app.lsp.get(&ext) {
                     None => LspStatus::Inactive,
-                    Some(c) if !c.is_connected => LspStatus::Connecting,
+                    Some(c) if !c.is_connected => match c.waiting_for() {
+                        Some(addr) => LspStatus::Waiting(addr.to_string()),
+                        None => LspStatus::Connecting,
+                    },
                     Some(c) if c.is_busy() => LspStatus::Loading,
                     Some(_) => LspStatus::Ready,
                 }

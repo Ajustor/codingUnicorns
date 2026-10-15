@@ -62,11 +62,20 @@ impl DebugAdapter {
         self.spec.types.iter().any(|t| t == adapter_type)
     }
 
-    /// Name shown in messages (the first command).
+    /// Whether the adapter already runs (`connect`): the IDE starts and
+    /// downloads nothing.
+    pub fn connects(&self) -> bool {
+        self.spec.connect.is_some()
+    }
+
+    /// Name shown in messages: the address of an adapter the IDE connects
+    /// to, else the first command.
     pub fn name(&self) -> &str {
+        if let Some(addr) = &self.spec.connect {
+            return addr;
+        }
         self.spec
-            .command
-            .as_slice()
+            .commands()
             .first()
             .map(String::as_str)
             .unwrap_or("debugger")
@@ -91,11 +100,7 @@ impl DebugAdapter {
     }
 
     fn command_on_path(&self) -> Option<PathBuf> {
-        self.spec
-            .command
-            .as_slice()
-            .iter()
-            .find_map(|c| find_on_path(c))
+        self.spec.commands().iter().find_map(|c| find_on_path(c))
     }
 
     /// The downloaded file marking the install (`download.binary`), with or
@@ -124,7 +129,8 @@ impl DebugAdapter {
     /// Whether the download must be fetched before starting: its files are
     /// used by the arguments, or the command is not on `PATH`.
     pub fn needs_download(&self) -> bool {
-        self.download_url().is_some()
+        !self.connects()
+            && self.download_url().is_some()
             && self.installed_file().is_none()
             && (self.needs_files() || self.command_on_path().is_none())
     }
@@ -193,6 +199,17 @@ impl DebugAdapter {
         msg
     }
 
+    /// Why an adapter the IDE connects to could not be reached.
+    pub fn unreachable_message(&self, error: &str) -> String {
+        let mut msg = format!("Cannot reach the debug adapter at {}", self.name());
+        if let Some(hint) = &self.spec.install_hint {
+            msg.push_str(": ");
+            msg.push_str(hint);
+        }
+        msg.push_str(&format!(" ({error})"));
+        msg
+    }
+
     /// Session configuration: `${debuggerDir}` expanded in the arguments,
     /// and the launch `type` renamed through the module's `type_map`.
     pub fn config(&self, program: PathBuf, mut launch: Value) -> DapConfig {
@@ -212,6 +229,7 @@ impl DebugAdapter {
                 .collect(),
             launch_config: launch,
             transport: self.spec.transport,
+            connect: self.spec.connect.clone(),
         }
     }
 }
@@ -431,5 +449,36 @@ macos-aarch64 = "https://example.invalid/j.tgz"
     #[test]
     fn find_on_path_misses_unknown_programs() {
         assert!(find_on_path("definitely-not-a-real-program-xyz").is_none());
+    }
+
+    const GODOT: &str = r#"[debugger]
+types = ["godot"]
+connect = "127.0.0.1:6006"
+install_hint = "open the project in the Godot editor"
+[debugger.default_launch]
+scene = "main"
+"#;
+
+    #[test]
+    fn running_adapter_is_connected_to_not_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let gd = DebugAdapter::find(&[module(dir.path(), "gd", r#"["gd"]"#, GODOT)], None, "gd")
+            .unwrap();
+        assert!(gd.connects());
+        assert_eq!(gd.name(), "127.0.0.1:6006");
+        assert!(!gd.needs_download());
+        let cfg = gd.config(PathBuf::new(), gd.default_launch().unwrap());
+        assert_eq!(cfg.connect.as_deref(), Some("127.0.0.1:6006"));
+        assert_eq!(cfg.launch_config["scene"], "main");
+        let msg = gd.unreachable_message("connection refused");
+        assert!(
+            msg.contains("127.0.0.1:6006")
+                && msg.contains("Godot editor")
+                && msg.contains("connection refused"),
+            "{msg}"
+        );
+        let py = DebugAdapter::find(&[module(dir.path(), "py", r#"["py"]"#, PYTHON)], None, "py")
+            .unwrap();
+        assert!(!py.connects());
     }
 }

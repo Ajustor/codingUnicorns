@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::client::{normalized_path_key, uri_to_path, Diagnostic, LspClient};
+use super::target::LspTarget;
 
 /// Diagnostics for one file, merged across every running server.
 pub type FileDiagnostics = (PathBuf, Vec<Diagnostic>);
@@ -81,33 +82,17 @@ impl LspManager {
     }
 
     /// No-op: LSP servers are only started when an extension provides a command
-    /// via `ensure_started_with_cmd()`.
+    /// via `ensure_started_with()`.
     pub fn ensure_started(&mut self, _ext: &str, _workspace: &Path) {
         // Language support comes exclusively from installable extensions.
     }
 
-    /// Ensure an LSP server is running using an explicit command from the plugin system.
-    /// `init_options` are the server's `initializationOptions`.
-    pub fn ensure_started_with_cmd(
+    /// Ensure the language server `target` (from an installed extension)
+    /// runs for files of `ext`. `init_options` are its `initializationOptions`.
+    pub fn ensure_started_with(
         &mut self,
         ext: &str,
-        cmd: &str,
-        args: &[String],
-        workspace: &Path,
-        init_options: Option<serde_json::Value>,
-    ) {
-        if self.clients.contains_key(ext) {
-            return;
-        }
-        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        self.start_client(ext, cmd, &args_ref, workspace, init_options);
-    }
-
-    fn start_client(
-        &mut self,
-        ext: &str,
-        cmd: &str,
-        args: &[&str],
+        target: &LspTarget,
         workspace: &Path,
         init_options: Option<serde_json::Value>,
     ) {
@@ -116,9 +101,8 @@ impl LspManager {
         }
         let mut client = LspClient::new();
         client.set_init_options(init_options);
-        if client.start(cmd, args, workspace).is_ok() {
-            self.clients.insert(ext.to_string(), client);
-        }
+        client.start(target.clone(), workspace);
+        self.clients.insert(ext.to_string(), client);
     }
 
     /// Stop and remove all LSP clients. They will be restarted on the next
@@ -140,6 +124,14 @@ impl LspManager {
     /// the "loading" status updates without user interaction).
     pub fn any_busy(&self) -> bool {
         self.clients.values().any(|c| c.is_busy())
+    }
+
+    /// True while any client is handshaking or waiting for a server the IDE
+    /// connects to: drives a periodic repaint so the (re)connection is
+    /// noticed without user interaction. A started server that cannot be
+    /// started does not count (no idle repaints for it).
+    pub fn any_pending(&self) -> bool {
+        self.clients.values().any(|c| c.is_pending())
     }
 
     /// Poll all active clients and return their pending responses.
@@ -201,16 +193,14 @@ mod tests {
     }
 
     #[test]
-    fn ensure_started_with_cmd_registers_once() {
+    fn ensure_started_with_registers_once() {
         let mut m = LspManager::new();
         let dir = tempfile::tempdir().unwrap();
-        m.ensure_started_with_cmd(
-            "rs",
-            "definitely-not-a-real-lsp-binary-xyz",
-            &["--stdio".to_string()],
-            dir.path(),
-            None,
-        );
+        let missing = LspTarget::Spawn {
+            command: "definitely-not-a-real-lsp-binary-xyz".into(),
+            args: vec!["--stdio".into()],
+        };
+        m.ensure_started_with("rs", &missing, dir.path(), None);
         assert!(m.get("rs").is_some());
         assert!(!m.get("rs").unwrap().is_connected);
         // Second call for the same extension is a no-op (does not replace the client).
@@ -223,13 +213,52 @@ mod tests {
                 kind: "Text".into(),
                 insert_text: None,
             });
-        m.ensure_started_with_cmd("rs", "other", &[], dir.path(), None);
-        assert_eq!(m.get("rs").unwrap().completions.len(), 1);
-        m.start_client("rs", "other", &[], dir.path(), None);
+        let other = LspTarget::Spawn {
+            command: "other".into(),
+            args: vec![],
+        };
+        m.ensure_started_with("rs", &other, dir.path(), None);
         assert_eq!(m.get("rs").unwrap().completions.len(), 1);
 
         m.restart_all();
         assert!(m.get("rs").is_none());
+    }
+
+    #[test]
+    fn any_pending_is_true_only_while_a_connection_is_expected() {
+        use crate::lsp::target::LspTarget;
+        let mut m = LspManager::new();
+        assert!(!m.any_pending());
+        let (t, _tx, _alive) = transport();
+        m.clients
+            .insert("rs".into(), LspClient::connected_for_test(t));
+        assert!(!m.any_pending());
+        // A started server that is missing: nothing will change by itself.
+        let mut missing = LspClient::new();
+        missing.start(
+            LspTarget::Spawn {
+                command: "definitely-not-a-real-lsp-binary-xyz".into(),
+                args: vec![],
+            },
+            &std::env::temp_dir(),
+        );
+        m.clients.insert("py".into(), missing);
+        // Handshake in flight.
+        assert!(m.any_pending());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while m.any_pending() && std::time::Instant::now() < deadline {
+            m.clients.get_mut("py").unwrap().poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!m.any_pending(), "gave up: no more repaints for it");
+        // A server the IDE connects to is waited for, even between attempts.
+        let mut waiting = LspClient::new();
+        waiting.start(
+            LspTarget::Connect("127.0.0.1:1".into()),
+            &std::env::temp_dir(),
+        );
+        m.clients.insert("gd".into(), waiting);
+        assert!(m.any_pending());
     }
 
     #[test]

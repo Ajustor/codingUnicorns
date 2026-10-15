@@ -23,6 +23,9 @@ pub struct ModuleServer {
     dir: PathBuf,
     command: String,
     args: Vec<String>,
+    /// `host:port` of a server already running (`connect`): nothing is
+    /// started or downloaded.
+    connect: Option<String>,
     download: Option<ArchiveDownload>,
     /// `initializationOptions`, variables not expanded yet.
     init_options: Option<toml::Table>,
@@ -42,16 +45,24 @@ impl ModuleServer {
     ) -> Option<Self> {
         installed.into_iter().filter(|e| e.enabled).find_map(|e| {
             let caps = &e.manifest.capabilities;
-            let (command, args, download, per_language) = match caps.lsp_servers.get(language) {
-                Some(s) => (s.command.clone(), s.args.clone(), s.download.clone(), true),
-                None if caps.languages.iter().any(|l| l == language) => (
-                    caps.lsp_server.clone()?,
-                    caps.lsp_args.clone(),
-                    caps.lsp_download.clone(),
-                    false,
-                ),
-                None => return None,
-            };
+            let (command, args, download, connect, per_language) =
+                match caps.lsp_servers.get(language) {
+                    Some(s) => (
+                        s.command.clone().unwrap_or_default(),
+                        s.args.clone(),
+                        s.download.clone(),
+                        s.connect.clone(),
+                        true,
+                    ),
+                    None if caps.languages.iter().any(|l| l == language) => (
+                        caps.lsp_server.clone()?,
+                        caps.lsp_args.clone(),
+                        caps.lsp_download.clone(),
+                        None,
+                        false,
+                    ),
+                    None => return None,
+                };
             let init_options = caps.lsp_init_options_for(language).cloned();
             let debugger_download = e
                 .manifest
@@ -65,6 +76,7 @@ impl ModuleServer {
                 dir: e.path.clone(),
                 command,
                 args,
+                connect,
                 download,
                 init_options,
                 debugger_download,
@@ -160,9 +172,10 @@ impl ModuleServer {
     }
 
     /// Whether files must be fetched before starting the server: its own
-    /// archive, or the debugger files it uses.
+    /// archive, or the debugger files it uses. Never for a server the IDE
+    /// connects to.
     pub fn needs_download(&self) -> bool {
-        self.needs_server_files() || self.needs_debugger_files()
+        self.connect.is_none() && (self.needs_server_files() || self.needs_debugger_files())
     }
 
     /// Download what the server needs (blocking).
@@ -227,7 +240,7 @@ impl ModuleServer {
 
     /// Command and arguments to start the server for `workspace`, variables
     /// expanded. Creates the `${dataDir}` folder when it is used.
-    pub fn command_line(&self, workspace: &Path) -> (String, Vec<String>) {
+    fn command_line(&self, workspace: &Path) -> (String, Vec<String>) {
         if self.args.iter().any(|a| a.contains("${dataDir}")) {
             let _ = std::fs::create_dir_all(data_dir(&self.module_id, workspace));
         }
@@ -240,6 +253,18 @@ impl ModuleServer {
             }
         }
         (command, self.args.iter().map(|a| expand(a)).collect())
+    }
+
+    /// How to reach the server for `workspace`: the address of one already
+    /// running (`connect`), else its command line.
+    pub fn target(&self, workspace: &Path) -> crate::lsp::LspTarget {
+        match &self.connect {
+            Some(addr) => crate::lsp::LspTarget::Connect(addr.clone()),
+            None => {
+                let (command, args) = self.command_line(workspace);
+                crate::lsp::LspTarget::Spawn { command, args }
+            }
+        }
     }
 }
 
@@ -426,6 +451,41 @@ author = ""
             source: None,
             update_available: None,
         }
+    }
+
+    #[test]
+    fn connected_server_is_reached_not_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = module(
+            dir.path(),
+            r#"languages = ["gd", "tscn"]
+[capabilities.lsp_servers.gd]
+connect = "127.0.0.1:6005"
+init_options = { a = 1 }"#,
+        );
+        let gd = ModuleServer::for_language([&m], "gd").unwrap();
+        assert!(!gd.needs_download());
+        assert_eq!(
+            gd.init_options(dir.path()),
+            Some(serde_json::json!({ "a": 1 }))
+        );
+        assert_eq!(
+            gd.target(dir.path()),
+            crate::lsp::LspTarget::Connect("127.0.0.1:6005".into())
+        );
+        assert!(
+            ModuleServer::for_language([&m], "tscn").is_none(),
+            "no server for the module's other languages"
+        );
+
+        let py = module(dir.path(), "languages = [\"py\"]\nlsp_server = \"pylsp\"");
+        let target = ModuleServer::for_language([&py], "py")
+            .unwrap()
+            .target(dir.path());
+        assert!(
+            matches!(&target, crate::lsp::LspTarget::Spawn { command, .. } if command.starts_with("pylsp")),
+            "{target:?}"
+        );
     }
 
     #[test]
@@ -690,11 +750,10 @@ lsp_download = { binary = "../escape", urls = { "*" = "https://example.invalid/a
             eprintln!("downloading {:?}", server.download_url());
             server.download().unwrap();
         }
-        let (cmd, args) = server.command_line(&project);
-        eprintln!("{cmd} {args:?}");
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let target = server.target(&project);
+        eprintln!("{target:?}");
         let mut client = crate::lsp::LspClient::new();
-        client.start(&cmd, &args, &project).unwrap();
+        client.start(target, &project);
 
         let start = std::time::Instant::now();
         let deadline = std::time::Duration::from_secs(300);

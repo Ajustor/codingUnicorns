@@ -222,17 +222,16 @@ impl CodingUnicorns {
                 }
                 return;
             }
-            let (cmd, args) = server.command_line(&workspace);
+            let target = server.target(&workspace);
             let init = server.init_options(&workspace);
-            self.lsp
-                .ensure_started_with_cmd(ext, &cmd, &args, &workspace, init);
+            self.lsp.ensure_started_with(ext, &target, &workspace, init);
             return;
         }
         // Servers named by a module's library (`lsp_server_command_ffi`).
-        if let Some((cmd, args)) = self.plugin_manager.lsp_server_for_ext(ext) {
+        if let Some((command, args)) = self.plugin_manager.lsp_server_for_ext(ext) {
             let init = self.extension_registry.lsp_init_options(ext);
-            self.lsp
-                .ensure_started_with_cmd(ext, &cmd, &args, &workspace, init);
+            let target = crate::lsp::LspTarget::Spawn { command, args };
+            self.lsp.ensure_started_with(ext, &target, &workspace, init);
         } else {
             self.lsp.ensure_started(ext, &workspace);
         }

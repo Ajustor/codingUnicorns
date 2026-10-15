@@ -745,6 +745,7 @@ mod tests {
     fn cfg(launch: Value) -> DapConfig {
         DapConfig {
             transport: Default::default(),
+            connect: None,
             adapter_cmd: "adapter".into(),
             adapter_args: vec![],
             launch_config: launch,
@@ -839,6 +840,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = DapConfig {
             transport: Default::default(),
+            connect: None,
             adapter_cmd: "definitely-not-a-real-dap-adapter-xyz".into(),
             adapter_args: vec!["--x".into()],
             launch_config: json!({}),

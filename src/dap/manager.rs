@@ -503,6 +503,7 @@ mod tests {
     fn cfg() -> DapConfig {
         DapConfig {
             transport: Default::default(),
+            connect: None,
             adapter_cmd: "definitely-not-a-real-dap-adapter-xyz".into(),
             adapter_args: vec![],
             launch_config: json!({}),
@@ -687,6 +688,7 @@ mod tests {
         let (cmd, args) = ("sh", vec!["-c".to_string(), "exit 0".to_string()]);
         let c = DapConfig {
             transport: Default::default(),
+            connect: None,
             adapter_cmd: cmd.into(),
             adapter_args: args,
             launch_config: json!({"program": "${file}"}),
@@ -707,6 +709,7 @@ mod tests {
         let (cmd, args) = ("sh", vec!["-c".to_string(), "exit 0".to_string()]);
         DapConfig {
             transport: Default::default(),
+            connect: None,
             adapter_cmd: cmd.into(),
             adapter_args: args,
             launch_config: json!({"program": "${workspaceFolder}/${fileBasenameNoExtension}"}),
@@ -933,11 +936,11 @@ mod tests {
         if server.needs_download() {
             server.download().unwrap();
         }
-        let (cmd, args) = server.command_line(&project);
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let target = server.target(&project);
+        eprintln!("{target:?}");
         let mut lsp = crate::lsp::LspClient::new();
         lsp.set_init_options(server.init_options(&project));
-        lsp.start(&cmd, &args, &project).unwrap();
+        lsp.start(target, &project);
         let start = std::time::Instant::now();
         while !lsp.is_connected {
             assert!(start.elapsed().as_secs() < 300, "server never initialized");

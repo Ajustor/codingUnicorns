@@ -73,18 +73,61 @@ pub enum PanelLocation {
 }
 
 /// Language server of one language, when a module's languages need
-/// different servers (`[capabilities.lsp_servers.<language>]`).
+/// different servers (`[capabilities.lsp_servers.<language>]`): a command to
+/// start, or the address of a server already running.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LanguageServer {
-    pub command: String,
+    /// Executable started on stdio. Exclusive with `connect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// `host:port` of a server already listening (e.g. inside the Godot
+    /// editor), reached over TCP. Exclusive with `command`, `args` and
+    /// `download`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect: Option<String>,
     /// `initializationOptions`, instead of the module's `lsp_init_options`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub init_options: Option<toml::Table>,
     /// Archive with the server's files, like the module's `lsp_download`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download: Option<ArchiveDownload>,
+}
+
+impl LanguageServer {
+    fn validate(&self, language: &str) -> anyhow::Result<()> {
+        let section = format!("[capabilities.lsp_servers.{language}]");
+        match (&self.command, &self.connect) {
+            (Some(_), None) => Ok(()),
+            (None, Some(addr)) if self.args.is_empty() && self.download.is_none() => {
+                validate_connect(&section, addr)
+            }
+            (None, Some(_)) => {
+                anyhow::bail!("{section}: `args` and `download` cannot be used with `connect`")
+            }
+            (Some(_), Some(_)) => anyhow::bail!("{section}: set `command` or `connect`, not both"),
+            (None, None) => anyhow::bail!("{section}: `command` or `connect` is required"),
+        }
+    }
+}
+
+/// Check the `connect` address of `section`: `host:port`, port 1–65535.
+fn validate_connect(section: &str, addr: &str) -> anyhow::Result<()> {
+    let valid = addr.rsplit_once(':').is_some_and(|(host, port)| {
+        let host_ok = match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+            Some(v6) => v6.parse::<std::net::Ipv6Addr>().is_ok(),
+            None => {
+                !host.is_empty()
+                    && !host.contains(|c: char| c == ':' || c == '/' || c.is_whitespace())
+            }
+        };
+        host_ok && port.parse::<u16>().is_ok_and(|p| p != 0)
+    });
+    if !valid {
+        anyhow::bail!("{section}: `connect` must be `host:port` (IPv6 in brackets), got `{addr}`");
+    }
+    Ok(())
 }
 
 /// `[debugger]` section: how to start the language's debug adapter (DAP
@@ -98,7 +141,14 @@ pub struct DebuggerSpec {
     /// Executable, or candidates tried in order, looked up on `PATH`. With
     /// `transport = "lsp"`: the language server command (`workspace/
     /// executeCommand`) that starts a debug session and returns its port.
-    pub command: OneOrMany,
+    /// Exclusive with `connect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<OneOrMany>,
+    /// `host:port` of an adapter already running (e.g. inside the Godot
+    /// editor): the IDE connects to it and starts nothing. Exclusive with
+    /// `command`, `args`, `transport`, `download` and `lsp_resolve`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect: Option<String>,
     /// Arguments. `${debuggerDir}` is the folder the download is unpacked
     /// in, `${port}` the TCP port to listen on (`transport = "tcp"`).
     #[serde(default)]
@@ -127,6 +177,38 @@ pub struct DebuggerSpec {
     /// (e.g. the main class, then its classpath).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lsp_resolve: Vec<LspResolveStep>,
+}
+
+impl DebuggerSpec {
+    /// Executables to try, in order (with `transport = "lsp"`: the server
+    /// command); none for an adapter the IDE connects to.
+    pub fn commands(&self) -> &[String] {
+        self.command
+            .as_ref()
+            .map(OneOrMany::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        const SECTION: &str = "[debugger]";
+        match (&self.command, &self.connect) {
+            (Some(_), None) => Ok(()),
+            (None, Some(addr)) => {
+                if !self.args.is_empty()
+                    || self.transport != DebuggerTransport::Stdio
+                    || self.download.is_some()
+                    || !self.lsp_resolve.is_empty()
+                {
+                    anyhow::bail!(
+                        "{SECTION}: `args`, `transport`, `download` and `lsp_resolve` cannot be used with `connect`"
+                    );
+                }
+                validate_connect(SECTION, addr)
+            }
+            (Some(_), Some(_)) => anyhow::bail!("{SECTION}: set `command` or `connect`, not both"),
+            (None, None) => anyhow::bail!("{SECTION}: `command` or `connect` is required"),
+        }
+    }
 }
 
 /// One `[[debugger.lsp_resolve]]` step: a `workspace/executeCommand` whose
@@ -204,10 +286,17 @@ impl OneOrMany {
 impl ExtensionManifest {
     /// Parse a `manifest.toml` and validate it. Every install path must use
     /// this (not raw `toml::from_str`) because `extension.id` becomes a
-    /// directory name under the extensions dir.
+    /// directory name under the extensions dir, and server sections must
+    /// name exactly one way to reach the server.
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         let manifest: Self = toml::from_str(s)?;
         validate_extension_id(&manifest.extension.id)?;
+        for (language, server) in &manifest.capabilities.lsp_servers {
+            server.validate(language)?;
+        }
+        if let Some(debugger) = &manifest.debugger {
+            debugger.validate()?;
+        }
         Ok(manifest)
     }
 }
@@ -313,10 +402,11 @@ pub struct Capabilities {
 
 impl Capabilities {
     /// Language server command for `language`: its own entry in
-    /// `lsp_servers`, else the module's `lsp_server`.
+    /// `lsp_servers`, else the module's `lsp_server`. `None` for a server
+    /// reached with `connect`.
     pub fn lsp_command(&self, language: &str) -> Option<(String, Vec<String>)> {
         match self.lsp_servers.get(language) {
-            Some(s) => Some((s.command.clone(), s.args.clone())),
+            Some(s) => Some((s.command.clone()?, s.args.clone())),
             None => Some((self.lsp_server.clone()?, self.lsp_args.clone())),
         }
     }
@@ -333,6 +423,103 @@ impl Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debugger_can_connect_to_a_running_adapter() {
+        let with = |body: &str| ExtensionManifest::parse(&format!("{FULL}\n[debugger]\n{body}\n"));
+        let d = with("types = [\"godot\"]\nconnect = \"127.0.0.1:6006\"")
+            .unwrap()
+            .debugger
+            .unwrap();
+        assert_eq!(d.connect.as_deref(), Some("127.0.0.1:6006"));
+        assert!(d.commands().is_empty());
+        for (bad, fragment) in [
+            (
+                "command = \"x\"\nconnect = \"127.0.0.1:6006\"",
+                "not both",
+            ),
+            ("types = [\"godot\"]", "is required"),
+            (
+                "connect = \"127.0.0.1:6006\"\nargs = [\"--x\"]",
+                "cannot be used with",
+            ),
+            (
+                "connect = \"127.0.0.1:6006\"\ntransport = \"tcp\"",
+                "cannot be used with",
+            ),
+            (
+                "connect = \"127.0.0.1:6006\"\ntransport = \"lsp\"",
+                "cannot be used with",
+            ),
+            ("connect = \"127.0.0.1\"", "must be `host:port`"),
+            (
+                "connect = \"127.0.0.1:6006\"\n[debugger.download]\nbinary = \"x\"\n[debugger.download.urls]\nwindows-x86_64 = \"https://example.invalid/x.zip\"",
+                "cannot be used with",
+            ),
+            (
+                "connect = \"127.0.0.1:6006\"\n[[debugger.lsp_resolve]]\ncommand = \"x\"",
+                "cannot be used with",
+            ),
+        ] {
+            let err = with(bad).unwrap_err().to_string();
+            assert!(err.contains("[debugger]"), "{bad}: {err}");
+            assert!(err.contains(fragment), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn per_language_server_can_connect_instead_of_starting() {
+        let with = |entry: &str| {
+            ExtensionManifest::parse(&format!(
+                "{FULL}\n[capabilities.lsp_servers.pyw]\n{entry}\n"
+            ))
+        };
+        let m = with("connect = \"127.0.0.1:6005\"").unwrap();
+        let s = &m.capabilities.lsp_servers["pyw"];
+        assert_eq!(s.connect.as_deref(), Some("127.0.0.1:6005"));
+        assert_eq!(s.command, None);
+        // A connected server has no command to name.
+        assert_eq!(m.capabilities.lsp_command("pyw"), None);
+        for ok in ["[::1]:6005", "localhost:6005"] {
+            with(&format!("connect = \"{ok}\"")).unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        for (bad, fragment) in [
+            ("command = \"x\"\nconnect = \"127.0.0.1:6005\"", "not both"),
+            ("args = [\"--stdio\"]", "is required"),
+            (
+                "connect = \"127.0.0.1:6005\"\nargs = [\"x\"]",
+                "cannot be used with",
+            ),
+            (
+                "connect = \"127.0.0.1:6005\"\ndownload = { binary = \"x\", urls = { \"*\" = \"https://example.invalid/x.zip\" } }",
+                "cannot be used with",
+            ),
+            ("connect = \"localhost\"", "must be `host:port`"),
+            ("connect = \"127.0.0.1:0\"", "must be `host:port`"),
+            ("connect = \":6005\"", "must be `host:port`"),
+            ("connect = \"http://127.0.0.1:6005\"", "must be `host:port`"),
+            ("connect = \" 127.0.0.1:6005\"", "must be `host:port`"),
+            ("connect = \"::1\"", "must be `host:port`"),
+        ] {
+            let err = with(bad).unwrap_err().to_string();
+            assert!(err.contains("[capabilities.lsp_servers.pyw]"), "{bad}: {err}");
+            assert!(err.contains(fragment), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn connect_entry_survives_a_toml_round_trip() {
+        let m = ExtensionManifest::parse(&format!(
+            "{FULL}\n[capabilities.lsp_servers.pyw]\nconnect = \"127.0.0.1:6005\"\n"
+        ))
+        .unwrap();
+        let out = toml::to_string(&m).unwrap();
+        let back = ExtensionManifest::parse(&out).unwrap();
+        assert_eq!(
+            back.capabilities.lsp_servers["pyw"].connect.as_deref(),
+            Some("127.0.0.1:6005")
+        );
+    }
 
     const FULL: &str = r#"
 [extension]
@@ -496,7 +683,7 @@ windows-x86_64 = "https://example.invalid/w.zip"
         .unwrap();
         let d = m.debugger.unwrap();
         assert_eq!(d.types, ["coreclr"]);
-        assert_eq!(d.command.as_slice(), ["netcoredbg"]);
+        assert_eq!(d.commands(), ["netcoredbg"]);
         assert_eq!(d.args, ["--interpreter=vscode"]);
         assert_eq!(
             d.default_launch.unwrap()["program"].as_str(),
@@ -514,7 +701,7 @@ command = ["python", "python3"]
         ))
         .unwrap();
         let d = m.debugger.unwrap();
-        assert_eq!(d.command.as_slice(), ["python", "python3"]);
+        assert_eq!(d.commands(), ["python", "python3"]);
         assert!(d.types.is_empty() && d.download.is_none());
         assert_eq!(d.transport, DebuggerTransport::Stdio);
         assert!(d.type_map.is_empty());
