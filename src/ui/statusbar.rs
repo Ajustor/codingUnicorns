@@ -5,6 +5,9 @@ use crate::git::GitStatus;
 pub enum LspStatus {
     Inactive,
     Connecting,
+    /// Waiting for a server another program runs (e.g. the Godot editor's)
+    /// to be reachable at this address.
+    Waiting(String),
     /// Connected but the server is still doing background work (e.g. csharp-ls
     /// loading the solution) — not yet able to answer fully.
     Loading,
@@ -143,6 +146,13 @@ impl StatusBar {
                         LspStatus::Connecting => {
                             ui.label(egui::RichText::new("⬤ LSP").color(palette.warning).small())
                                 .on_hover_text("Connecting to language server…");
+                            ui.separator();
+                        }
+                        LspStatus::Waiting(addr) => {
+                            ui.label(egui::RichText::new("⬤ LSP").color(palette.warning).small())
+                                .on_hover_text(format!(
+                                    "Waiting for the language server at {addr}…"
+                                ));
                             ui.separator();
                         }
                         LspStatus::Loading => {
@@ -289,6 +299,7 @@ mod tests {
         let editor = Editor::new();
         for (status, label) in [
             (LspStatus::Connecting, "⬤ LSP"),
+            (LspStatus::Waiting("127.0.0.1:6005".into()), "⬤ LSP"),
             (LspStatus::Loading, "⬤ LSP loading…"),
             (LspStatus::Ready, "⬤ LSP"),
             (LspStatus::Error, "⬤ LSP"),

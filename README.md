@@ -54,7 +54,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 - 🐛 Breakpoints (clic dans la marge ou `F9`), step over/into/out, call stack, variables, expressions surveillées
 - ▶️ Configurations de lancement (`launch.toml`, import de `.vscode/launch.json`)
 - 🔨 `preLaunchTask` exécutée avant le lancement (tâches `process`, `shell` et `npm` de `.vscode/tasks.json`, avec leurs `dependsOn`)
-- 🧰 Le débogueur d'un langage vient de son module (section `[debugger]` du manifeste), l'IDE n'en embarque aucun. Modules officiels : **C#** (netcoredbg), **TypeScript / JavaScript / React / Vue / Svelte / HTML** (vscode-js-debug, Node ou Chrome/Edge), **PowerShell** (PowerShell Editor Services) — téléchargés au premier lancement —, **Python** (debugpy), **Go** (Delve) et **Rust** (lldb-dap)
+- 🧰 Le débogueur d'un langage vient de son module (section `[debugger]` du manifeste), l'IDE n'en embarque aucun. Modules officiels : **C#** (netcoredbg), **TypeScript / JavaScript / React / Vue / Svelte / HTML** (vscode-js-debug, Node ou Chrome/Edge), **PowerShell** (PowerShell Editor Services) — téléchargés au premier lancement —, **Python** (debugpy), **Go** (Delve), **Rust** (lldb-dap) et **GDScript** (celui de l'éditeur Godot, joint en TCP)
 
 ### Extensions
 - 🌐 Registre en ligne : parcourir, installer et mettre à jour les modules officiels depuis le panneau Extensions (binaires précompilés vérifiés par SHA-256)
@@ -266,8 +266,11 @@ Les modules officiels sont publiés par le dépôt [`coding-unicorns-modules`](h
 | **spd-lang** | `.spd` | speedster-language-server | — | — (à installer) |
 | **json-lang** | `.json` `.jsonc` `.json5` `.geojson` `.webmanifest` | vscode-json-language-server | — | npm |
 | **docker-lang** | `Dockerfile` `Containerfile` `Dockerfile.*`, `compose.yaml` `docker-compose.yml` (et `*.override.yml`…) | docker-langserver, docker-compose-langserver | — | npm |
+| **gdscript-lang** | `.gd`, `.tscn` `.tres` `project.godot` `.import` `.gdextension`, `.gdshader` `.gdshaderinc` | éditeur Godot (TCP 6005) | éditeur Godot (TCP 6006) | — (Godot 4 ouvert sur le projet) |
 
 **docker-lang** ajoute aussi un panneau **Docker** dans la barre d'activité : liste des images locales, **Pull**, **Run** (dans un terminal), **Remove**, **Prune** des images sans tag, et **Full view** qui ouvre le tableau complet dans un onglet. **Containers & logs** ouvre en onglet la liste des conteneurs (**Start**, **Stop**, **Restart**, **Remove**, **Shell**) et leurs **Logs**, suivis en direct. Il faut le CLI `docker` dans le `PATH`.
+
+**gdscript-lang** se branche sur l'éditeur Godot 4 : la complétion, les diagnostics et le débogage marchent tant que Godot est ouvert sur le projet, et l'IDE s'y reconnecte tout seul quand on le rouvre. F5 lance la scène principale ; une configuration de type `godot` peut choisir `scene = "current"` (la scène ouverte dans Godot) ou un chemin `res://`.
 
 Des binaires précompilés existent pour **Windows x86_64**, **Linux x86_64** et **macOS Apple Silicon**. Sur une autre plateforme, le registre affiche « Not available for this platform » : il faut alors compiler depuis les sources (voir ci-dessous).
 
@@ -338,6 +341,7 @@ command = "mylang-iface-lsp"
 args = ["--stdio"]
 init_options = {}               # optionnel, remplace lsp_init_options pour ce langage
 download = { binary = "bin/srv", urls = { "*" = "https://…/srv.zip" } }  # optionnel, comme lsp_download
+# connect = "127.0.0.1:6005"    # à la place de command/args/download : serveur déjà lancé, joint en TCP
 
 [capabilities.lsp_download]     # optionnel : archive du serveur, décompressée dans ${serverDir}
 binary = "bin/mylang-lsp"       # fichier présent une fois installé (sans .exe)
@@ -353,6 +357,7 @@ dotnet = ["some-tool@1.2.3"]  # dotnet tool update --global (version épinglable
 [debugger]                  # optionnel : adaptateur de debug (DAP)
 types = ["mylang"]          # `type` des configurations de launch.json servies
 command = ["mylang-dap"]    # binaire (ou candidats dans l'ordre), cherché dans le PATH
+# connect = "127.0.0.1:6006"  # à la place de command : adaptateur déjà lancé (sans args, transport, download ni lsp_resolve)
 args = ["--stdio"]          # ${debuggerDir} = dossier du téléchargement, ${port} = port TCP
 transport = "stdio"         # ou "tcp" : l'adaptateur écoute sur 127.0.0.1:${port} ; ou "lsp" (voir plus bas)
 type_map = { mylang-old = "mylang" }        # optionnel : renomme le `type` des configurations
@@ -399,6 +404,8 @@ Le crate exporte des fonctions C :
 | `free_string(ptr)` | Libère **toute** chaîne renvoyée par les fonctions ci-dessus |
 
 Le serveur LSP et le débogueur sont déclarés dans le manifeste, pas exportés : un module peut fournir un débogueur sans bibliothèque. Au lancement (F5), l'IDE prend le module dont `types` contient le `type` de la configuration de debug, sinon celui du langage du fichier ouvert ; sans `default_launch`, une configuration dans `launch.toml` ou `.vscode/launch.json` est nécessaire. L'archive est téléchargée au premier lancement quand `args` utilise `${debuggerDir}`, ou quand `command` n'est pas dans le `PATH` (le binaire téléchargé sert alors de commande). Le serveur LSP suit la même logique : son archive (`lsp_download`) est téléchargée en arrière-plan à l'ouverture du premier fichier de ses langages quand `lsp_server` ou `lsp_args` utilisent `${serverDir}`, ou quand `lsp_server` n'est pas dans le `PATH`, puis le serveur démarre. Dans ses arguments, `${serverDir}` est le dossier de l'archive, `${dataDir}` un dossier de données propre au module et au workspace (hors du workspace), `${os}` vaut `win`, `linux` ou `mac`, et un chemin dont le nom de fichier contient `*` est remplacé par le fichier correspondant (y compris dans `binary`). Le téléchargement peut être un `.zip`, un `.tar.gz`, un fichier `.gz` seul ou l'exécutable lui-même, enregistré sous le nom `binary` (un jar nommé d'après sa version, par exemple ; voir le module Java). Avec `transport = "lsp"`, c'est le serveur de langage qui démarre la session (comme java-debug, un plugin de jdtls) : `command` est la commande du serveur (`workspace/executeCommand`) qui renvoie le port auquel l'IDE se connecte. Avant elle, les étapes `[[debugger.lsp_resolve]]` complètent dans l'ordre les arguments de `launch` (une liste vide renvoyée avec `pick` est redemandée le temps que le serveur charge le projet). Les `lsp_init_options` acceptent les mêmes variables que `lsp_args`, plus `${debuggerDir}` : quand le serveur l'utilise (pour charger le plugin de debug), le téléchargement du débogueur se fait avec celui du serveur. En TCP, les sessions enfants demandées par l'adaptateur (`startDebugging`, utilisé par vscode-js-debug) sont ouvertes automatiquement. Les [modules officiels](https://github.com/Ajustor/coding-unicorns-modules) sont les meilleurs exemples à copier.
+
+Un serveur qu'un autre programme fait déjà tourner (l'éditeur Godot embarque son serveur de langage et son débogueur) se déclare avec `connect = "hôte:port"` à la place de `command` (dans `[capabilities.lsp_servers.<langage>]` ou `[debugger]`) : l'IDE s'y connecte en TCP sans rien lancer ni télécharger. Préférez `127.0.0.1` à `localhost` (sous Windows chaque adresse résolue coûte un délai de connexion, Godot écoute sur 127.0.0.1 et les sessions filles d'un adaptateur DAP ne passent que par la boucle locale IPv4). `connect` se place par langage ou dans `[debugger]` : écrit directement sous `[capabilities]`, il est ignoré. Tant que le serveur de langage ne répond pas, l'IDE réessaie environ toutes les 3 secondes (au survol, la pastille LSP de la barre d'état indique l'adresse attendue) ; un débogueur injoignable fait échouer F5 avec le message de `install_hint`.
 
 #### Panneaux et pages
 

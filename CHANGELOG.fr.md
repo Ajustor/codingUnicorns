@@ -8,6 +8,17 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.21.0] - 2026-10-15
+
+### Ajouts
+
+- Les modules de langage peuvent se connecter à un serveur de langage ou à un débogueur qu'un autre programme fait déjà tourner, comme ceux de l'éditeur Godot (`connect = "hôte:port"` à la place de `command` dans le manifeste). Tant que le serveur ne répond pas, au survol, la pastille LSP de la barre d'état indique l'adresse attendue, et l'IDE s'y connecte dès qu'il répond.
+
+### Corrections
+
+- Un serveur de langage qui échoue à son tout premier démarrage est relancé, comme celui qui plante plus tard, au lieu de rester éteint jusqu'au redémarrage de l'IDE.
+- Les serveurs de langage qui ne s'arrêtent pas quand l'IDE les arrête (Restart LSP, démarrage abandonné) sont désormais tués au bout de 2 secondes au lieu de rester lancés.
+
 ## [0.20.0] - 2026-10-14
 
 ### Ajouts

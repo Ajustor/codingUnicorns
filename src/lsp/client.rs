@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 
+use super::target::LspTarget;
 use super::transport::LspTransport;
 
 // ── URI <-> path conversion ──────────────────────────────────────────────────
@@ -241,6 +242,14 @@ struct LspClientInner {
     pending: HashMap<u64, Sender<Value>>,
 }
 
+/// Delay between attempts to reach a server the IDE connects to
+/// ([`LspTarget::Connect`]). Each attempt runs on the handshake thread and
+/// takes its own time (on Windows a refused loopback connection is not fast:
+/// about 2 s for 127.0.0.1, 4 s for `localhost`, bounded to 1 s per address by
+/// the connect timeout), so the effective period is this delay plus the
+/// connect time.
+const CONNECT_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+
 pub struct LspClient {
     pub diagnostics: HashMap<String, Vec<Diagnostic>>,
     /// Bumped on every `publishDiagnostics`, so callers can cache derived views.
@@ -248,9 +257,9 @@ pub struct LspClient {
     pub completions: Vec<CompletionItem>,
     pub is_connected: bool,
     inner: Option<LspClientInner>,
-    /// Command + args + workspace stored for auto-restart.
-    restart_cmd: Option<(String, Vec<String>, PathBuf)>,
-    /// When the crash was first detected (for exponential back-off).
+    /// Server and workspace, kept to restart or reconnect.
+    restart_target: Option<(LspTarget, PathBuf)>,
+    /// When the last failure happened, a crash or a failed handshake (back-off base).
     last_crash_time: Option<std::time::Instant>,
     /// Number of consecutive restart attempts (drives back-off exponent).
     restart_attempts: u32,
@@ -262,6 +271,9 @@ pub struct LspClient {
     /// `initializationOptions` of the `initialize` request (from the
     /// module's manifest), kept for restarts.
     init_options: Option<Value>,
+    /// Delay between attempts to reach a server the IDE connects to
+    /// ([`CONNECT_RETRY`]; tests shorten it).
+    connect_retry: std::time::Duration,
 }
 
 impl LspClient {
@@ -272,12 +284,13 @@ impl LspClient {
             completions: vec![],
             is_connected: false,
             inner: None,
-            restart_cmd: None,
+            restart_target: None,
             last_crash_time: None,
             restart_attempts: 0,
             reconnect_rx: None,
             work_done_active: 0,
             init_options: None,
+            connect_retry: CONNECT_RETRY,
         }
     }
 
@@ -290,6 +303,24 @@ impl LspClient {
     /// (e.g. csharp-ls loading the MSBuild solution).
     pub fn is_busy(&self) -> bool {
         self.work_done_active > 0
+    }
+
+    /// The address this client waits for: set whenever a server the IDE
+    /// connects to ([`LspTarget::Connect`]) is not connected, including
+    /// during a handshake.
+    pub fn waiting_for(&self) -> Option<&str> {
+        if self.is_connected {
+            return None;
+        }
+        self.restart_target.as_ref()?.0.connect_addr()
+    }
+
+    /// Whether the client is about to change state on its own: a handshake
+    /// is in flight, or a server the IDE connects to is waited for (retried
+    /// every few seconds). A started server that is missing is not: nothing
+    /// will change until the user does something.
+    pub fn is_pending(&self) -> bool {
+        self.reconnect_rx.is_some() || self.waiting_for().is_some()
     }
 
     /// Test seam: a client already connected over `transport`.
@@ -327,47 +358,73 @@ impl LspClient {
         id
     }
 
-    /// Spawn the LSP server process and perform the initialize handshake.
+    /// Start the language server `target` (or connect to it) and perform the
+    /// initialize handshake.
     ///
     /// Non-blocking: the (potentially slow) handshake runs on a background thread so
     /// the UI never freezes while a server like rust-analyzer or csharp-ls boots.
     /// `poll()` installs the client and flips `is_connected` once it's ready; the app
     /// treats that as a (re)connect and re-opens the current file so diagnostics flow.
-    pub fn start(&mut self, command: &str, args: &[&str], workspace: &Path) -> anyhow::Result<()> {
-        let cmd = command.to_string();
-        let args_vec: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    /// A handshake that fails is retried like a crash (see [`Self::try_restart`]).
+    pub fn start(&mut self, target: LspTarget, workspace: &Path) {
         let workspace = workspace.to_path_buf();
-        // Save restart info for auto-reconnect.
-        self.restart_cmd = Some((cmd.clone(), args_vec.clone(), workspace.clone()));
+        self.restart_target = Some((target.clone(), workspace.clone()));
         self.reconnect_rx = Some(Self::spawn_handshake(
-            cmd,
-            args_vec,
+            target,
             workspace,
             self.init_options.clone(),
+            true,
         ));
-        Ok(())
     }
 
-    /// Spawn the server and run the `initialize`/`initialized` handshake on a
-    /// background thread, delivering the ready `LspClientInner` through the returned
-    /// channel. Shared by the initial start and the crash auto-restart path.
+    /// Start (or connect to) the server and run the `initialize`/`initialized`
+    /// handshake on a background thread, delivering the ready `LspClientInner`
+    /// through the returned channel. The channel closes without a value when the
+    /// server cannot be started or reached, or does not answer; the reason is
+    /// then logged when `log_failure` is set. Shared by the initial start and
+    /// the restart path.
     fn spawn_handshake(
-        cmd: String,
-        args: Vec<String>,
+        target: LspTarget,
         workspace: PathBuf,
         init_options: Option<Value>,
+        log_failure: bool,
     ) -> mpsc::Receiver<LspClientInner> {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let workspace_str = workspace.to_string_lossy().to_string();
-            let Ok(mut transport) = LspTransport::spawn(&cmd, &args_ref, &workspace_str) else {
-                return;
+            let fail = |why: &str| {
+                if !log_failure {
+                    return;
+                }
+                match &target {
+                    // Not running yet (editor closed) is expected.
+                    LspTarget::Connect(addr) => {
+                        log::info!("language server at {addr}: {why}")
+                    }
+                    LspTarget::Spawn { command, .. } => {
+                        log::warn!("language server `{command}`: {why}")
+                    }
+                }
+            };
+            let transport = match &target {
+                LspTarget::Spawn { command, args } => {
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    LspTransport::spawn(command, &args, &workspace.to_string_lossy())
+                }
+                LspTarget::Connect(addr) => LspTransport::connect(addr),
+            };
+            let mut transport = match transport {
+                Ok(t) => t,
+                Err(e) => {
+                    fail(&format!("{e:#}"));
+                    return;
+                }
             };
             let id = 1u64;
             let mut params = json!({
                 "processId": std::process::id(),
                 "rootUri": path_to_uri(&workspace),
+                // Deprecated, but servers like Godot's compare it.
+                "rootPath": workspace.to_string_lossy(),
                 "capabilities": {
                     "textDocument": {
                         "hover": { "contentFormat": ["plaintext", "markdown"] },
@@ -382,40 +439,51 @@ impl LspClient {
             if let Some(options) = init_options {
                 params["initializationOptions"] = options;
             }
-            if transport
-                .send(&json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "method": "initialize",
-                    "params": params
-                }))
-                .is_err()
-            {
+            if let Err(e) = transport.send(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "initialize",
+                "params": params
+            })) {
+                fail(&format!("cannot send initialize: {e}"));
+                transport.abort();
                 return;
             }
             // Block (not busy-poll) on the reader channel; slow servers still connect.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             while std::time::Instant::now() < deadline {
-                if let Ok(msg) = transport
+                match transport
                     .receiver
                     .recv_timeout(std::time::Duration::from_millis(200))
                 {
-                    if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                        let _ = transport.send(&json!({
-                            "jsonrpc": "2.0",
-                            "method": "initialized",
-                            "params": {}
-                        }));
-                        let inner = LspClientInner {
-                            transport,
-                            next_id: id + 1,
-                            pending: HashMap::new(),
-                        };
-                        let _ = tx.send(inner);
+                    Ok(msg) => {
+                        if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                            let _ = transport.send(&json!({
+                                "jsonrpc": "2.0",
+                                "method": "initialized",
+                                "params": {}
+                            }));
+                            transport.settle();
+                            let inner = LspClientInner {
+                                transport,
+                                next_id: id + 1,
+                                pending: HashMap::new(),
+                            };
+                            let _ = tx.send(inner);
+                            return;
+                        }
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    // The server closed the stream: give up now.
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        fail("closed the connection before answering initialize");
                         return;
                     }
                 }
             }
+            // Timed out: free the reader of a server that never answered.
+            fail("no answer to initialize");
+            transport.abort();
         });
         rx
     }
@@ -527,13 +595,23 @@ impl LspClient {
     pub fn poll(&mut self) -> Vec<(u64, Value)> {
         // Check if a background reconnect thread has finished.
         if let Some(rx) = &self.reconnect_rx {
-            if let Ok(new_inner) = rx.try_recv() {
-                self.inner = Some(new_inner);
-                self.is_connected = true;
-                self.restart_attempts = 0;
-                self.reconnect_rx = None;
-                self.last_crash_time = None;
-                self.work_done_active = 0;
+            match rx.try_recv() {
+                Ok(new_inner) => {
+                    self.inner = Some(new_inner);
+                    self.is_connected = true;
+                    self.restart_attempts = 0;
+                    self.reconnect_rx = None;
+                    self.last_crash_time = None;
+                    self.work_done_active = 0;
+                }
+                // The handshake gave up (server missing, unreachable or
+                // silent): retry later, as after a crash.
+                // (The handshake thread logged why.)
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.reconnect_rx = None;
+                    self.last_crash_time = Some(std::time::Instant::now());
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
             }
         }
 
@@ -586,38 +664,57 @@ impl LspClient {
             self.is_connected = false;
             self.last_crash_time = Some(std::time::Instant::now());
             self.work_done_active = 0;
+            if let Some((target, _)) = &self.restart_target {
+                match target {
+                    LspTarget::Connect(addr) => {
+                        log::info!("language server at {addr} disconnected")
+                    }
+                    LspTarget::Spawn { command, .. } => {
+                        log::info!("language server `{command}` stopped")
+                    }
+                }
+            }
         }
 
         results
     }
 
-    /// Called each frame. Schedules a non-blocking reconnect with exponential back-off.
-    /// Returns `true` when a reconnect just succeeded (caller should re-open the current file).
-    pub fn try_restart(&mut self) -> bool {
+    /// Called each frame. Schedules a non-blocking reconnect: after an
+    /// exponential back-off for a server the IDE starts, every
+    /// `connect_retry` for one it connects to. `poll()` picks the result up.
+    pub fn try_restart(&mut self) {
         // Already reconnecting or connected — nothing to do.
         if self.is_connected || self.reconnect_rx.is_some() {
-            return false;
+            return;
         }
-        let Some(ref crash_time) = self.last_crash_time else {
-            return false;
+        let Some(crash_time) = self.last_crash_time else {
+            return;
         };
-        let delay = std::time::Duration::from_secs((2u64 << self.restart_attempts.min(4)).min(30));
+        let Some((target, _)) = &self.restart_target else {
+            return;
+        };
+        let delay = match target {
+            LspTarget::Connect(_) => self.connect_retry,
+            LspTarget::Spawn { .. } => {
+                std::time::Duration::from_secs((2u64 << self.restart_attempts.min(4)).min(30))
+            }
+        };
         if crash_time.elapsed() < delay {
-            return false;
+            return;
         }
-        let Some((cmd, args, workspace)) = self.restart_cmd.clone() else {
-            return false;
+        let Some((target, workspace)) = self.restart_target.clone() else {
+            return;
         };
 
+        // Only the first failure of a series is logged.
+        let log_failure = self.restart_attempts == 0;
         self.restart_attempts += 1;
         self.reconnect_rx = Some(Self::spawn_handshake(
-            cmd,
-            args,
+            target,
             workspace,
             self.init_options.clone(),
+            log_failure,
         ));
-
-        false
     }
 
     /// Build a reply to a server→client request so the server doesn't stall.
@@ -1157,7 +1254,8 @@ mod tests {
         assert_eq!(c.request_signature_help("u", 0, 0), 0);
         assert_eq!(c.request_formatting("u", 4, true), 0);
         assert!(c.poll().is_empty());
-        assert!(!c.try_restart(), "no crash recorded → no restart");
+        c.try_restart();
+        assert!(c.reconnect_rx.is_none(), "no crash recorded → no restart");
         assert!(c.get_diagnostics("u").is_empty());
     }
 
@@ -1355,24 +1453,26 @@ mod tests {
         assert!(h.client.last_crash_time.is_some());
 
         // Within the back-off window → no restart.
-        h.client.restart_cmd = Some((
-            "definitely-not-a-real-lsp-binary-xyz".into(),
-            vec![],
+        h.client.restart_target = Some((
+            LspTarget::Spawn {
+                command: "definitely-not-a-real-lsp-binary-xyz".into(),
+                args: vec![],
+            },
             std::env::temp_dir(),
         ));
-        assert!(!h.client.try_restart());
+        h.client.try_restart();
         assert_eq!(h.client.restart_attempts, 0);
         assert!(h.client.reconnect_rx.is_none());
 
         // After the back-off window a reconnect is scheduled.
         h.client.last_crash_time =
             std::time::Instant::now().checked_sub(std::time::Duration::from_secs(5));
-        assert!(!h.client.try_restart());
+        h.client.try_restart();
         assert_eq!(h.client.restart_attempts, 1);
         assert!(h.client.reconnect_rx.is_some());
 
         // While a reconnect is pending, nothing else is scheduled.
-        assert!(!h.client.try_restart());
+        h.client.try_restart();
         assert_eq!(h.client.restart_attempts, 1);
     }
 
@@ -1381,7 +1481,7 @@ mod tests {
         let mut c = LspClient::new();
         c.last_crash_time =
             std::time::Instant::now().checked_sub(std::time::Duration::from_secs(60));
-        assert!(!c.try_restart());
+        c.try_restart();
         assert!(c.reconnect_rx.is_none());
     }
 
@@ -1389,7 +1489,7 @@ mod tests {
     fn connected_client_never_restarts() {
         let mut h = connected();
         h.client.last_crash_time = Some(std::time::Instant::now());
-        assert!(!h.client.try_restart());
+        h.client.try_restart();
     }
 
     #[test]
@@ -1413,26 +1513,176 @@ mod tests {
     }
 
     #[test]
-    fn start_records_restart_command_and_fails_quietly_for_missing_binary() {
+    fn failed_first_start_schedules_a_retry() {
         let mut c = LspClient::new();
         let dir = tempfile::tempdir().unwrap();
-        c.start(
-            "definitely-not-a-real-lsp-binary-xyz",
-            &["--stdio"],
-            dir.path(),
-        )
-        .unwrap();
-        let (cmd, args, ws) = c.restart_cmd.clone().unwrap();
-        assert_eq!(cmd, "definitely-not-a-real-lsp-binary-xyz");
-        assert_eq!(args, vec!["--stdio".to_string()]);
-        assert_eq!(ws, dir.path());
+        let target = LspTarget::Spawn {
+            command: "definitely-not-a-real-lsp-binary-xyz".into(),
+            args: vec!["--stdio".into()],
+        };
+        c.start(target.clone(), dir.path());
+        assert_eq!(c.restart_target, Some((target, dir.path().to_path_buf())));
         assert!(c.reconnect_rx.is_some());
-        // The handshake thread gives up; the client stays disconnected.
-        for _ in 0..50 {
+        assert_eq!(c.waiting_for(), None, "a started server is not waited for");
+        // The handshake thread gives up; the client stays disconnected and
+        // retries later, as after a crash.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while c.reconnect_rx.is_some() && std::time::Instant::now() < deadline {
             c.poll();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(!c.is_connected);
+        assert!(c.reconnect_rx.is_none(), "the handshake gave up");
+        assert!(c.last_crash_time.is_some(), "a retry is scheduled");
+    }
+
+    #[test]
+    fn a_server_closing_before_initialize_fails_fast() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        // Reads the whole `initialize` frame (so the client's send succeeded
+        // and it is in its receive loop), then hangs up without answering.
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let (tx, rx) = unbounded();
+            let reader = stream.try_clone().unwrap();
+            std::thread::spawn(move || {
+                crate::lsp::transport::read_messages(std::io::BufReader::new(reader), &tx)
+            });
+            let init = rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+            assert_eq!(init["method"], "initialize");
+            // The reader thread holds a clone: close the connection itself.
+            stream.shutdown(std::net::Shutdown::Both).unwrap();
+        });
+        let mut c = LspClient::new();
+        c.start(LspTarget::Connect(addr), &std::env::temp_dir());
+        // Failing fast takes well under a second; the receive loop would
+        // otherwise only give up after its 30 s deadline.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while c.last_crash_time.is_none() && std::time::Instant::now() < deadline {
+            c.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(c.last_crash_time.is_some(), "the handshake gave up early");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn connect_targets_retry_at_a_fixed_pace() {
+        let ago = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(4));
+        // A server the IDE starts backs off: 30 s after many attempts.
+        let mut spawned = LspClient::new();
+        spawned.restart_target = Some((
+            LspTarget::Spawn {
+                command: "definitely-not-a-real-lsp-binary-xyz".into(),
+                args: vec![],
+            },
+            std::env::temp_dir(),
+        ));
+        spawned.restart_attempts = 10;
+        spawned.last_crash_time = ago;
+        spawned.try_restart();
+        assert!(spawned.reconnect_rx.is_none());
+        // A server the IDE connects to is tried again after 3 s, always.
+        let mut connected = LspClient::new();
+        connected.restart_target = Some((
+            LspTarget::Connect("127.0.0.1:1".into()),
+            std::env::temp_dir(),
+        ));
+        connected.restart_attempts = 10;
+        connected.last_crash_time = ago;
+        connected.try_restart();
+        assert!(connected.reconnect_rx.is_some());
+        // 2.5 s after a first failure: a started server retries (2 s
+        // back-off), a connect target waits for its 3 s.
+        let recent = std::time::Instant::now().checked_sub(std::time::Duration::from_millis(2500));
+        let mut spawned = LspClient::new();
+        spawned.restart_target = Some((
+            LspTarget::Spawn {
+                command: "definitely-not-a-real-lsp-binary-xyz".into(),
+                args: vec![],
+            },
+            std::env::temp_dir(),
+        ));
+        spawned.last_crash_time = recent;
+        spawned.try_restart();
+        assert!(spawned.reconnect_rx.is_some());
+        let mut connected = LspClient::new();
+        connected.restart_target = Some((
+            LspTarget::Connect("127.0.0.1:1".into()),
+            std::env::temp_dir(),
+        ));
+        connected.last_crash_time = recent;
+        connected.try_restart();
+        assert!(connected.reconnect_rx.is_none());
+    }
+
+    /// A language server on `listener` that answers `initialize`.
+    /// Returns the `initialize` request it received.
+    fn fake_server(listener: std::net::TcpListener) -> std::thread::JoinHandle<Value> {
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let (tx, rx) = unbounded();
+            std::thread::spawn(move || {
+                crate::lsp::transport::read_messages(std::io::BufReader::new(stream), &tx)
+            });
+            let wait = std::time::Duration::from_secs(10);
+            let init = rx.recv_timeout(wait).unwrap();
+            assert_eq!(init["method"], "initialize");
+            crate::lsp::transport::write_message(
+                &mut writer,
+                &json!({"jsonrpc": "2.0", "id": init["id"], "result": {"capabilities": {}}}),
+            )
+            .unwrap();
+            assert_eq!(rx.recv_timeout(wait).unwrap()["method"], "initialized");
+            init
+        })
+    }
+
+    #[test]
+    fn connect_target_waits_for_the_server_then_connects() {
+        // A free port, with nothing listening yet (released, then re-bound
+        // below: a tiny race with other tests, acceptable).
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = format!("127.0.0.1:{port}");
+        let mut c = LspClient::new();
+        c.connect_retry = std::time::Duration::ZERO;
+        c.start(LspTarget::Connect(addr.clone()), &std::env::temp_dir());
+        assert_eq!(c.waiting_for(), Some(addr.as_str()));
+
+        // Nothing listens: the attempt fails and another one is scheduled.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while c.last_crash_time.is_none() && std::time::Instant::now() < deadline {
+            c.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(c.last_crash_time.is_some(), "first attempt failed");
+        assert!(!c.is_connected);
+
+        // The server starts: a later attempt connects.
+        let server = fake_server(std::net::TcpListener::bind(&addr).unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !c.is_connected && std::time::Instant::now() < deadline {
+            c.poll();
+            c.try_restart();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(c.is_connected);
+        assert_eq!(c.waiting_for(), None);
+        let init = server.join().unwrap();
+        // Both the URI and the plain path of the workspace (Godot compares
+        // `rootPath`).
+        let workspace = std::env::temp_dir();
+        assert_eq!(
+            init["params"]["rootPath"],
+            json!(workspace.to_string_lossy())
+        );
+        assert_eq!(init["params"]["rootUri"], json!(path_to_uri(&workspace)));
     }
 
     // ── Response parsers ─────────────────────────────────────────────────

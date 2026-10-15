@@ -82,8 +82,7 @@ pub fn start(
     }
     let command = adapter
         .spec
-        .command
-        .as_slice()
+        .commands()
         .first()
         .ok_or("the module's debugger has no command")?;
     let result = ask(tx, cancel, ctx.language, command, vec![])?;

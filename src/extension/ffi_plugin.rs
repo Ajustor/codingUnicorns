@@ -26,8 +26,9 @@ pub struct FfiLangPlugin {
     extension_refs: &'static [&'static str],
     lsp_server: Option<String>,
     lsp_args: Vec<String>,
-    /// Per-language servers (`[capabilities.lsp_servers]`).
-    lsp_servers: BTreeMap<String, (String, Vec<String>)>,
+    /// Per-language servers (`[capabilities.lsp_servers]`); `None` for a
+    /// server reached with `connect`, which has no command.
+    lsp_servers: BTreeMap<String, Option<(String, Vec<String>)>>,
     /// Interfaces declared in the manifest (`[[panels]]`).
     panels: Vec<PanelSpec>,
     /// `tokenize_line_lang_ffi(lang, line)`: preferred over `tokenize_line_ffi`
@@ -68,10 +69,12 @@ impl FfiLangPlugin {
         let caps = &manifest.capabilities;
         let lsp_server = caps.lsp_server.clone();
         let lsp_args = caps.lsp_args.clone();
+        // A server reached with `connect` keeps its entry (without a command)
+        // so its language does not fall back to the module-wide server.
         let lsp_servers = caps
             .lsp_servers
             .iter()
-            .map(|(lang, s)| (lang.clone(), (s.command.clone(), s.args.clone())))
+            .map(|(lang, s)| (lang.clone(), s.command.clone().map(|c| (c, s.args.clone()))))
             .collect();
         let panels = manifest.panels.clone();
         unsafe {
@@ -344,7 +347,7 @@ impl Plugin for FfiLangPlugin {
 
     fn lsp_server_command_for(&self, lang: &str) -> Option<(String, Vec<String>)> {
         match self.lsp_servers.get(lang) {
-            Some(cmd) => Some(cmd.clone()),
+            Some(cmd) => cmd.clone(),
             None => self.lsp_server_command(),
         }
     }
@@ -775,6 +778,13 @@ mod tests {
     }
 
     #[test]
+    fn connected_language_does_not_fall_back_to_the_module_server() {
+        let p = full_plugin();
+        assert_eq!(p.lsp_server_command_for("gd"), None);
+        assert_eq!(p.lsp_server_command_for("tl").unwrap().0, "tl-lsp");
+    }
+
+    #[test]
     fn panels_are_routed_to_the_ui_exports() {
         let p = full_plugin();
         assert_eq!(p.ui_panels().len(), 1);
@@ -807,7 +817,10 @@ mod tests {
             extension_refs: &["tl", "tsx", "jsx"],
             lsp_server: Some("tl-lsp".into()),
             lsp_args: vec!["--stdio".into()],
-            lsp_servers: BTreeMap::from([("tsx".to_string(), ("tsx-lsp".to_string(), vec![]))]),
+            lsp_servers: BTreeMap::from([
+                ("tsx".to_string(), Some(("tsx-lsp".to_string(), vec![]))),
+                ("gd".to_string(), None),
+            ]),
             panels: vec![PanelSpec {
                 id: "tl.panel".into(),
                 title: "TL".into(),
@@ -977,8 +990,7 @@ mod tests {
         let p = FfiLangPlugin::load(&lib, &manifest).unwrap();
         for lang in &manifest.capabilities.languages {
             assert!(p.file_extensions().contains(&lang.as_str()), "{lang}");
-            let (cmd, _) = p.lsp_server_command_for(lang).unwrap();
-            println!("{lang}: LSP {cmd}");
+            println!("{lang}: LSP {:?}", p.lsp_server_command_for(lang));
         }
         // `lang|text`, with `\n` written as two characters.
         if let Ok(doc) = std::env::var("CU_E2E_DOC") {

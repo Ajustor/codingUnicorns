@@ -12,6 +12,9 @@ pub struct DapConfig {
     pub launch_config: serde_json::Value,
     /// stdio, or TCP (`${port}` in `adapter_args`).
     pub transport: crate::extension::manifest::DebuggerTransport,
+    /// `host:port` of an adapter already running: connect to it instead of
+    /// starting `adapter_cmd`.
+    pub connect: Option<String>,
 }
 
 /// A source breakpoint (before or after DAP verification).
@@ -111,6 +114,7 @@ mod tests {
     fn types_are_cloneable_and_debuggable() {
         let cfg = DapConfig {
             transport: Default::default(),
+            connect: None,
             adapter_cmd: "python3".into(),
             adapter_args: vec!["-m".into(), "debugpy.adapter".into()],
             launch_config: serde_json::json!({"program": "${file}"}),

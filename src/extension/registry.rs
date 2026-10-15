@@ -57,8 +57,12 @@ impl ExtensionRegistry {
             let Ok(content) = std::fs::read_to_string(&manifest_path) else {
                 continue;
             };
-            let Ok(manifest) = toml::from_str::<ExtensionManifest>(&content) else {
-                continue;
+            let manifest = match ExtensionManifest::parse(&content) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::warn!("{}: invalid manifest: {e}", path.display());
+                    continue;
+                }
             };
             let lib_path = Self::find_lib(&path);
             let source = std::fs::read_to_string(path.join("source.toml"))
@@ -117,7 +121,7 @@ impl ExtensionRegistry {
             let Ok(content) = std::fs::read_to_string(&source_manifest_path) else {
                 continue;
             };
-            let Ok(source_manifest) = toml::from_str::<ExtensionManifest>(&content) else {
+            let Ok(source_manifest) = ExtensionManifest::parse(&content) else {
                 continue;
             };
             let src_ver = &source_manifest.extension.version;
@@ -292,6 +296,26 @@ mod tests {
         let mut r = registry(&tmp.path().join("does-not-exist"));
         r.load_installed();
         assert!(r.installed.is_empty());
+    }
+
+    #[test]
+    fn load_installed_skips_modules_with_an_invalid_server_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        install(root, "acme.ok", &manifest("acme.ok", "1.0.0"));
+        let bad = format!(
+            "{}\n[capabilities.lsp_servers.gd]\nconnect = \"nope\"\n",
+            manifest("acme.bad", "1.0.0")
+        );
+        install(root, "acme.bad", &bad);
+        let mut r = registry(root);
+        r.load_installed();
+        let ids: Vec<&str> = r
+            .installed
+            .iter()
+            .map(|e| e.manifest.extension.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["acme.ok"]);
     }
 
     #[test]

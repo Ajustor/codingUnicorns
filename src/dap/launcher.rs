@@ -86,7 +86,9 @@ fn run(
         .adapter
         .as_ref()
         .filter(|a| a.spec.transport == crate::extension::manifest::DebuggerTransport::Lsp);
-    if let (Some(adapter), None) = (&plan.adapter, by_lsp) {
+    // An adapter the IDE connects to is neither downloaded nor located.
+    let to_start = plan.adapter.as_ref().filter(|a| !a.connects());
+    if let (Some(adapter), None) = (to_start, by_lsp) {
         if adapter.needs_download() {
             let _ = tx.send(LaunchEvent::Log(format!(
                 "Downloading the {} debugger (first use)…",
@@ -119,8 +121,13 @@ fn run(
             super::lsp_session::start(adapter, &ctx, &mut config.launch_config, tx, cancel)?;
         return Ok((config, transport));
     }
-    let transport = DapTransport::open(&config, &plan.workspace)
-        .map_err(|e| format!("could not start the debugger `{}`: {e}", config.adapter_cmd))?;
+    let transport =
+        DapTransport::open(&config, &plan.workspace).map_err(|e| match &plan.adapter {
+            Some(adapter) if adapter.connects() => {
+                adapter.unreachable_message(&e.root_cause().to_string())
+            }
+            _ => format!("could not start the debugger `{}`: {e}", config.adapter_cmd),
+        })?;
     Ok((config, transport))
 }
 
@@ -282,6 +289,7 @@ mod tests {
         LaunchPlan {
             config: DapConfig {
                 transport: Default::default(),
+                connect: None,
                 adapter_cmd: cmd.into(),
                 adapter_args: args,
                 launch_config: json!({}),
@@ -394,5 +402,34 @@ install_hint = \"install LLVM\"",
             assert!(matches!(ev, LaunchEvent::Log(_)));
         }
         assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn unreachable_running_adapter_is_reported_with_its_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        // Port 1 is outside the ephemeral range (never handed out by
+        // `bind(0)`), and nothing listens on it.
+        let port = 1;
+        let module = super::super::adapters::tests::module(
+            dir.path(),
+            "gd",
+            r#"["gd"]"#,
+            &format!(
+                "[debugger]\nconnect = \"127.0.0.1:{port}\"\ninstall_hint = \"open the project in the Godot editor\""
+            ),
+        );
+        let adapter = DebugAdapter::find(&[module], None, "gd").unwrap();
+        let mut p = plan(vec![], dir.path());
+        p.config = adapter.config(std::path::PathBuf::new(), json!({}));
+        p.adapter = Some(adapter);
+        let (logs, res) = finish(prepare(p));
+        let err = res.unwrap_err();
+        assert!(
+            err.starts_with(&format!(
+                "Cannot reach the debug adapter at 127.0.0.1:{port}"
+            )) && err.contains("Godot editor"),
+            "{err}"
+        );
+        assert!(logs.iter().all(|l| !l.contains("Downloading")), "{logs:?}");
     }
 }

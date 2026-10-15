@@ -923,6 +923,10 @@ impl eframe::App for CodingUnicorns {
         if self.lsp.any_busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
+        // A server being (re)connected or waited for needs frames to retry and be noticed.
+        if self.lsp.any_pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         // Re-open the current file on any reconnected LSP server so it receives diagnostics.
         if !reconnected_exts.is_empty() {
             if let Some(ref path) = self.editor.current_path.clone() {
