@@ -177,9 +177,36 @@ impl CodingUnicorns {
         }
     }
 
+    /// Leave the current workspace for `ws`: close the tabs without unsaved
+    /// changes, then reopen the saved tabs of `ws`. Tabs with unsaved changes
+    /// stay open, so nothing is lost; a toast says how many.
+    pub fn switch_session(&mut self, ws: &Path) {
+        // The editor's edits only reach its tab's flag on the next frame.
+        let unsaved = self
+            .editor
+            .current_path
+            .clone()
+            .filter(|_| self.editor.is_modified);
+        let kept = self.tab_manager.close_saved_tabs(unsaved.as_deref());
+        let shown_closed = self
+            .editor
+            .current_path
+            .as_ref()
+            .is_some_and(|p| !self.tab_manager.tabs.iter().any(|t| &t.path == p));
+        if !self.restore_session(ws) && shown_closed {
+            // Nothing saved for `ws`: show the tab left active, if any.
+            self.editor.set_content(String::new(), None);
+            self.load_active_tab();
+        }
+        if kept > 0 {
+            let s = if kept == 1 { "" } else { "s" };
+            self.toast(format!("{kept} tab{s} with unsaved changes kept open"));
+        }
+    }
+
     /// Reopen the saved tabs of `ws`. Returns true if at least one tab was
-    /// restored. Unsaved tabs are kept; when the editor holds unsaved edits the
-    /// saved tabs are only added, without switching away from the current one.
+    /// restored. When the editor holds unsaved edits the saved tabs are only
+    /// added, without switching away from the current one.
     pub fn restore_session(&mut self, ws: &Path) -> bool {
         let Some(saved) = self.session.sessions.get(ws).cloned() else {
             return false;
@@ -190,18 +217,6 @@ impl CodingUnicorns {
         }
         let keep_current = self.editor.is_modified;
         let previous_active = self.tab_manager.active_tab;
-        if !keep_current {
-            let stale: Vec<usize> = self
-                .tab_manager
-                .tabs
-                .iter()
-                .filter(|t| !t.is_modified && !t.is_settings)
-                .map(|t| t.id)
-                .collect();
-            for id in stale {
-                self.tab_manager.close(id);
-            }
-        }
         for (path, view) in &tabs {
             self.session.view_states.insert(path.clone(), *view);
             self.tab_manager.open(path.clone(), String::new());

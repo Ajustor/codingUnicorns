@@ -341,7 +341,7 @@ impl CodingUnicorns {
         self.config.last_workspace = Some(path_str);
         self.config.save();
         if switching {
-            self.restore_session(&path);
+            self.switch_session(&path);
             self.start_file_watcher(&path);
         }
     }

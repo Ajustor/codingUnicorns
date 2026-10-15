@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Ouvrir un autre dossier (Open Folder, Open Recent, ou `cu .` depuis un autre répertoire) ferme les fichiers du précédent, même quand le nouveau dossier n'a pas d'onglets enregistrés ou qu'un fichier a des modifications non enregistrées. Les fichiers non enregistrés restent ouverts, et un message indique combien.
+
 ## [0.21.0] - 2026-10-15
 
 ### Ajouts
