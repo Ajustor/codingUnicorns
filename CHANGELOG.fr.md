@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Sur une ligne contenant un emoji ou un autre caractère hors du plan multilingue de base, le survol, la complétion, l'accès à la définition, le renommage, le formatage, les actions de code et le soulignement des diagnostics ne sont plus décalés d'une colonne : les positions sont converties dans l'unité du serveur de langage (UTF-16 par défaut, caractères quand le serveur le permet).
+
 ## [0.21.0] - 2026-10-15
 
 ### Ajouts

@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- On a line with an emoji or another character outside the Basic Multilingual Plane, hover, completion, go to definition, rename, formatting, code actions and diagnostic underlines no longer land one column off: positions are converted to the way the language server counts them (UTF-16 by default, characters when the server supports it).
+
 ## [0.21.0] - 2026-10-15
 
 ### Added
