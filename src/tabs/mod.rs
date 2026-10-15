@@ -154,6 +154,14 @@ impl TabManager {
         self.tabs.iter().find(|t| t.id == id)?.page.as_deref()
     }
 
+    /// The active tab is edited in the editor: a file or an untitled buffer,
+    /// not the settings or a module page.
+    pub fn active_is_document(&self) -> bool {
+        self.active_tab
+            .and_then(|id| self.tabs.iter().find(|t| t.id == id))
+            .is_some_and(|t| !t.is_settings && t.page.is_none())
+    }
+
     /// Close the page tabs whose panel is not in `panels` any more.
     pub fn retain_pages(&mut self, panels: &[String]) {
         let gone: Vec<usize> = self
@@ -183,6 +191,24 @@ impl TabManager {
         if self.active_tab == Some(id) {
             self.active_tab = self.tabs.last().map(|t| t.id);
         }
+    }
+
+    /// Close the tabs of a workspace being left: all but the settings tab and
+    /// the tabs with unsaved changes, `unsaved` included (a file whose edits
+    /// its tab may not show yet). Returns how many stay for unsaved changes.
+    pub fn close_saved_tabs(&mut self, unsaved: Option<&std::path::Path>) -> usize {
+        let is_unsaved = |t: &Tab| t.is_modified || Some(t.path.as_path()) == unsaved;
+        let (kept, stale): (Vec<&Tab>, Vec<&Tab>) = self
+            .tabs
+            .iter()
+            .filter(|t| !t.is_settings)
+            .partition(|t| is_unsaved(t));
+        let kept = kept.len();
+        let stale: Vec<usize> = stale.iter().map(|t| t.id).collect();
+        for id in stale {
+            self.close(id);
+        }
+        kept
     }
 
     /// Ids of the tabs `scope` covers around `anchor` (the active tab when
@@ -483,6 +509,47 @@ mod tests {
         assert_ne!(tm.tabs[0].path, tm.tabs[1].path);
         assert!(tm.tabs.iter().all(|t| t.is_modified && !t.is_settings));
         assert_eq!(tm.active_tab, Some(b));
+    }
+
+    #[test]
+    fn active_is_document_for_files_and_untitled_buffers_only() {
+        let mut tm = TabManager::new();
+        assert!(!tm.active_is_document());
+        tm.open_untitled();
+        assert!(tm.active_is_document());
+        tm.open_settings();
+        assert!(!tm.active_is_document());
+        tm.open_page("docker.images", "Docker");
+        assert!(!tm.active_is_document());
+        tm.open(PathBuf::from("/a.rs"), String::new());
+        assert!(tm.active_is_document());
+    }
+
+    #[test]
+    fn close_saved_tabs_keeps_settings_and_unsaved_changes() {
+        let mut tm = TabManager::new();
+        tm.open(PathBuf::from("/ws/a.rs"), String::new());
+        let b = tm.open(PathBuf::from("/ws/b.rs"), String::new());
+        let settings = tm.open_settings();
+        tm.open_page("docker.images", "Docker");
+        let untitled = tm.open_untitled();
+        let c = tm.open(PathBuf::from("/ws/c.rs"), String::new());
+        tm.tabs.iter_mut().find(|t| t.id == b).unwrap().is_modified = true;
+        // c.rs has edits its tab doesn't show yet.
+        let kept = tm.close_saved_tabs(Some(std::path::Path::new("/ws/c.rs")));
+        assert_eq!(kept, 3);
+        let left: Vec<usize> = tm.tabs.iter().map(|t| t.id).collect();
+        assert_eq!(left, vec![b, settings, untitled, c]);
+        assert_eq!(tm.active_tab, Some(c));
+
+        // Nothing unsaved: only the settings tab stays.
+        let mut tm = TabManager::new();
+        tm.open(PathBuf::from("/ws/a.rs"), String::new());
+        let settings = tm.open_settings();
+        tm.open(PathBuf::from("/ws/b.rs"), String::new());
+        assert_eq!(tm.close_saved_tabs(None), 0);
+        assert_eq!(tm.tabs.len(), 1);
+        assert_eq!(tm.active_tab, Some(settings));
     }
 
     #[test]

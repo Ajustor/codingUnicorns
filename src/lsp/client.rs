@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 
+use super::position::{decode_positions, Lines, OpenDocs, PositionEncoding};
 use super::target::LspTarget;
 use super::transport::LspTransport;
 
@@ -240,6 +241,23 @@ struct LspClientInner {
     next_id: u64,
     /// Channels for callers waiting on a specific request id.
     pending: HashMap<u64, Sender<Value>>,
+    /// How the server counts columns.
+    encoding: PositionEncoding,
+    /// Document of each request awaiting its answer: the answer's positions
+    /// without a document of their own are in it.
+    request_docs: HashMap<u64, String>,
+}
+
+impl LspClientInner {
+    fn new(transport: LspTransport, next_id: u64, encoding: PositionEncoding) -> Self {
+        Self {
+            transport,
+            next_id,
+            pending: HashMap::new(),
+            encoding,
+            request_docs: HashMap::new(),
+        }
+    }
 }
 
 /// Delay between attempts to reach a server the IDE connects to
@@ -274,6 +292,8 @@ pub struct LspClient {
     /// Delay between attempts to reach a server the IDE connects to
     /// ([`CONNECT_RETRY`]; tests shorten it).
     connect_retry: std::time::Duration,
+    /// Text of the documents sent to the server, to convert their columns.
+    docs: OpenDocs,
 }
 
 impl LspClient {
@@ -291,6 +311,7 @@ impl LspClient {
             work_done_active: 0,
             init_options: None,
             connect_retry: CONNECT_RETRY,
+            docs: OpenDocs::default(),
         }
     }
 
@@ -327,11 +348,11 @@ impl LspClient {
     #[cfg(test)]
     pub(crate) fn connected_for_test(transport: LspTransport) -> Self {
         let mut c = Self::new();
-        c.inner = Some(LspClientInner {
+        c.inner = Some(LspClientInner::new(
             transport,
-            next_id: 2,
-            pending: HashMap::new(),
-        });
+            2,
+            PositionEncoding::default(),
+        ));
         c.is_connected = true;
         c
     }
@@ -342,11 +363,11 @@ impl LspClient {
     pub(crate) fn reconnecting_for_test(transport: LspTransport) -> Self {
         let mut c = Self::new();
         let (tx, rx) = mpsc::channel();
-        tx.send(LspClientInner {
+        tx.send(LspClientInner::new(
             transport,
-            next_id: 2,
-            pending: HashMap::new(),
-        })
+            2,
+            PositionEncoding::default(),
+        ))
         .unwrap();
         c.reconnect_rx = Some(rx);
         c
@@ -426,6 +447,7 @@ impl LspClient {
                 // Deprecated, but servers like Godot's compare it.
                 "rootPath": workspace.to_string_lossy(),
                 "capabilities": {
+                    "general": { "positionEncodings": super::position::OFFERED },
                     "textDocument": {
                         "hover": { "contentFormat": ["plaintext", "markdown"] },
                         "completion": { "completionItem": { "snippetSupport": false } },
@@ -464,11 +486,9 @@ impl LspClient {
                                 "params": {}
                             }));
                             transport.settle();
-                            let inner = LspClientInner {
-                                transport,
-                                next_id: id + 1,
-                                pending: HashMap::new(),
-                            };
+                            let encoding =
+                                PositionEncoding::from_capabilities(&msg["result"]["capabilities"]);
+                            let inner = LspClientInner::new(transport, id + 1, encoding);
                             let _ = tx.send(inner);
                             return;
                         }
@@ -490,6 +510,7 @@ impl LspClient {
 
     /// Notify the server that a file was opened.
     pub fn did_open(&mut self, uri: &str, language_id: &str, content: &str) {
+        self.docs.set(uri, content);
         let Some(inner) = &mut self.inner else { return };
         let _ = inner.transport.send(&json!({
             "jsonrpc": "2.0",
@@ -507,6 +528,7 @@ impl LspClient {
 
     /// Notify the server that a file changed.
     pub fn did_change(&mut self, uri: &str, version: i32, content: &str) {
+        self.docs.set(uri, content);
         let Some(inner) = &mut self.inner else { return };
         let _ = inner.transport.send(&json!({
             "jsonrpc": "2.0",
@@ -518,74 +540,71 @@ impl LspClient {
         }));
     }
 
-    /// Run a server command (`workspace/executeCommand`). Returns the
-    /// request id; match it in `poll()` results.
-    pub fn request_execute_command(&mut self, command: &str, arguments: Vec<Value>) -> u64 {
+    /// Send request `method` and return its id (0 when not connected). `doc`
+    /// is the document it is about: the positions of the answer without a
+    /// document of their own are in it.
+    fn request(&mut self, method: &str, doc: Option<&str>, params: Value) -> u64 {
         let Some(inner) = &mut self.inner else {
             return 0;
         };
         let id = Self::next_id(inner);
+        if let Some(doc) = doc {
+            // Ids only grow: forget the requests a server never answered.
+            if inner.request_docs.len() >= 256 {
+                inner.request_docs.retain(|&k, _| k + 256 > id);
+            }
+            inner.request_docs.insert(id, doc.to_string());
+        }
         let _ = inner.transport.send(&json!({
             "jsonrpc": "2.0",
             "id": id,
-            "method": "workspace/executeCommand",
-            "params": { "command": command, "arguments": arguments }
+            "method": method,
+            "params": params
         }));
         id
+    }
+
+    /// Position `line`:`character` (characters) of document `uri`, counted
+    /// the server's way.
+    fn position(&self, uri: &str, line: u32, character: u32) -> Value {
+        let enc = self.inner.as_ref().map(|i| i.encoding).unwrap_or_default();
+        json!({ "line": line, "character": self.docs.encode(uri, line, character, enc) })
+    }
+
+    /// The `textDocument` + `position` params of a request at a position.
+    fn at(&self, uri: &str, line: u32, character: u32) -> Value {
+        json!({
+            "textDocument": { "uri": uri },
+            "position": self.position(uri, line, character)
+        })
+    }
+
+    /// Run a server command (`workspace/executeCommand`). Returns the
+    /// request id; match it in `poll()` results.
+    pub fn request_execute_command(&mut self, command: &str, arguments: Vec<Value>) -> u64 {
+        self.request(
+            "workspace/executeCommand",
+            None,
+            json!({ "command": command, "arguments": arguments }),
+        )
     }
 
     /// Request hover info. Returns the request id; match it in `poll()` results.
     pub fn request_hover(&mut self, uri: &str, line: u32, character: u32) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/hover",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": character }
-            }
-        }));
-        id
+        let params = self.at(uri, line, character);
+        self.request("textDocument/hover", Some(uri), params)
     }
 
     /// Request completion items. Returns the request id.
     pub fn request_completions(&mut self, uri: &str, line: u32, character: u32) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": character }
-            }
-        }));
-        id
+        let params = self.at(uri, line, character);
+        self.request("textDocument/completion", Some(uri), params)
     }
 
     /// Request go-to-definition. Returns the request id.
     pub fn request_definition(&mut self, uri: &str, line: u32, character: u32) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": character }
-            }
-        }));
-        id
+        let params = self.at(uri, line, character);
+        self.request("textDocument/definition", Some(uri), params)
     }
 
     /// Drain incoming messages from the server.
@@ -619,11 +638,17 @@ impl LspClient {
             return vec![];
         };
         let mut results = Vec::new();
+        // Columns are handed over in characters, whatever the server counts.
+        let convert = inner.encoding != PositionEncoding::Utf32;
+        let mut lines = Lines::new(inner.encoding, &self.docs);
 
-        while let Ok(msg) = inner.transport.receiver.try_recv() {
+        while let Ok(mut msg) = inner.transport.receiver.try_recv() {
             let id = msg.get("id").and_then(|v| v.as_u64());
-            let method = msg.get("method").and_then(|v| v.as_str());
-            match (id, method) {
+            let method = msg
+                .get("method")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            match (id, method.as_deref()) {
                 // Server→client REQUEST (has both id and method): must respond, or
                 // servers like csharp-ls stall and never answer our own requests.
                 (Some(id), Some(method)) => {
@@ -632,10 +657,17 @@ impl LspClient {
                 }
                 // Response to one of our requests (id, no method).
                 (Some(id), None) => {
+                    let doc = inner.request_docs.remove(&id);
+                    if let Some(result) = msg.get_mut("result").filter(|_| convert) {
+                        decode_positions(result, doc.as_deref(), &mut lines);
+                    }
                     results.push((id, msg));
                 }
                 // Notification (method, no id).
                 (None, Some("textDocument/publishDiagnostics")) => {
+                    if let Some(params) = msg.get_mut("params").filter(|_| convert) {
+                        decode_positions(params, None, &mut lines);
+                    }
                     Self::process_diagnostics_msg(&mut self.diagnostics, &msg);
                     self.diagnostics_generation = self.diagnostics_generation.wrapping_add(1);
                 }
@@ -857,19 +889,11 @@ impl LspClient {
 
     /// Request document symbols. Returns the request id.
     pub fn request_document_symbols(&mut self, uri: &str) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/documentSymbol",
-            "params": {
-                "textDocument": { "uri": uri }
-            }
-        }));
-        id
+        self.request(
+            "textDocument/documentSymbol",
+            Some(uri),
+            json!({ "textDocument": { "uri": uri } }),
+        )
     }
 
     /// Parse a documentSymbol response into a list of DocumentSymbol entries.
@@ -897,17 +921,7 @@ impl LspClient {
 
     /// Request `workspace/symbol` for `query`. Returns the request id.
     pub fn request_workspace_symbols(&mut self, query: &str) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "workspace/symbol",
-            "params": { "query": query }
-        }));
-        id
+        self.request("workspace/symbol", None, json!({ "query": query }))
     }
 
     /// Parse a `workspace/symbol` response. Accepts both `SymbolInformation[]`
@@ -940,21 +954,9 @@ impl LspClient {
 
     /// Request find-all-references. Returns the request id.
     pub fn request_references(&mut self, uri: &str, line: u32, character: u32) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/references",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": character },
-                "context": { "includeDeclaration": true }
-            }
-        }));
-        id
+        let mut params = self.at(uri, line, character);
+        params["context"] = json!({ "includeDeclaration": true });
+        self.request("textDocument/references", Some(uri), params)
     }
 
     /// Parse a references response into a list of (file_path, line).
@@ -974,21 +976,9 @@ impl LspClient {
 
     /// Request rename. Returns the request id.
     pub fn request_rename(&mut self, uri: &str, line: u32, character: u32, new_name: &str) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/rename",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": character },
-                "newName": new_name
-            }
-        }));
-        id
+        let mut params = self.at(uri, line, character);
+        params["newName"] = json!(new_name);
+        self.request("textDocument/rename", Some(uri), params)
     }
 
     /// Parse a rename response into a list of (file_path, edits).
@@ -1032,38 +1022,23 @@ impl LspClient {
         character: u32,
         diag_messages: &[String],
     ) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
+        let position = self.position(uri, line, character);
+        let range = json!({ "start": position, "end": position });
         let diagnostics_json: Vec<Value> = diag_messages
             .iter()
-            .map(|msg| {
-                json!({
-                    "range": {
-                        "start": { "line": line, "character": character },
-                        "end": { "line": line, "character": character }
-                    },
-                    "message": msg
-                })
-            })
+            .map(|msg| json!({ "range": range, "message": msg }))
             .collect();
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/codeAction",
-            "params": {
+        self.request(
+            "textDocument/codeAction",
+            Some(uri),
+            json!({
                 "textDocument": { "uri": uri },
-                "range": {
-                    "start": { "line": line, "character": character },
-                    "end": { "line": line, "character": character }
-                },
+                "range": range,
                 "context": {
                     "diagnostics": diagnostics_json
                 }
-            }
-        }));
-        id
+            }),
+        )
     }
 
     /// Parse a codeAction response.
@@ -1094,40 +1069,22 @@ impl LspClient {
 
     /// Request signature help. Returns the request id.
     pub fn request_signature_help(&mut self, uri: &str, line: u32, character: u32) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/signatureHelp",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": character }
-            }
-        }));
-        id
+        let params = self.at(uri, line, character);
+        self.request("textDocument/signatureHelp", Some(uri), params)
     }
 
     pub fn request_formatting(&mut self, uri: &str, tab_size: u32, insert_spaces: bool) -> u64 {
-        let Some(inner) = &mut self.inner else {
-            return 0;
-        };
-        let id = Self::next_id(inner);
-        let _ = inner.transport.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/formatting",
-            "params": {
+        self.request(
+            "textDocument/formatting",
+            Some(uri),
+            json!({
                 "textDocument": { "uri": uri },
                 "options": {
                     "tabSize": tab_size,
                     "insertSpaces": insert_spaces
                 }
-            }
-        }));
-        id
+            }),
+        )
     }
 
     /// Parse a textEdit list from a formatting response into a Vec of (range, newText).
@@ -1332,6 +1289,82 @@ mod tests {
             sent[8]["params"]["options"],
             json!({"tabSize": 2, "insertSpaces": false})
         );
+    }
+
+    // ── Position encoding ────────────────────────────────────────────────
+
+    /// Line 1 has an emoji: 2 UTF-16 units for 1 character.
+    const EMOJI_DOC: &str = "fn main() {}\nlet s = \"😀\"; x\n";
+
+    #[test]
+    fn request_positions_are_sent_in_utf16_units() {
+        let mut h = connected();
+        h.client.did_open("file:///a.rs", "rust", EMOJI_DOC);
+        h.client.request_hover("file:///a.rs", 1, 13);
+        h.client.request_hover("file:///a.rs", 0, 3);
+        h.client
+            .request_code_actions("file:///a.rs", 1, 13, &["m".to_string()]);
+        // A document the server wasn't sent: as is.
+        h.client.request_hover("file:///b.rs", 1, 13);
+        let sent = h.sent();
+        assert_eq!(
+            sent[1]["params"]["position"],
+            json!({"line": 1, "character": 14})
+        );
+        assert_eq!(
+            sent[2]["params"]["position"],
+            json!({"line": 0, "character": 3})
+        );
+        assert_eq!(sent[3]["params"]["range"]["end"]["character"], 14);
+        let diag = &sent[3]["params"]["context"]["diagnostics"][0];
+        assert_eq!(diag["range"]["start"]["character"], 14);
+        assert_eq!(sent[4]["params"]["position"]["character"], 13);
+    }
+
+    #[test]
+    fn answers_and_diagnostics_come_back_in_characters() {
+        let mut h = connected();
+        h.client.did_open("file:///a.rs", "rust", EMOJI_DOC);
+        let id = h.client.request_formatting("file:///a.rs", 4, true);
+        let range = |s, e| json!({"start": {"line": 1, "character": s}, "end": {"line": 1, "character": e}});
+        h.tx.send(json!({"id": id, "result": [{"range": range(14, 15), "newText": "y"}]}))
+            .unwrap();
+        h.tx.send(json!({"method": "textDocument/publishDiagnostics",
+            "params": {"uri": "file:///a.rs", "diagnostics": [{"message": "m", "range": range(14, 15)}]}}))
+            .unwrap();
+        let res = h.client.poll();
+        assert_eq!(
+            LspClient::parse_text_edits(&res[0].1),
+            vec![(1, 13, 1, 14, "y".to_string())]
+        );
+        let d = &h.client.get_diagnostics("file:///a.rs")[0];
+        assert_eq!((d.line, d.col, d.end_col), (1, 13, 14));
+        assert!(h.client.inner.as_ref().unwrap().request_docs.is_empty());
+    }
+
+    #[test]
+    fn a_utf32_server_gets_and_gives_characters() {
+        let mut h = connected();
+        h.client.inner.as_mut().unwrap().encoding = PositionEncoding::Utf32;
+        h.client.did_open("file:///a.rs", "rust", EMOJI_DOC);
+        h.client.request_hover("file:///a.rs", 1, 13);
+        assert_eq!(h.sent()[1]["params"]["position"]["character"], 13);
+        h.tx.send(json!({"method": "textDocument/publishDiagnostics",
+            "params": {"uri": "file:///a.rs", "diagnostics": [{"message": "m",
+                "range": {"start": {"line": 1, "character": 13}, "end": {"line": 1, "character": 14}}}]}}))
+            .unwrap();
+        h.client.poll();
+        let d = &h.client.get_diagnostics("file:///a.rs")[0];
+        assert_eq!((d.col, d.end_col), (13, 14));
+    }
+
+    #[test]
+    fn unanswered_requests_do_not_pile_up() {
+        let mut h = connected();
+        for _ in 0..1000 {
+            h.client.request_hover("file:///a.rs", 0, 0);
+        }
+        assert!(h.client.inner.as_ref().unwrap().request_docs.len() <= 256);
     }
 
     // ── poll() ───────────────────────────────────────────────────────────
@@ -1683,6 +1716,11 @@ mod tests {
             json!(workspace.to_string_lossy())
         );
         assert_eq!(init["params"]["rootUri"], json!(path_to_uri(&workspace)));
+        // Characters preferred, UTF-16 (the default) accepted.
+        assert_eq!(
+            init["params"]["capabilities"]["general"]["positionEncodings"],
+            json!(["utf-32", "utf-16"])
+        );
     }
 
     // ── Response parsers ─────────────────────────────────────────────────
