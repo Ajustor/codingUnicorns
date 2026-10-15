@@ -14,6 +14,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 - New File (Ctrl+N) opens an empty document you can type in right away, instead of showing the welcome screen again.
 - Opening another folder (Open Folder, Open Recent, or `cu .` from another directory) closes the files of the previous one, even when the new folder has no saved tabs or a file has unsaved changes. Files with unsaved changes stay open, and a message says how many.
+- On a line with an emoji or another character outside the Basic Multilingual Plane, hover, completion, go to definition, rename, formatting, code actions and diagnostic underlines no longer land one column off: positions are converted to the way the language server counts them (UTF-16 by default, characters when the server supports it).
 
 ## [0.21.0] - 2026-10-15
 

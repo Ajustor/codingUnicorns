@@ -14,6 +14,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 
 - New File (Ctrl+N) ouvre un document vide où l'on peut écrire tout de suite, au lieu de réafficher l'écran d'accueil.
 - Ouvrir un autre dossier (Open Folder, Open Recent, ou `cu .` depuis un autre répertoire) ferme les fichiers du précédent, même quand le nouveau dossier n'a pas d'onglets enregistrés ou qu'un fichier a des modifications non enregistrées. Les fichiers non enregistrés restent ouverts, et un message indique combien.
+- Sur une ligne contenant un emoji ou un autre caractère hors du plan multilingue de base, le survol, la complétion, l'accès à la définition, le renommage, le formatage, les actions de code et le soulignement des diagnostics ne sont plus décalés d'une colonne : les positions sont converties dans l'unité du serveur de langage (UTF-16 par défaut, caractères quand le serveur le permet).
 
 ## [0.21.0] - 2026-10-15
 
