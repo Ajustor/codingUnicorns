@@ -1251,7 +1251,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             app.file_tree.reload_children();
                         }
                     }
-                } else if app.editor.current_path.is_some() || app.editor.buffer.rope_len() > 0 {
+                } else if app.tab_manager.active_is_document()
+                    || app.editor.current_path.is_some()
+                    || app.editor.buffer.rope_len() > 0
+                {
                     // Breadcrumbs
                     let breadcrumb_path = app.editor.current_path.clone();
                     let breadcrumb_workspace = app.workspace_path.clone();
@@ -1514,7 +1517,12 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             );
                         });
                     }
-                } else if app.editor.current_path.is_some() || app.editor.buffer.rope_len() > 0 {
+                } else if app.tab_manager.active_is_document()
+                    || app.editor.current_path.is_some()
+                    || app.editor.buffer.rope_len() > 0
+                {
+                    // An empty untitled buffer (Ctrl+N) has neither a path nor
+                    // text, but is still edited here rather than the welcome screen.
                     // ── Breadcrumbs bar ───────────────────────────────────────────
                     let breadcrumb_path = app.editor.current_path.clone();
                     let breadcrumb_workspace = app.workspace_path.clone();

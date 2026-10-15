@@ -368,6 +368,7 @@ impl CodingUnicorns {
         self.park_current_doc(None);
         self.editor.set_content(String::new(), None);
         self.tab_manager.open_untitled();
+        self.editor.focus_requested = true;
     }
 
     /// Load the currently active tab into the editor, or clear the editor if none.

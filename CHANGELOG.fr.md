@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- New File (Ctrl+N) ouvre un document vide où l'on peut écrire tout de suite, au lieu de réafficher l'écran d'accueil.
+
 ## [0.21.0] - 2026-10-15
 
 ### Ajouts

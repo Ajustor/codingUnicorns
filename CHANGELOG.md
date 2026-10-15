@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- New File (Ctrl+N) opens an empty document you can type in right away, instead of showing the welcome screen again.
+
 ## [0.21.0] - 2026-10-15
 
 ### Added
