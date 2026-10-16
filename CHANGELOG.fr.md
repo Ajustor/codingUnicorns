@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Non publié]
+
+### Ajouts
+
+- Pull requests : le panneau Git liste les pull requests ouvertes du dépôt GitHub `origin`. En ouvrir une affiche sa description, les fichiers modifiés et un diff côte à côte avec les commentaires de review sous les lignes concernées. F7 / Maj+F7 passent d'un changement à l'autre, une case marque chaque fichier comme vu, et Checkout place la pull request sur une branche locale. Renseignez un token dans Settings → GitHub, ou laissez l'IDE utiliser la connexion de la CLI GitHub (`gh auth login`).
+
 ## [0.21.1] - 2026-10-15
 
 ### Corrections

@@ -9,6 +9,7 @@ mod editor;
 pub mod extension;
 mod filetree;
 mod git;
+mod github;
 mod keybinds;
 mod language;
 mod launch_log;

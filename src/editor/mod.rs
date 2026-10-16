@@ -33,10 +33,13 @@ pub const LARGE_FILE_LINES: usize = 200_000;
 /// Lines longer than this (bytes) are drawn only where visible and measured
 /// as monospace: laying out a megabyte-long line (minified JSON…) every frame
 /// freezes the editor.
-const LONG_LINE_BYTES: usize = 4_000;
+pub(crate) const LONG_LINE_BYTES: usize = 4_000;
 /// Documents with a line longer than this (chars) are not syntax highlighted,
 /// like VS Code's `editor.maxTokenizationLineLength`.
-const MAX_TOKENIZED_LINE_CHARS: usize = 20_000;
+pub(crate) const MAX_TOKENIZED_LINE_CHARS: usize = 20_000;
+/// Documents with more lines than this are highlighted only around what is
+/// visible, not as a whole.
+pub(crate) const VIEWPORT_THRESHOLD: usize = 4000;
 
 /// Pixel width of the first `cols` chars of `line`.
 fn prefix_width(
@@ -2421,7 +2424,6 @@ impl Editor {
                 // window (± MARGIN lines) and re-tokenize when scrolling out of it.
                 // Smaller files tokenize the whole document (accurate), debounced so
                 // typing in a moderately large file stays smooth.
-                const VIEWPORT_THRESHOLD: usize = 4000;
                 let total_lines_hl = self.buffer.num_lines();
                 let tokenizer = (self.cached_max_line_chars() <= MAX_TOKENIZED_LINE_CHARS)
                     .then_some(plugin_manager);

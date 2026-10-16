@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Pull requests: the Git panel lists the open pull requests of the repository's GitHub `origin`. Opening one shows its description, the files it changes and a side-by-side diff with the review comments under the lines they are about. F7 / Shift+F7 jump between changes, a checkbox marks each file as viewed, and Checkout puts the pull request on a local branch. Set a token in Settings → GitHub, or let the IDE use the GitHub CLI's login (`gh auth login`).
+
 ## [0.21.1] - 2026-10-15
 
 ### Fixed

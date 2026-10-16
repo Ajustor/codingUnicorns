@@ -29,6 +29,7 @@ pub mod file_watch;
 pub mod lsp_ops;
 mod navigation;
 pub mod pane2;
+mod pr_ops;
 pub mod session;
 mod update_ops;
 mod workspace_search;
@@ -164,6 +165,8 @@ pub struct CodingUnicorns {
     pub nav_history: NavigationHistory,
     // ── Merge tool ───────────────────────────────────────────────────────────
     pub merge_view: Option<crate::ui::merge_panel::MergeView>,
+    /// Views of the open pull request tabs, by pull request number.
+    pub pr_views: std::collections::HashMap<u64, crate::ui::pr_view::PrView>,
     // ── Split Editor ─────────────────────────────────────────────────────────
     /// Second editor pane (None = no split).
     pub editor2: Option<Editor>,
@@ -346,6 +349,7 @@ impl CodingUnicorns {
             show_close_warning: false,
             confirmed_close: false,
             close_tab_id_pending: None,
+            pr_views: std::collections::HashMap::new(),
             outline_symbols: vec![],
             pending_symbols_id: None,
             outline_last_version: -1,
@@ -1283,6 +1287,7 @@ impl eframe::App for CodingUnicorns {
         if let Some((scope, anchor)) = self.tab_manager.bulk_close.take() {
             self.close_tabs(scope, Some(anchor));
         }
+        self.drop_closed_pr_views();
         self.run_extension_actions(ctx);
         self.apply_gutter_breakpoint_clicks();
         self.tick_session();

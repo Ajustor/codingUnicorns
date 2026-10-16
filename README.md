@@ -35,6 +35,7 @@ Consommation RAM cible : **30–80 MB** contre 300–500 MB pour VSCode.
 - ➕ Stage/unstage par fichier ou en bloc
 - 💬 Commit, Push, Pull depuis l'UI
 - 🔀 3-panel merge tool (Ours | Result | Theirs) pour les conflits
+- 🔍 Revue des pull requests GitHub : liste dans le panneau Git, diff côte à côte avec les commentaires de review, navigation F7 / Maj+F7, fichiers marqués comme vus, checkout sur une branche locale (lecture seule)
 - 📝 Git blame par ligne
 - 🎨 Diff gutter (ajouts/modifications/suppressions)
 - 🌱 Gestion des branches (boutons ou clic droit) : checkout, merge, create (depuis HEAD, une branche ou un commit du graphe), rename, delete avec confirmation

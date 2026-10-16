@@ -75,11 +75,8 @@ impl GitStatus {
             .shorthand()
             .ok_or_else(|| "No branch name".to_string())?
             .to_string();
-        let mut remote = repo
-            .find_remote("origin")
-            .map_err(|e| format!("Remote error: {e}"))?;
         let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
-        push_remote(&mut remote, &[&refspec])?;
+        push_remote(&repo, &[&refspec])?;
         self.refresh();
         Ok(())
     }
@@ -96,10 +93,7 @@ impl GitStatus {
             .shorthand()
             .ok_or_else(|| "No branch name".to_string())?
             .to_string();
-        let mut remote = repo
-            .find_remote("origin")
-            .map_err(|e| format!("Remote error: {e}"))?;
-        fetch_remote(&mut remote, &[&branch_name])?;
+        fetch_remote(&repo, &[&branch_name])?;
         if repo.state() != git2::RepositoryState::Clean {
             self.refresh();
             return Err(

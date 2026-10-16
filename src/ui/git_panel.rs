@@ -20,6 +20,8 @@ pub struct GitPanel {
     focus_branch_input: bool,
     /// Optional message for the next "Stash changes".
     pub stash_message: String,
+    /// The PULL REQUESTS section.
+    pub pulls: crate::ui::pr_list::PrList,
 }
 
 impl GitPanel {
@@ -31,10 +33,16 @@ impl GitPanel {
             checkout_new_branch: true,
             focus_branch_input: false,
             stash_message: String::new(),
+            pulls: crate::ui::pr_list::PrList::new(),
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, git: &mut GitStatus) -> Option<String> {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        git: &mut GitStatus,
+        github_token: &str,
+    ) -> Option<String> {
         // Branch + ahead/behind
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("⎇ {}", git.branch)).strong());
@@ -116,6 +124,8 @@ impl GitPanel {
         self.show_branches(ui, git);
         ui.separator();
         self.show_stashes(ui, git);
+        ui.separator();
+        self.pulls.show(ui, git, github_token);
         ui.separator();
 
         egui::ScrollArea::vertical()
