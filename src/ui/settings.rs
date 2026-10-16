@@ -299,6 +299,28 @@ impl SettingsPanel {
             }
 
             // ═══════════════════════════════════════════════════════════════
+            // GITHUB
+            // ═══════════════════════════════════════════════════════════════
+            if setting_matches(&q, &["github", "token", "pull", "request", "review"]) {
+                section_heading(ui, "GitHub");
+                ui.label("GitHub token");
+                ui.add_space(2.0);
+                changed |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut config.github_token)
+                            .password(true)
+                            .hint_text("(GitHub CLI login)")
+                            .desired_width(ui.available_width()),
+                    )
+                    .changed();
+                hint(
+                    ui,
+                    "Lists the pull requests of the Git panel and reads their review comments. Leave empty to use the GitHub CLI's login (gh auth login); public repositories also work without a token. Stored in the config file.",
+                );
+                ui.add_space(16.0);
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // THEME
             // ═══════════════════════════════════════════════════════════════
             if setting_matches(

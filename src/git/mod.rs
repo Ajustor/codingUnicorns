@@ -1,12 +1,14 @@
 pub mod blame;
 pub mod branches;
 pub mod commit;
+pub mod compare;
 pub mod merge;
 pub mod remote;
 pub mod staging;
 pub mod stash;
 pub mod status;
 pub mod watch;
+pub mod word_diff;
 
 pub use blame::{blame_file, BlameEntry};
 pub use branches::{BranchGraphEntry, BranchInfo};

@@ -1,11 +1,15 @@
 pub mod breadcrumbs;
 pub mod debugger;
+pub mod diff_layout;
+pub mod diff_view;
 pub mod git_panel;
 pub mod image_viewer;
 pub mod layout;
 pub mod merge_panel;
 pub mod minimap;
 pub mod palette;
+pub mod pr_list;
+pub mod pr_view;
 pub mod problems;
 pub mod report;
 pub mod run_panel;

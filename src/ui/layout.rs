@@ -152,9 +152,16 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     // Unsaved edits of a closed tab are discarded with it.
     app.prune_parked_docs();
 
-    // Sync editor modified state → active tab
+    // Sync editor modified state → active tab. Only a file tab: while a
+    // settings, module or pull request tab is shown, the editor still holds
+    // the last file, whose changes must not mark that tab modified.
     if let Some(active_id) = app.tab_manager.active_tab {
-        if let Some(tab) = app.tab_manager.tabs.iter_mut().find(|t| t.id == active_id) {
+        if let Some(tab) = app
+            .tab_manager
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == active_id && t.is_file())
+        {
             tab.is_modified = app.editor.is_modified;
         }
     }
@@ -801,7 +808,12 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         }
                     }
                     SidebarTab::Git => {
-                        let merge_file = app.git_panel.show(ui, &mut app.git_status);
+                        let merge_file =
+                            app.git_panel
+                                .show(ui, &mut app.git_status, &app.config.github_token);
+                        if let Some((repo, pull)) = app.git_panel.pulls.open_request.take() {
+                            app.open_pull_request(repo, pull);
+                        }
                         if let Some(file_path) = merge_file {
                             // Status paths are relative to the repository root.
                             if let Some(root) = app.git_status.workdir() {
@@ -1226,7 +1238,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .map(|t| t.is_settings)
                     .unwrap_or(false);
 
-                if let Some(page) = app.tab_manager.active_page().map(str::to_string) {
+                if let Some(number) = app.tab_manager.active_pr() {
+                    show_pr_tab(app, &mut left_ui, number);
+                } else if let Some(page) = app.tab_manager.active_page().map(str::to_string) {
                     egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(28, 12))
                         .show(&mut left_ui, |ui| {
@@ -1447,7 +1461,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                     .map(|t| t.is_settings)
                     .unwrap_or(false);
 
-                if let Some(page) = app.tab_manager.active_page().map(str::to_string) {
+                if let Some(number) = app.tab_manager.active_pr() {
+                    show_pr_tab(app, ui, number);
+                } else if let Some(page) = app.tab_manager.active_page().map(str::to_string) {
                     egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(28, 12))
                         .show(ui, |ui| {
@@ -1631,6 +1647,22 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
 
     if crate::ui::widgets::render_toasts(ctx, app.palette, app.spacing, &mut app.toasts) {
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Draw the tab of pull request `number` and apply what it asks for.
+fn show_pr_tab(app: &mut CodingUnicorns, ui: &mut egui::Ui, number: u64) {
+    let Some(view) = app.pr_views.get_mut(&number) else {
+        ui.label("This pull request is not loaded any more: open it again from the Git panel.");
+        return;
+    };
+    if let Some(action) = view.show(
+        ui,
+        app.palette,
+        Some(&app.plugin_manager),
+        &mut app.md_cache,
+    ) {
+        app.apply_pr_action(number, action);
     }
 }
 
@@ -1825,8 +1857,35 @@ mod tests {
             ..Default::default()
         });
         Sidebar::new().assert_fits("Git", &mut |ui| {
-            git_panel.show(ui, &mut git);
+            git_panel.show(ui, &mut git, "");
         });
+
+        // PULL REQUESTS section, opened, with a long entry.
+        let folder = dir.path().join("repo-a");
+        let mut git_panel = crate::ui::git_panel::GitPanel::new();
+        git_panel.pulls = crate::ui::pr_list::PrList::loaded_for_test(folder.clone());
+        let mut git = crate::git::GitStatus::new();
+        git.repo_path = Some(folder.clone());
+        let mut sidebar = Sidebar::new();
+        let mut show = |ui: &mut egui::Ui| {
+            git_panel.show(ui, &mut git, "");
+        };
+        sidebar.click("PULL REQUESTS (1)", &mut show);
+        sidebar.assert_fits("Git with pull requests", &mut show);
+        sidebar.click(
+            "A very long pull request title that cannot possibly fit in the sidebar",
+            &mut show,
+        );
+        let (repo, pull) = git_panel.pulls.open_request.take().expect("click recorded");
+        assert_eq!((repo.owner.as_str(), pull.number), ("acme", 7));
+        // Another workspace: the list starts over.
+        git.repo_path = Some(dir.path().join("repo-b"));
+        let mut show = |ui: &mut egui::Ui| {
+            git_panel.show(ui, &mut git, "");
+        };
+        sidebar.frame(vec![], &mut show);
+        assert_eq!(git_panel.pulls.pulls_len(), 0);
+        assert!(!git_panel.pulls.is_loaded_for(&folder));
 
         let mut run_panel = crate::ui::run_panel::RunPanel::new();
         let mut runner = crate::runner::RunManager::new();

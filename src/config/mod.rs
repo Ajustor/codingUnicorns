@@ -271,6 +271,10 @@ pub struct Config {
     /// Relay receiving "Report an Issue" submissions (see `relay/notion-reports`).
     #[serde(default = "default_report_url")]
     pub report_url: String,
+    /// Token for GitHub requests (the Git panel's pull requests). Empty: the
+    /// GitHub CLI's login (`gh auth token`), else none. Not written while empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub github_token: String,
 }
 
 fn default_report_url() -> String {
@@ -433,6 +437,7 @@ impl Default for Config {
             extensions: ExtensionsConfig::default(),
             tour_seen: false,
             report_url: default_report_url(),
+            github_token: String::new(),
         }
     }
 }
@@ -524,6 +529,16 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_token_is_only_written_when_set() {
+        let mut c = Config::default();
+        assert!(c.github_token.is_empty());
+        assert!(!toml::to_string_pretty(&c).unwrap().contains("github_token"));
+        c.github_token = "ghp_x".into();
+        let back: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(back.github_token, "ghp_x");
+    }
 
     const ALL_KEYS: &[(&str, egui::Key)] = &[
         ("A", egui::Key::A),

@@ -341,6 +341,8 @@ impl CodingUnicorns {
         self.config.last_workspace = Some(path_str);
         self.config.save();
         if switching {
+            // Pull request tabs belong to the outgoing workspace's repo.
+            self.tab_manager.close_prs();
             self.switch_session(&path);
             self.start_file_watcher(&path);
         }
@@ -375,8 +377,8 @@ impl CodingUnicorns {
     pub fn load_active_tab(&mut self) {
         if let Some(id) = self.tab_manager.active_tab {
             if let Some(tab) = self.tab_manager.tabs.iter().find(|t| t.id == id) {
-                if tab.page.is_some() {
-                    return; // drawn by its module, no file to load
+                if tab.page.is_some() || tab.pr.is_some() {
+                    return; // drawn by its module or the pull request view: no file to load
                 }
                 let path = tab.path.clone();
                 // Delegate to open_file so image state is handled correctly.

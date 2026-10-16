@@ -9,8 +9,18 @@ pub struct Tab {
     pub is_settings: bool,
     /// Module page shown in this tab (a `[[panels]]` id), instead of a file.
     pub page: Option<String>,
+    /// Pull request shown in this tab (its number), instead of a file.
+    pub pr: Option<u64>,
     /// The file was deleted on disk; the buffer is kept and the title shows it.
     pub is_deleted: bool,
+}
+
+impl Tab {
+    /// Shows a file (or an untitled buffer), not settings, a module page or
+    /// a pull request.
+    pub fn is_file(&self) -> bool {
+        !self.is_settings && self.page.is_none() && self.pr.is_none()
+    }
 }
 
 /// Which tabs a bulk close acts on, relative to an anchor tab.
@@ -66,6 +76,7 @@ impl TabManager {
             is_modified: false,
             is_settings: false,
             page: None,
+            pr: None,
             is_deleted: false,
         });
         self.active_tab = Some(id);
@@ -84,6 +95,7 @@ impl TabManager {
             is_modified: true,
             is_settings: false,
             page: None,
+            pr: None,
             is_deleted: false,
         });
         self.active_tab = Some(id);
@@ -116,6 +128,7 @@ impl TabManager {
             is_modified: false,
             is_settings: true,
             page: None,
+            pr: None,
             is_deleted: false,
         });
         self.active_tab = Some(id);
@@ -142,6 +155,7 @@ impl TabManager {
             is_modified: false,
             is_settings: false,
             page: Some(panel_id.to_string()),
+            pr: None,
             is_deleted: false,
         });
         self.active_tab = Some(id);
@@ -155,11 +169,53 @@ impl TabManager {
     }
 
     /// The active tab is edited in the editor: a file or an untitled buffer,
-    /// not the settings or a module page.
+    /// not the settings, a module page or a pull request.
     pub fn active_is_document(&self) -> bool {
         self.active_tab
             .and_then(|id| self.tabs.iter().find(|t| t.id == id))
-            .is_some_and(|t| !t.is_settings && t.page.is_none())
+            .is_some_and(|t| t.is_file())
+    }
+
+    /// Open (or focus) the tab of pull request `number`.
+    pub fn open_pr(&mut self, number: u64, title: &str) -> usize {
+        if let Some(existing) = self.tabs.iter().find(|t| t.pr == Some(number)) {
+            let id = existing.id;
+            self.active_tab = Some(id);
+            return id;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.tabs.push(Tab {
+            id,
+            path: PathBuf::from(format!("__pr__{number}")),
+            title: pr_tab_title(number, title),
+            is_modified: false,
+            is_settings: false,
+            page: None,
+            pr: Some(number),
+            is_deleted: false,
+        });
+        self.active_tab = Some(id);
+        id
+    }
+
+    /// Pull request of the active tab, if it shows one.
+    pub fn active_pr(&self) -> Option<u64> {
+        let id = self.active_tab?;
+        self.tabs.iter().find(|t| t.id == id)?.pr
+    }
+
+    /// Close every pull request tab (they belong to the workspace's repo).
+    pub fn close_prs(&mut self) {
+        let gone: Vec<usize> = self
+            .tabs
+            .iter()
+            .filter(|t| t.pr.is_some())
+            .map(|t| t.id)
+            .collect();
+        for id in gone {
+            self.close(id);
+        }
     }
 
     /// Close the page tabs whose panel is not in `panels` any more.
@@ -236,7 +292,7 @@ impl TabManager {
         let mut to_close: Option<usize> = None;
         let active_tab = self.active_tab;
 
-        let tabs_data: Vec<(usize, PathBuf, String, bool, bool)> = self
+        let tabs_data: Vec<(usize, PathBuf, String, bool, Option<&'static str>)> = self
             .tabs
             .iter()
             .map(|t| {
@@ -249,14 +305,22 @@ impl TabManager {
                         t.title.clone()
                     },
                     t.is_modified,
-                    t.is_settings || t.page.is_some(),
+                    if t.pr.is_some() {
+                        Some(egui_phosphor::regular::GIT_PULL_REQUEST)
+                    } else if t.page.is_some() {
+                        Some(egui_phosphor::regular::PUZZLE_PIECE)
+                    } else if t.is_settings {
+                        Some(egui_phosphor::regular::GEAR)
+                    } else {
+                        None
+                    },
                 )
             })
             .collect();
 
         ui.horizontal(|ui| {
             ui.style_mut().spacing.item_spacing.x = 0.0;
-            for (tab_id, tab_path, tab_title, tab_modified, tab_is_settings) in &tabs_data {
+            for (tab_id, tab_path, tab_title, tab_modified, tab_special_icon) in &tabs_data {
                 let is_active = active_tab == Some(*tab_id);
                 let bg = if is_active {
                     egui::Color32::from_rgb(30, 30, 30)
@@ -265,14 +329,9 @@ impl TabManager {
                 };
                 let frame_resp = egui::Frame::new().fill(bg).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        if *tab_is_settings {
-                            let icon = if tab_path.starts_with("__page__") {
-                                egui_phosphor::regular::PUZZLE_PIECE
-                            } else {
-                                egui_phosphor::regular::GEAR
-                            };
+                        if let Some(icon) = tab_special_icon {
                             ui.label(
-                                egui::RichText::new(icon)
+                                egui::RichText::new(*icon)
                                     .color(egui::Color32::from_gray(160))
                                     .size(14.0),
                             );
@@ -297,7 +356,7 @@ impl TabManager {
                         };
                         let label_resp = ui.selectable_label(is_active, tab_label);
                         if label_resp.clicked() {
-                            if *tab_is_settings {
+                            if tab_special_icon.is_some() {
                                 activate_id = Some(*tab_id);
                             } else {
                                 to_open = Some(tab_path.clone());
@@ -365,12 +424,25 @@ impl TabManager {
                 to_open = self
                     .active_tab
                     .and_then(|new_id| self.tabs.iter().find(|t| t.id == new_id))
-                    .filter(|t| !t.is_settings && t.page.is_none())
+                    .filter(|t| t.is_file())
                     .map(|t| t.path.clone());
             }
         }
         to_open
     }
+}
+
+/// `#58 title`, the title cut to 40 characters.
+fn pr_tab_title(number: u64, title: &str) -> String {
+    const MAX: usize = 40;
+    let cut: String = title.chars().take(MAX).collect();
+    let short = cut.trim_end();
+    let ellipsis = if title.chars().count() > MAX {
+        "…"
+    } else {
+        ""
+    };
+    format!("#{number} {short}{ellipsis}")
 }
 
 #[cfg(test)]
@@ -807,5 +879,133 @@ mod tests {
         h.frame(&mut tm, vec![ev(false)]);
         assert_eq!(tm.tabs.len(), 2);
         assert_eq!(tm.close_request, Some(b_id));
+    }
+
+    #[test]
+    fn pull_request_tabs_are_singletons_and_not_files() {
+        let mut tm = TabManager::new();
+        let f = tm.open(PathBuf::from("/w/a.rs"), String::new());
+        let p = tm.open_pr(58, "feat: connect servers");
+        assert_eq!(tm.active_pr(), Some(58));
+        assert_eq!(tm.open_pr(58, "feat: connect servers"), p);
+        assert_eq!(tm.tabs.len(), 2);
+        let tab = tm.tabs.iter().find(|t| t.id == p).unwrap();
+        assert_eq!(tab.title, "#58 feat: connect servers");
+        assert!(!tab.is_file());
+        assert!(tm.tabs.iter().find(|t| t.id == f).unwrap().is_file());
+        tm.active_tab = Some(f);
+        assert_eq!(tm.active_pr(), None);
+    }
+
+    #[test]
+    fn long_pull_request_titles_are_cut() {
+        let mut tm = TabManager::new();
+        tm.open_pr(1, &"x".repeat(50));
+        assert_eq!(tm.tabs[0].title, format!("#1 {}…", "x".repeat(40)));
+    }
+
+    #[test]
+    fn clicking_a_pull_request_tab_activates_it_without_opening_a_file() {
+        let mut tm = manager_with(&["/w/a.rs"]);
+        let p = tm.open_pr(7, "Fix");
+        tm.active_tab = Some(tm.tabs[0].id);
+        let mut h = Harness::new();
+        assert_eq!(
+            h.click(&mut tm, "#7 Fix", egui::PointerButton::Primary),
+            None
+        );
+        assert_eq!(tm.active_tab, Some(p));
+    }
+
+    #[test]
+    fn pull_request_and_page_tabs_show_their_icon() {
+        let mut tm = TabManager::new();
+        tm.open_pr(3, "Fix");
+        tm.open_page("docker.images", "Docker");
+        let mut h = Harness::new();
+        h.frame(&mut tm, vec![]);
+        h.rect_of(egui_phosphor::regular::GIT_PULL_REQUEST);
+        h.rect_of(egui_phosphor::regular::PUZZLE_PIECE);
+    }
+
+    #[test]
+    fn close_prs_closes_only_pull_request_tabs() {
+        let mut tm = TabManager::new();
+        let f = tm.open(PathBuf::from("/w/a.rs"), String::new());
+        tm.open_pr(1, "One");
+        tm.open_pr(2, "Two");
+        assert_eq!(tm.active_pr(), Some(2));
+        tm.close_prs();
+        assert_eq!(tm.tabs.len(), 1);
+        assert_eq!(tm.tabs[0].id, f);
+        assert_eq!(tm.active_tab, Some(f));
+        assert_eq!(tm.active_pr(), None);
+        // A later PR with the same number gets a fresh tab.
+        let p = tm.open_pr(1, "One");
+        assert_ne!(p, f);
+    }
+
+    #[test]
+    fn is_file_tells_files_from_the_other_kinds() {
+        let mut tm = TabManager::new();
+        let f = tm.open(PathBuf::from("/w/a.rs"), String::new());
+        let u = tm.open_untitled();
+        let s = tm.open_settings();
+        let g = tm.open_page("p", "Page");
+        let p = tm.open_pr(1, "PR");
+        let is_file = |id| tm.tabs.iter().find(|t| t.id == id).unwrap().is_file();
+        assert!(is_file(f) && is_file(u));
+        assert!(!is_file(s) && !is_file(g) && !is_file(p));
+    }
+
+    #[test]
+    fn pull_request_title_cut_boundaries() {
+        let mut tm = TabManager::new();
+        tm.open_pr(1, &"x".repeat(40));
+        assert_eq!(tm.tabs[0].title, format!("#1 {}", "x".repeat(40)));
+        tm.open_pr(2, &"é".repeat(50));
+        assert_eq!(tm.tabs[1].title, format!("#2 {}…", "é".repeat(40)));
+        // Whitespace left at the cut is trimmed before the ellipsis.
+        tm.open_pr(3, &format!("{} tail", "x".repeat(39)));
+        assert_eq!(tm.tabs[2].title, format!("#3 {}…", "x".repeat(39)));
+    }
+
+    #[test]
+    fn closing_the_active_file_tab_when_a_pr_tab_takes_over_opens_no_file() {
+        let mut tm = TabManager::new();
+        tm.open_pr(5, "PR");
+        tm.open(PathBuf::from("/w/a.rs"), String::new());
+        let mut h = Harness::new();
+        h.frame(&mut tm, vec![]);
+        let pos = h
+            .texts
+            .iter()
+            .filter(|(t, _)| t == "×")
+            .map(|(_, r)| r.center())
+            .nth(1)
+            .unwrap();
+        let ev = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.frame(&mut tm, vec![egui::Event::PointerMoved(pos), ev(true)]);
+        let r = h.frame(&mut tm, vec![ev(false)]);
+        assert_eq!(tm.tabs.len(), 1);
+        assert_eq!(tm.active_pr(), Some(5));
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn closing_a_pull_request_tab_never_asks_for_confirmation() {
+        let mut tm = manager_with(&["/w/a.rs"]);
+        tm.open_pr(5, "PR");
+        let mut h = Harness::new();
+        let r = h.click(&mut tm, "#5 PR", egui::PointerButton::Middle);
+        assert_eq!(tm.tabs.len(), 1);
+        assert_eq!(tm.close_request, None);
+        // The file tab becomes active: it is returned to be loaded.
+        assert_eq!(r, Some(PathBuf::from("/w/a.rs")));
     }
 }

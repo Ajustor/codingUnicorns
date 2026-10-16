@@ -8,6 +8,16 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.22.0] - 2026-10-16
+
+### Ajouts
+
+- Pull requests : le panneau Git liste les pull requests ouvertes du dépôt GitHub `origin`. En ouvrir une affiche sa description, les fichiers modifiés et un diff côte à côte avec les commentaires de review sous les lignes concernées. F7 / Maj+F7 passent d'un changement à l'autre, une case marque chaque fichier comme vu (un chevron replie ou déplie un fichier dans tous les cas), et Checkout place la pull request sur une branche locale. Renseignez un token dans Settings → GitHub, ou laissez l'IDE utiliser la connexion de la CLI GitHub (`gh auth login`).
+
+### Corrections
+
+- Fetch, Pull, Push et l'ouverture d'une pull request n'échouent plus sur les remotes SSH dont la clé n'est pas lisible par le client SSH intégré (comme les clés ECDSA sous Windows) : l'IDE passe alors par le `git` installé, comme le terminal. Toutes les clés privées de `~/.ssh` sont essayées, et le message ne parle de phrase de passe que si la clé en a réellement une.
+
 ## [0.21.1] - 2026-10-15
 
 ### Corrections
