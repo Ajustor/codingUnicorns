@@ -550,7 +550,7 @@ fn header(
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(1.0, p.border),
+        Stroke::new(1.0_f32, p.border),
     );
     let inner = rect.shrink2(egui::vec2(8.0, 2.0));
     // Counts on the right, so a long path is cut instead of pushing them away.
@@ -862,13 +862,16 @@ fn row(
     // (without joining the keyboard focus order: a row is not a widget).
     side_cell(ui, left, old_line, m, id.with("left"), Sense::HOVER);
     let right_resp = side_cell(ui, right, new_line, m, id.with("right"), Sense::CLICK);
-    ui.painter()
-        .vline(rect.center().x, rect.y_range(), Stroke::new(1.0, p.border));
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        Stroke::new(1.0_f32, p.border),
+    );
     if flashing {
         ui.painter().rect_stroke(
             rect,
             0.0,
-            Stroke::new(1.5, p.accent),
+            Stroke::new(1.5_f32, p.accent),
             egui::StrokeKind::Inside,
         );
     }
@@ -1096,7 +1099,7 @@ fn paint_thread(
     );
     egui::Frame::new()
         .fill(p.surface_raised)
-        .stroke(Stroke::new(1.0, p.border))
+        .stroke(Stroke::new(1.0_f32, p.border))
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(egui::Margin::same(8))
         .show(&mut child, |ui| {
