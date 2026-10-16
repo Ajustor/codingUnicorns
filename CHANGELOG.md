@@ -8,11 +8,15 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.22.0] - 2026-10-16
 
 ### Added
 
-- Pull requests: the Git panel lists the open pull requests of the repository's GitHub `origin`. Opening one shows its description, the files it changes and a side-by-side diff with the review comments under the lines they are about. F7 / Shift+F7 jump between changes, a checkbox marks each file as viewed, and Checkout puts the pull request on a local branch. Set a token in Settings → GitHub, or let the IDE use the GitHub CLI's login (`gh auth login`).
+- Pull requests: the Git panel lists the open pull requests of the repository's GitHub `origin`. Opening one shows its description, the files it changes and a side-by-side diff with the review comments under the lines they are about. F7 / Shift+F7 jump between changes, a checkbox marks each file as viewed (a chevron folds or unfolds a file either way), and Checkout puts the pull request on a local branch. Set a token in Settings → GitHub, or let the IDE use the GitHub CLI's login (`gh auth login`).
+
+### Fixed
+
+- Fetch, Pull, Push and opening a pull request no longer fail on SSH remotes with keys the built-in SSH client can't read (such as ECDSA keys on Windows): the IDE then goes through the installed `git`, like the terminal. Every private key in `~/.ssh` is tried, and the message only mentions a passphrase when the key really has one.
 
 ## [0.21.1] - 2026-10-15
 
