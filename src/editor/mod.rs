@@ -1157,9 +1157,14 @@ impl Editor {
                 // A free focus is only reclaimed once no other widget held it last
                 // frame: when a text field gives focus up on Enter, that same Enter
                 // is still in this frame's events and must not become a newline.
+                // Pressing on the text always takes focus, even with the find bar
+                // open: otherwise a selection made there could not be copied, as
+                // Ctrl+C would still go to the find field.
                 let has_focus = response.has_focus();
                 let focused = ui.memory(|m| m.focused());
-                if !has_focus && !self.show_find && !self.show_goto_line {
+                if !has_focus && (response.clicked() || response.drag_started()) {
+                    ui.memory_mut(|m| m.request_focus(response.id));
+                } else if !has_focus && !self.show_find && !self.show_goto_line {
                     let explicit = std::mem::take(&mut self.focus_requested);
                     let reclaim = focused.is_none() && !self.other_had_focus;
                     if response.clicked() || explicit || reclaim {
@@ -5243,6 +5248,44 @@ foo
 bar",
             "Enter never reaches the buffer"
         );
+    }
+
+    #[test]
+    fn selecting_in_the_editor_with_find_open_lets_ctrl_c_copy_it() {
+        let (mut h, mut ed) = setup(&format!("{}hello foo world\nlast", "x\n".repeat(15)));
+        h.idle(&mut ed);
+        h.press(&mut ed, Key::F, CTRL);
+        h.idle(&mut ed);
+        h.idle(&mut ed);
+        h.type_text(&mut ed, "foo");
+        assert_eq!(ed.find_query, "foo");
+
+        // Drag-select "hello" (well below the find bar) while it stays open.
+        let p1 = Harness::pos(&ed, 15, 0);
+        let p2 = Harness::pos(&ed, 15, 5);
+        h.frame(
+            &mut ed,
+            vec![Event::PointerMoved(p1), Harness::button(p1, true, NONE)],
+            NONE,
+        );
+        h.frame(
+            &mut ed,
+            vec![Event::PointerMoved(p1 + egui::vec2(0.0, 8.0))],
+            NONE,
+        );
+        h.frame(&mut ed, vec![Event::PointerMoved(p2)], NONE);
+        h.frame(&mut ed, vec![Harness::button(p2, false, NONE)], NONE);
+        assert_eq!(ed.selected_text().as_deref(), Some("hello"));
+        assert!(ed.show_find, "the find bar stays open");
+        assert!(ed.has_focus, "the editor took the focus");
+
+        let out = h.frame(&mut ed, vec![Event::Copy], NONE);
+        assert_eq!(copied(&out).as_deref(), Some("hello"));
+        assert_eq!(ed.find_query, "foo");
+
+        // Typing now edits the buffer, not the find field.
+        h.type_text(&mut ed, "X");
+        assert_eq!(ed.find_query, "foo");
     }
 
     #[test]

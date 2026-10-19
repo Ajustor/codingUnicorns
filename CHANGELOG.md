@@ -8,6 +8,14 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.22.1] - 2026-10-19
+
+### Fixed
+
+- With the find bar open, selecting text in the editor and pressing Ctrl+C copies the selection instead of going to the find field.
+- In workspace search, two files with the same name are listed separately, with their folder next to the name: opening one no longer folds or unfolds the other.
+- In the explorer, Ctrl+C then Ctrl+V on a file copies it next to the original as `name-copie.ext`, instead of duplicating the editor's current line.
+
 ## [0.22.0] - 2026-10-16
 
 ### Added

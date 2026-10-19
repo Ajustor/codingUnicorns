@@ -32,6 +32,11 @@ pub struct FileTree {
     pub show_gitignored: bool,
     /// Git changes, colouring the changed files and the folders holding them.
     marks: GitMarks,
+    /// The tree was clicked last: Ctrl+C / Ctrl+V act on its files, not on
+    /// the editor (which keeps the keyboard focus).
+    active: bool,
+    /// File copied with Ctrl+C, duplicated by Ctrl+V.
+    clipboard: Option<PathBuf>,
 }
 
 /// What git says about an explorer entry, shown by its colour. Ordered by
@@ -98,6 +103,8 @@ pub enum FileTreeAction {
     Delete(PathBuf),
     RevealInExplorer(PathBuf),
     CopyPath(PathBuf),
+    /// Copy a file into a folder, under a free "-copie" name.
+    Duplicate(PathBuf, PathBuf), // file, destination dir
 }
 
 impl FileTree {
@@ -110,6 +117,8 @@ impl FileTree {
             repo: None,
             show_gitignored: false,
             marks: GitMarks::default(),
+            active: false,
+            clipboard: None,
         }
     }
 
@@ -171,6 +180,9 @@ impl FileTree {
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
         let mut opened = None;
         let mut action: Option<FileTreeAction> = None;
+        if self.active && self.rename_state.is_none() {
+            action = self.handle_clipboard_keys(ui);
+        }
         let mut rename_state = self.rename_state.take();
         let mut ctx = ShowContext {
             selected: &mut self.selected,
@@ -183,6 +195,12 @@ impl FileTree {
         };
         if let Some(root) = &mut self.root {
             Self::show_entry_recursive(ui, root, &mut ctx);
+        }
+        // A press inside the tree makes it the target of Ctrl+C / Ctrl+V,
+        // one anywhere else hands them back.
+        if ui.input(|i| i.pointer.any_pressed()) {
+            let pos = ui.input(|i| i.pointer.interact_pos());
+            self.active = pos.is_some_and(|p| ui.min_rect().contains(p));
         }
         self.rename_state = rename_state;
         // Store non-open actions for the caller to pick up
@@ -197,6 +215,50 @@ impl FileTree {
             }
         }
         opened
+    }
+
+    /// Take Ctrl+C / Ctrl+V out of this frame's input, before the editor sees
+    /// them: copy the selected file, or ask to duplicate the copied one.
+    /// Any other key means the user is typing elsewhere: the tree lets go.
+    fn handle_clipboard_keys(&mut self, ui: &mut egui::Ui) -> Option<FileTreeAction> {
+        let (mut copy, mut paste) = (false, false);
+        ui.input_mut(|i| {
+            i.events.retain(|e| match e {
+                egui::Event::Copy => {
+                    copy = true;
+                    false
+                }
+                egui::Event::Paste(_) => {
+                    paste = true;
+                    false
+                }
+                egui::Event::Key {
+                    key: key @ (egui::Key::C | egui::Key::V),
+                    modifiers,
+                    ..
+                } if modifiers.command_only() => {
+                    copy |= *key == egui::Key::C;
+                    paste |= *key == egui::Key::V;
+                    false
+                }
+                egui::Event::Key { pressed: true, .. } | egui::Event::Text(_) => {
+                    self.active = false;
+                    true
+                }
+                _ => true,
+            })
+        });
+        if copy && self.selected.is_some() {
+            self.clipboard = self.selected.clone();
+        }
+        let src = self.clipboard.clone().filter(|_| paste)?;
+        let dir = self
+            .selected
+            .as_deref()
+            .unwrap_or(&src)
+            .parent()?
+            .to_path_buf();
+        Some(FileTreeAction::Duplicate(src, dir))
     }
 
     fn show_entry_recursive(ui: &mut egui::Ui, entry: &mut FileEntry, ctx: &mut ShowContext<'_>) {
@@ -343,6 +405,30 @@ impl FileTree {
             }
         }
     }
+}
+
+/// Where a copy of `file` goes in `dir`: "name-copie.ext", then
+/// "name-copie-2.ext"… whichever is free first.
+pub fn copy_destination(file: &Path, dir: &Path) -> PathBuf {
+    let stem = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = file
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    (1..)
+        .map(|n| {
+            let suffix = if n == 1 {
+                String::new()
+            } else {
+                format!("-{n}")
+            };
+            dir.join(format!("{stem}-copie{suffix}{ext}"))
+        })
+        .find(|p| !p.exists())
+        .expect("an unbounded range always finds a free name")
 }
 
 /// Colour of an entry, faded when `.gitignore` excludes it.
@@ -768,6 +854,55 @@ mod tests {
                 (c, other) => panic!("{item}: expected {c}, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn ctrl_c_ctrl_v_on_a_clicked_file_asks_to_duplicate_it() {
+        let dir = workspace();
+        let file = dir.path().join("readme.md");
+        let mut t = loaded(dir.path());
+        let mut h = Harness::new();
+        h.click(&mut t, "readme.md", egui::PointerButton::Primary);
+        h.frame(&mut t, vec![egui::Event::Copy]);
+        assert!(t.context_action.is_none(), "copying alone does nothing");
+        h.frame(&mut t, vec![egui::Event::Paste("clipboard text".into())]);
+        match t.context_action.take() {
+            Some(FileTreeAction::Duplicate(src, to)) => {
+                assert_eq!(src, file);
+                assert_eq!(to, dir.path());
+            }
+            other => panic!("expected Duplicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typing_elsewhere_gives_ctrl_v_back_to_the_editor() {
+        let dir = workspace();
+        let mut t = loaded(dir.path());
+        let mut h = Harness::new();
+        h.click(&mut t, "readme.md", egui::PointerButton::Primary);
+        h.frame(&mut t, vec![egui::Event::Copy]);
+        h.frame(&mut t, vec![egui::Event::Text("x".into())]);
+        h.frame(&mut t, vec![egui::Event::Paste("text".into())]);
+        assert!(t.context_action.is_none());
+    }
+
+    #[test]
+    fn copy_destination_picks_a_free_copie_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("notes.md");
+        fs::write(&src, "").unwrap();
+        let first = copy_destination(&src, dir.path());
+        assert_eq!(first, dir.path().join("notes-copie.md"));
+        fs::write(&first, "").unwrap();
+        assert_eq!(
+            copy_destination(&src, dir.path()),
+            dir.path().join("notes-copie-2.md")
+        );
+        assert_eq!(
+            copy_destination(Path::new("Makefile"), dir.path()),
+            dir.path().join("Makefile-copie")
+        );
     }
 
     #[test]
