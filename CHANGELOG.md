@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.22.3] - 2026-10-19
+
+### Fixed
+
+- In the delete confirmation, Enter deletes (Tab moves to Cancel), instead of typing a new line in the open file.
+
 ## [0.22.2] - 2026-10-19
 
 ### Fixed

@@ -65,10 +65,18 @@ fn choice_dialog(
         ui.add_space(12.0);
         let mut choice: Option<bool> = None;
         ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
+            let cancel = ui.button("Cancel");
+            let confirm = ui.add(confirm);
+            // Focus the confirm button unless Tab moved to Cancel: Enter then
+            // confirms, and the editor behind, which takes back a free focus,
+            // can't get the key.
+            if !cancel.has_focus() && !confirm.has_focus() {
+                confirm.request_focus();
+            }
+            if cancel.clicked() {
                 choice = Some(false);
             }
-            if ui.add(confirm).clicked() {
+            if confirm.clicked() {
                 choice = Some(true);
             }
         });
@@ -141,7 +149,7 @@ pub fn render_toasts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
+    use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense};
     use std::time::{Duration, Instant};
 
     fn palette() -> Palette {
@@ -152,6 +160,8 @@ mod tests {
         RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))),
             events,
+            // Without it, no widget ever has the keyboard focus.
+            focused: true,
             ..Default::default()
         }
     }
@@ -418,6 +428,63 @@ mod tests {
             modifiers: Modifiers::NONE,
         }]);
         assert_eq!(r, Some(false));
+    }
+
+    fn press(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn confirm_dialog_enter_confirms() {
+        let d = dialog();
+        let (r, _) = d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(r, Some(true));
+    }
+
+    #[test]
+    fn confirm_dialog_enter_on_cancel_after_tab_cancels() {
+        let d = dialog();
+        d.frame(vec![press(Key::Tab, Modifiers::SHIFT)]);
+        d.frame(vec![]);
+        let (r, _) = d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(r, Some(false));
+    }
+
+    #[test]
+    fn confirm_dialog_takes_the_focus_from_widgets_behind_it() {
+        // Like the code editor: an area that takes the focus back whenever no
+        // widget holds it, and reads raw key events while it has it.
+        let ctx = egui::Context::default();
+        let mut enters_behind = 0;
+        let mut run = |open: bool, events: Vec<Event>| {
+            let _ = ctx.run(input(events), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = ui.allocate_response(egui::vec2(200.0, 200.0), Sense::click());
+                    if ui.memory(|m| m.focused()).is_none() {
+                        r.request_focus();
+                    }
+                    if r.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        enters_behind += 1;
+                    }
+                });
+                if open {
+                    let _ = confirm_dialog(ctx, palette(), "Delete file?", "Sure?");
+                }
+            });
+        };
+        run(false, vec![]);
+        run(false, vec![]);
+        for _ in 0..3 {
+            run(true, vec![]);
+        }
+        run(true, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(enters_behind, 0, "Enter must not reach the widget behind");
     }
 
     #[test]

@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.22.3] - 2026-10-19
+
+### Corrections
+
+- Dans la confirmation de suppression, Entrée supprime (Tab passe sur Cancel), au lieu d'insérer un saut de ligne dans le fichier ouvert.
+
 ## [0.22.2] - 2026-10-19
 
 ### Corrections
