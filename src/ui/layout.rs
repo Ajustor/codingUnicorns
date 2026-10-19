@@ -792,6 +792,18 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                 FileTreeAction::CopyPath(path) => {
                                     ctx.copy_text(path.to_string_lossy().to_string());
                                 }
+                                FileTreeAction::Duplicate(src, dir) => {
+                                    let dest = crate::filetree::copy_destination(&src, &dir);
+                                    match std::fs::copy(&src, &dest) {
+                                        Ok(_) => {
+                                            app.file_tree.reload_children();
+                                            app.file_tree.selected = Some(dest);
+                                        }
+                                        Err(e) => {
+                                            app.toast(format!("Could not copy the file: {e}"))
+                                        }
+                                    }
+                                }
                                 FileTreeAction::RevealInExplorer(path) => {
                                     if let Err(e) = crate::filetree::reveal(&path) {
                                         app.toast(format!("Could not open the file manager: {e}"));
