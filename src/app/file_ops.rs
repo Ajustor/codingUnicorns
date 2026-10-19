@@ -107,13 +107,19 @@ impl CodingUnicorns {
         let Some(server) = &self.single_instance else {
             return;
         };
+        // Other launches pick their window by the folder it shows.
+        server.set_workspace(self.workspace_path.as_deref());
         let paths: Vec<PathBuf> = server.rx.try_iter().collect();
         if paths.is_empty() {
             return;
         }
         for path in paths {
             if path.is_dir() {
-                self.open_folder(path);
+                // `cu .` from the folder already open: only bring the window up.
+                let shown = self.workspace_path.as_deref().map(std::fs::canonicalize);
+                if shown.and_then(Result::ok) != std::fs::canonicalize(&path).ok() {
+                    self.open_folder(path);
+                }
             } else if path.is_file() {
                 self.open_file(path);
             } else {
