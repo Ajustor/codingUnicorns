@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.23.0] - 2026-10-19
+
+### Modifications
+
+- `cu .` (ou `cu <dossier>`) ouvre le dossier dans une nouvelle fenêtre, sauf si une fenêtre l'a déjà ouvert : celle-ci passe alors au premier plan. Avant, il remplaçait le projet de la fenêtre en cours. Un fichier s'ouvre toujours dans la fenêtre dont le dossier le contient, sinon dans la fenêtre la plus récente.
+
 ## [0.22.3] - 2026-10-19
 
 ### Corrections
