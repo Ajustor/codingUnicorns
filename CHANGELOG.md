@@ -8,6 +8,13 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.22.2] - 2026-10-19
+
+### Fixed
+
+- In the explorer, Ctrl+V pastes a copied file once, instead of twice.
+- In the explorer, the Delete key asks to delete the selected file, like Delete File in its context menu.
+
 ## [0.22.1] - 2026-10-19
 
 ### Fixed
