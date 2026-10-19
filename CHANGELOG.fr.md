@@ -8,6 +8,14 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.22.1] - 2026-10-19
+
+### Corrections
+
+- Avec la barre de recherche ouverte, sélectionner du texte dans l'éditeur puis faire Ctrl+C copie la sélection au lieu d'aller dans le champ de recherche.
+- Dans la recherche globale, deux fichiers portant le même nom sont listés séparément, avec leur dossier à côté du nom : en ouvrir un ne replie ou ne déplie plus l'autre.
+- Dans l'explorateur, Ctrl+C puis Ctrl+V sur un fichier le copie à côté de l'original sous le nom `nom-copie.ext`, au lieu de dupliquer la ligne courante de l'éditeur.
+
 ## [0.22.0] - 2026-10-16
 
 ### Ajouts
