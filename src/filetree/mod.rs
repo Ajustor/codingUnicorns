@@ -217,11 +217,12 @@ impl FileTree {
         opened
     }
 
-    /// Take Ctrl+C / Ctrl+V out of this frame's input, before the editor sees
-    /// them: copy the selected file, or ask to duplicate the copied one.
-    /// Any other key means the user is typing elsewhere: the tree lets go.
+    /// Take Ctrl+C / Ctrl+V / Delete out of this frame's input, before the
+    /// editor sees them: copy the selected file, ask to duplicate the copied
+    /// one, or ask to delete the selected one. Any other key means the user is
+    /// typing elsewhere: the tree lets go.
     fn handle_clipboard_keys(&mut self, ui: &mut egui::Ui) -> Option<FileTreeAction> {
-        let (mut copy, mut paste) = (false, false);
+        let (mut copy, mut paste, mut delete) = (false, false, false);
         ui.input_mut(|i| {
             i.events.retain(|e| match e {
                 egui::Event::Copy => {
@@ -232,13 +233,26 @@ impl FileTree {
                     paste = true;
                     false
                 }
+                // egui-winit sends Copy / Paste with the key press: only a
+                // press acts, the release is just swallowed (it used to
+                // paste a second time).
                 egui::Event::Key {
                     key: key @ (egui::Key::C | egui::Key::V),
+                    pressed,
                     modifiers,
                     ..
                 } if modifiers.command_only() => {
-                    copy |= *key == egui::Key::C;
-                    paste |= *key == egui::Key::V;
+                    copy |= *pressed && *key == egui::Key::C;
+                    paste |= *pressed && *key == egui::Key::V;
+                    false
+                }
+                egui::Event::Key {
+                    key: egui::Key::Delete,
+                    pressed,
+                    modifiers,
+                    ..
+                } if modifiers.is_none() => {
+                    delete |= *pressed;
                     false
                 }
                 egui::Event::Key { pressed: true, .. } | egui::Event::Text(_) => {
@@ -248,6 +262,9 @@ impl FileTree {
                 _ => true,
             })
         });
+        if delete {
+            return self.selected.clone().map(FileTreeAction::Delete);
+        }
         if copy && self.selected.is_some() {
             self.clipboard = self.selected.clone();
         }
@@ -872,6 +889,47 @@ mod tests {
                 assert_eq!(to, dir.path());
             }
             other => panic!("expected Duplicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_ctrl_v_pastes_once() {
+        let dir = workspace();
+        let mut t = loaded(dir.path());
+        let mut h = Harness::new();
+        h.click(&mut t, "readme.md", egui::PointerButton::Primary);
+        h.frame(&mut t, vec![egui::Event::Copy]);
+        let v = |pressed| egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            // What egui-winit sends for Ctrl on Windows / Linux.
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+        };
+        let mut pastes = 0;
+        for events in [
+            vec![v(true), egui::Event::Paste("text".into())],
+            vec![v(false)],
+        ] {
+            h.frame(&mut t, events);
+            if let Some(FileTreeAction::Duplicate(..)) = t.context_action.take() {
+                pastes += 1;
+            }
+        }
+        assert_eq!(pastes, 1, "releasing V must not paste again");
+    }
+
+    #[test]
+    fn delete_key_asks_to_delete_the_selected_file() {
+        let dir = workspace();
+        let mut t = loaded(dir.path());
+        let mut h = Harness::new();
+        h.click(&mut t, "readme.md", egui::PointerButton::Primary);
+        h.key(&mut t, egui::Key::Delete);
+        match t.context_action.take() {
+            Some(FileTreeAction::Delete(p)) => assert_eq!(p, dir.path().join("readme.md")),
+            other => panic!("expected Delete, got {other:?}"),
         }
     }
 
