@@ -390,12 +390,40 @@ impl WorkspaceSearch {
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+                        // Show the parent folder so same-named files can be told apart.
+                        let parent = file_path
+                            .parent()
+                            .map(|p| match workspace {
+                                Some(ws) => p.strip_prefix(ws).unwrap_or(p),
+                                None => p,
+                            })
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
+                            .unwrap_or_default();
+                        let mut header = egui::text::LayoutJob::default();
+                        header.append(
+                            &format!("{} ({})", file_name, file_matches.len()),
+                            0.0,
+                            egui::TextFormat::simple(
+                                egui::FontId::proportional(12.0),
+                                egui::Color32::from_rgb(100, 160, 255),
+                            ),
+                        );
+                        if !parent.is_empty() {
+                            header.append(
+                                &parent,
+                                6.0,
+                                egui::TextFormat::simple(
+                                    egui::FontId::proportional(11.0),
+                                    egui::Color32::GRAY,
+                                ),
+                            );
+                        }
 
-                        ui.collapsing(
-                            egui::RichText::new(format!("{} ({})", file_name, file_matches.len()))
-                                .size(12.0)
-                                .color(egui::Color32::from_rgb(100, 160, 255)),
-                            |ui| {
+                        // The header text is not unique (two `mod.rs`), so key the
+                        // open/closed state on the full path instead.
+                        egui::CollapsingHeader::new(header)
+                            .id_salt(file_path)
+                            .show(ui, |ui| {
                                 for m in file_matches {
                                     let text = format!("{}: {}", m.line_number, m.line_text.trim());
                                     // Cut on a char boundary: byte 80 can fall inside
@@ -424,8 +452,7 @@ impl WorkspaceSearch {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     }
                                 }
-                            },
-                        );
+                            });
                     }
                 });
         }
