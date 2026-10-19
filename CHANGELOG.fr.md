@@ -8,6 +8,13 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.22.2] - 2026-10-19
+
+### Corrections
+
+- Dans l'explorateur, Ctrl+V colle une seule fois le fichier copié, au lieu de deux.
+- Dans l'explorateur, la touche Suppr propose de supprimer le fichier sélectionné, comme Delete File dans son menu contextuel.
+
 ## [0.22.1] - 2026-10-19
 
 ### Corrections
