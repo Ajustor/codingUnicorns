@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.23.0] - 2026-10-19
+
+### Changed
+
+- `cu .` (or `cu <folder>`) opens the folder in a new window, unless a window already has that folder open, which then comes to the front. It used to replace the project of the running window. A file still opens in the window whose folder holds it, else in the most recent window.
+
 ## [0.22.3] - 2026-10-19
 
 ### Fixed
