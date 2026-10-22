@@ -13,6 +13,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Windows: "Restart now" in the update dialog installs the update even when the app was not started from a terminal. It looked PowerShell up on the `PATH`, and when a `PATH` entry was broken (stray quotes), nothing was installed; it now uses PowerShell's full path, and still installs the update if the relaunch can't be prepared.
+- Selecting with the mouse lands under the pointer along the whole line. Columns were measured a fraction of a pixel too wide, so the caret drifted left of the pointer, about one column every 30 characters.
+- After scrolling sideways, the caret, the selection and the underlines stay on the text instead of being shifted by the scrolled distance.
 
 ## [0.23.1] - 2026-10-22
 

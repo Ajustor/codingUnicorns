@@ -13,6 +13,8 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - Windows : « Restart now » dans la fenêtre de mise à jour installe la mise à jour même quand l'application n'a pas été lancée depuis un terminal. Elle cherchait PowerShell dans le `PATH`, et quand une entrée du `PATH` était cassée (guillemets en trop), rien n'était installé ; elle utilise maintenant le chemin complet de PowerShell, et installe quand même la mise à jour si le redémarrage ne peut pas être préparé.
+- La sélection à la souris tombe sous le pointeur sur toute la ligne. Les colonnes étaient mesurées un peu trop larges, et le curseur se décalait à gauche du pointeur d'environ une colonne tous les 30 caractères.
+- Après un défilement horizontal, le curseur, la sélection et les soulignements restent sur le texte au lieu d'être décalés de la distance défilée.
 
 ## [0.23.1] - 2026-10-22
 
