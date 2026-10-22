@@ -1160,11 +1160,15 @@ impl Editor {
                 // Pressing on the text always takes focus, even with the find bar
                 // open: otherwise a selection made there could not be copied, as
                 // Ctrl+C would still go to the find field.
+                // Nothing is taken while a modal dialog is open over the editor:
+                // the modal blocks clicks, not keys, so typing after a click on one
+                // of its buttons would land in the file behind it.
                 let has_focus = response.has_focus();
                 let focused = ui.memory(|m| m.focused());
+                let under_modal = !ui.memory(|m| m.is_above_modal_layer(ui.layer_id()));
                 if !has_focus && (response.clicked() || response.drag_started()) {
                     ui.memory_mut(|m| m.request_focus(response.id));
-                } else if !has_focus && !self.show_find && !self.show_goto_line {
+                } else if !has_focus && !self.show_find && !self.show_goto_line && !under_modal {
                     let explicit = std::mem::take(&mut self.focus_requested);
                     let reclaim = focused.is_none() && !self.other_had_focus;
                     if response.clicked() || explicit || reclaim {
@@ -4779,6 +4783,66 @@ mod tests {
         assert_eq!(ed.buffer.to_string(), "one \nthree ");
         assert_eq!(ed.cursor.position(), (0, 4));
         assert_eq!(ed.extra_cursors[0].position(), (1, 6));
+    }
+
+    #[test]
+    fn typing_under_an_open_modal_does_not_reach_the_editor() {
+        let (mut h, mut ed) = setup("abc");
+        let palette = crate::ui::theme::Palette::from_theme(&h.config.theme);
+        let run = |h: &mut Harness, ed: &mut Editor, events: Vec<Event>, modal: bool| {
+            h.time += 1.0 / 60.0;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                time: Some(h.time),
+                events,
+                focused: true,
+                ..Default::default()
+            };
+            let (config, plugins, bps) = (&h.config, &h.plugins, &h.breakpoints);
+            let _ = h.ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ed.show(
+                        ui,
+                        config,
+                        plugins,
+                        None,
+                        bps,
+                        palette,
+                        crate::ui::theme::Spacing::default(),
+                    );
+                });
+                if modal {
+                    // A dialog whose button was just clicked: nothing in it
+                    // holds the focus.
+                    egui::Modal::new(egui::Id::new("dialog")).show(ctx, |ui| {
+                        ui.label("Bug / Idea");
+                    });
+                }
+            });
+        };
+        run(&mut h, &mut ed, vec![], false);
+        run(&mut h, &mut ed, vec![], false);
+        assert!(ed.has_focus, "no dialog: the editor takes the free focus");
+        // The dialog opens, then a click on one of its buttons frees the focus.
+        run(&mut h, &mut ed, vec![], true);
+        h.ctx.memory_mut(|m| m.stop_text_input());
+        for _ in 0..3 {
+            run(&mut h, &mut ed, vec![], true);
+        }
+        assert!(!ed.has_focus, "the dialog is over the editor");
+        run(&mut h, &mut ed, vec![Event::Text("x".into())], true);
+        assert_eq!(
+            ed.buffer.to_string(),
+            "abc",
+            "typing stayed out of the file"
+        );
+        // Once the dialog closes, the editor takes the focus back.
+        run(&mut h, &mut ed, vec![], false);
+        run(&mut h, &mut ed, vec![], false);
+        assert!(ed.has_focus);
     }
 
     #[test]

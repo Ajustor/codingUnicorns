@@ -13,6 +13,7 @@ numéros de version suivent le [versionnage sémantique](https://semver.org/lang
 ### Corrections
 
 - F2 dans l'explorateur renomme le fichier sélectionné sur place, en partant de son nom actuel. Avant, il ouvrait « Rename Symbol », qui ne faisait rien sans serveur de langage ; ce cas affiche maintenant un message au lieu de se fermer sans rien dire.
+- Dans « Report an Issue », choisir Bug ou Idea n'envoie plus la saisie suivante dans le fichier ouvert : le champ du titre garde le focus. Plus généralement, l'éditeur ne reprend plus le clavier tant qu'une fenêtre de dialogue est ouverte par-dessus.
 
 ## [0.23.0] - 2026-10-19
 
