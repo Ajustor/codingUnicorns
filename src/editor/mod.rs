@@ -906,11 +906,16 @@ impl Editor {
         let line_height = self.line_height;
         let font_id = egui::FontId::monospace(config.font.size);
 
-        // Measure actual monospace character width from the font (replaces hardcoded 8.5)
+        // The advance from one character to the next as egui lays text out
+        // (rounded to pixels). One "M" alone is wider by a fraction of a pixel:
+        // mapping the pointer with it drifted a column every ~30 characters.
         let char_width = ui.fonts(|f| {
-            f.layout_no_wrap("M".into(), font_id.clone(), egui::Color32::WHITE)
-                .size()
-                .x
+            let width = |s: &str| {
+                f.layout_no_wrap(s.into(), font_id.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            };
+            width("MM") - width("M")
         });
         self.char_width = char_width;
 
@@ -2810,6 +2815,14 @@ impl Editor {
 
                     let line = self.buffer.line(line_idx);
                     let x_start = rect.min.x + gutter_width;
+                    // Where column 0 is painted: the text scrolls horizontally, the
+                    // gutter doesn't. What is drawn over the text uses this origin and
+                    // `text_painter`, clipped to the text area.
+                    let text_origin = x_start - self.scroll_offset.x;
+                    let text_painter = painter.with_clip_rect(egui::Rect::from_min_max(
+                        egui::pos2(x_start, rect.min.y),
+                        rect.max,
+                    ));
 
                     if self.wrap.active() {
                         let wp = wrap::WrapPaint {
@@ -2903,12 +2916,12 @@ impl Editor {
                                 self.buffer.line_len(line_idx)
                             };
                             // Measure pixel positions using font layout for accuracy
-                            let sx = x_start
+                            let sx = text_origin
                                 + prefix_width(ui, &line, sel_start_col, &font_id, char_width);
-                            let ex = x_start
+                            let ex = text_origin
                                 + prefix_width(ui, &line, sel_end_col, &font_id, char_width);
                             if ex > sx {
-                                painter.rect_filled(
+                                text_painter.rect_filled(
                                     egui::Rect::from_min_max(
                                         egui::pos2(sx, y),
                                         egui::pos2(ex, y + line_height),
@@ -2930,12 +2943,12 @@ impl Editor {
                                 } else {
                                     self.buffer.line_len(line_idx)
                                 };
-                                let sx = x_start
+                                let sx = text_origin
                                     + prefix_width(ui, &line, sel_start_col, &font_id, char_width);
-                                let ex = x_start
+                                let ex = text_origin
                                     + prefix_width(ui, &line, sel_end_col, &font_id, char_width);
                                 if ex > sx {
-                                    painter.rect_filled(
+                                    text_painter.rect_filled(
                                         egui::Rect::from_min_max(
                                             egui::pos2(sx, y),
                                             egui::pos2(ex, y + line_height),
@@ -2951,7 +2964,8 @@ impl Editor {
                     let (cur_row, cur_col) = self.cursor.position();
                     if line_idx == cur_row {
                         // Cursor: measure actual pixel offset of char col in the line
-                        let cx = x_start + prefix_width(ui, &line, cur_col, &font_id, char_width);
+                        let cx =
+                            text_origin + prefix_width(ui, &line, cur_col, &font_id, char_width);
                         // Blink: 530ms on / 530ms off, reset on any input event.
                         let blink_ms = self.cursor_blink_epoch.elapsed().as_millis() % 1060;
                         let cursor_visible = blink_ms < 530;
@@ -2959,7 +2973,7 @@ impl Editor {
                         // the focus.
                         if self.has_focus {
                             if cursor_visible {
-                                painter.line_segment(
+                                text_painter.line_segment(
                                     [egui::pos2(cx, y), egui::pos2(cx, y + line_height)],
                                     egui::Stroke::new(2.0_f32, cursor_color),
                                 );
@@ -2983,8 +2997,9 @@ impl Editor {
                     for extra_cur in &self.extra_cursors {
                         let (ecr, ecc) = extra_cur.position();
                         if line_idx == ecr {
-                            let ecx = x_start + prefix_width(ui, &line, ecc, &font_id, char_width);
-                            painter.line_segment(
+                            let ecx =
+                                text_origin + prefix_width(ui, &line, ecc, &font_id, char_width);
+                            text_painter.line_segment(
                                 [egui::pos2(ecx, y), egui::pos2(ecx, y + line_height)],
                                 egui::Stroke::new(2.0_f32, accent_color),
                             );
@@ -3118,14 +3133,14 @@ impl Editor {
                     if let Some((hover_row, hover_start, hover_end)) = self.ctrl_hover_word_bounds {
                         if line_idx == hover_row {
                             let line = self.buffer.line(line_idx);
-                            let underline_x_start = x_start
+                            let underline_x_start = text_origin
                                 + ui.fonts(|f| {
                                     let text: String = line.chars().take(hover_start).collect();
                                     f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
                                         .size()
                                         .x
                                 });
-                            let underline_x_end = x_start
+                            let underline_x_end = text_origin
                                 + ui.fonts(|f| {
                                     let text: String = line.chars().take(hover_end).collect();
                                     f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
@@ -3133,7 +3148,7 @@ impl Editor {
                                         .x
                                 });
                             let underline_y = y + line_height - 2.0;
-                            painter.line_segment(
+                            text_painter.line_segment(
                                 [
                                     egui::pos2(underline_x_start, underline_y),
                                     egui::pos2(underline_x_end, underline_y),
@@ -3147,7 +3162,7 @@ impl Editor {
                     for diag in &self.diagnostics {
                         if diag.line as usize == line_idx {
                             let underline_y = y + line_height - 2.0;
-                            let x_diag_start = x_start + diag.col as f32 * char_width;
+                            let x_diag_start = text_origin + diag.col as f32 * char_width;
                             let diag_width = if diag.end_col > diag.col {
                                 (diag.end_col - diag.col) as f32 * char_width
                             } else {
@@ -3168,7 +3183,7 @@ impl Editor {
                                     underline_y + amp * ((x / period * std::f32::consts::PI).sin());
                                 let x2 = (x + period / 2.0).min(x_diag_end);
                                 let y2 = underline_y - amp;
-                                painter.line_segment(
+                                text_painter.line_segment(
                                     [egui::pos2(x1, y1), egui::pos2(x2, y2)],
                                     egui::Stroke::new(1.0_f32, color),
                                 );
@@ -5615,6 +5630,72 @@ bar",
             h.frame(&mut ed, vec![Event::PointerMoved(p)], SHIFT);
         }
         assert!(ed.scroll_offset.x > 0.0);
+    }
+
+    #[test]
+    fn a_click_far_along_a_line_lands_under_the_pointer() {
+        let line = "a".repeat(120);
+        let (mut h, mut ed) = setup(&line);
+        let font = egui::FontId::monospace(h.config.font.size);
+        // Where column 80 is painted: the width of the 80 chars before it, as
+        // laid out (not a multiple of a measured char width).
+        let painted = h.ctx.fonts(|f| {
+            f.layout_no_wrap(line[..80].into(), font, egui::Color32::WHITE)
+                .size()
+                .x
+        });
+        let y = ed.line_height * 0.5;
+        h.click_at(&mut ed, egui::pos2(50.0 + painted + 1.0, y), NONE);
+        assert_eq!(ed.cursor.position(), (0, 80));
+    }
+
+    #[test]
+    fn caret_and_selection_follow_the_text_when_scrolled_horizontally() {
+        let (mut h, mut ed) = setup(&"abcdefghij".repeat(30));
+        let selection = crate::ui::theme::Palette::from_theme(&h.config.theme).selection;
+        ed.scroll_offset.x = 80.0;
+        ed.cursor.sel_anchor = Some((0, 20));
+        ed.cursor.set_position(0, 30);
+        ed.cursor_blink_epoch = std::time::Instant::now();
+        let out = h.idle(&mut ed);
+        // (caret x, selection left x, text left x) as painted.
+        let mut found = (None, None, None);
+        fn walk(
+            s: &egui::Shape,
+            sel: egui::Color32,
+            f: &mut (Option<f32>, Option<f32>, Option<f32>),
+        ) {
+            match s {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.width == 2.0 && points[0].x == points[1].x =>
+                {
+                    f.0.get_or_insert(points[0].x);
+                }
+                egui::Shape::Rect(r) if r.fill == sel => {
+                    f.1.get_or_insert(r.rect.min.x);
+                }
+                egui::Shape::Text(t) if t.galley.text().starts_with("abcdefghij") => {
+                    f.2.get_or_insert(t.pos.x);
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|x| walk(x, sel, f)),
+                _ => {}
+            }
+        }
+        for cs in &out.shapes {
+            walk(&cs.shape, selection, &mut found);
+        }
+        let (Some(caret), Some(sel_left), Some(text_left)) = found else {
+            panic!("caret, selection and text should be painted: {found:?}");
+        };
+        let cw = ed.char_width;
+        assert!(
+            (caret - (text_left + 30.0 * cw)).abs() < 0.5,
+            "caret {caret}, text {text_left}"
+        );
+        assert!(
+            (sel_left - (text_left + 20.0 * cw)).abs() < 0.5,
+            "selection {sel_left}, text {text_left}"
+        );
     }
 
     // ── Hover, diagnostics & rendering state ────────────────────────────────
