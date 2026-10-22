@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- F2 dans l'explorateur renomme le fichier sélectionné sur place, en partant de son nom actuel. Avant, il ouvrait « Rename Symbol », qui ne faisait rien sans serveur de langage ; ce cas affiche maintenant un message au lieu de se fermer sans rien dire.
+
 ## [0.23.0] - 2026-10-19
 
 ### Modifications

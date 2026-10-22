@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- F2 in the explorer renames the selected file inline, starting from its current name. It used to open Rename Symbol, which did nothing without a language server; that dialog now says so instead of closing silently.
+
 ## [0.23.0] - 2026-10-19
 
 ### Changed
