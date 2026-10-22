@@ -303,29 +303,26 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
             }
             cmd.spawn().map(|_| ())
         }),
-        // `/passive` shows a progress bar and triggers the UAC prompt; MajorUpgrade in the
-        // WiX manifest removes the previous version.
-        ExitAction::RunMsi(msi) => std::process::Command::new("msiexec")
-            .arg("/i")
-            .arg(msi)
-            .arg("/passive")
-            .arg("/l*v")
-            .arg(msi_log_path(msi))
-            .spawn()
-            .map(|_| ()),
+        ExitAction::RunMsi(msi) => run_msi(msi),
         // The app is exiting, so a detached PowerShell waits for msiexec and then starts
         // the upgraded executable (MajorUpgrade keeps the install location).
-        ExitAction::RunMsiThenRelaunch(msi) => std::env::current_exe().and_then(|exe| {
-            let script = msi_relaunch_script(msi, &exe, workspace);
-            use crate::process_ext::CommandExt as _;
-            std::process::Command::new("powershell.exe")
-                .no_window()
-                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
-                .arg("-EncodedCommand")
-                .arg(encode_powershell_command(&script))
-                .spawn()
-                .map(|_| ())
-        }),
+        ExitAction::RunMsiThenRelaunch(msi) => std::env::current_exe()
+            .and_then(|exe| {
+                let script = msi_relaunch_script(msi, &exe, workspace);
+                use crate::process_ext::CommandExt as _;
+                std::process::Command::new(powershell_exe())
+                    .no_window()
+                    .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
+                    .arg("-EncodedCommand")
+                    .arg(encode_powershell_command(&script))
+                    .spawn()
+                    .map(|_| ())
+            })
+            // Without PowerShell, still install: only the relaunch is lost.
+            .or_else(|e| {
+                log_step(&format!("on exit: relaunch failed ({e}), installing only"));
+                run_msi(msi)
+            }),
     };
     match result {
         Ok(()) => log_step("on exit: started"),
@@ -333,6 +330,33 @@ pub fn run_exit_action(action: &ExitAction, workspace: Option<&std::path::Path>)
             log::error!("failed to apply update on exit: {e}");
             log_step(&format!("on exit: failed to start: {e}"));
         }
+    }
+}
+
+/// Start the MSI installer. `/passive` shows a progress bar and triggers the UAC
+/// prompt; MajorUpgrade in the WiX manifest removes the previous version.
+fn run_msi(msi: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("msiexec")
+        .arg("/i")
+        .arg(msi)
+        .arg("/passive")
+        .arg("/l*v")
+        .arg(msi_log_path(msi))
+        .spawn()
+        .map(|_| ())
+}
+
+/// Windows PowerShell by its full path. Unlike msiexec (in System32, which
+/// Windows always searches), it is only found through `PATH`, and a `PATH`
+/// broken by stray quotes hid it: "Restart now" then installed nothing.
+fn powershell_exe() -> PathBuf {
+    let root =
+        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    let exe = root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if exe.is_file() {
+        exe
+    } else {
+        PathBuf::from("powershell.exe")
     }
 }
 
@@ -1227,6 +1251,13 @@ mod tests {
             matches!(&u.exit_action, Some(ExitAction::RunMsiThenRelaunch(p)) if p == &PathBuf::from("a.msi")),
             "Restart now must relaunch after the MSI"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn powershell_is_found_without_the_path() {
+        let exe = powershell_exe();
+        assert!(exe.is_absolute() && exe.is_file(), "{}", exe.display());
     }
 
     #[test]

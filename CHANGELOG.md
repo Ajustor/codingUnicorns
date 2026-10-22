@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Windows: "Restart now" in the update dialog installs the update even when the app was not started from a terminal. It looked PowerShell up on the `PATH`, and when a `PATH` entry was broken (stray quotes), nothing was installed; it now uses PowerShell's full path, and still installs the update if the relaunch can't be prepared.
+
 ## [0.23.1] - 2026-10-22
 
 ### Fixed

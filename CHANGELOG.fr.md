@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Windows : « Restart now » dans la fenêtre de mise à jour installe la mise à jour même quand l'application n'a pas été lancée depuis un terminal. Elle cherchait PowerShell dans le `PATH`, et quand une entrée du `PATH` était cassée (guillemets en trop), rien n'était installé ; elle utilise maintenant le chemin complet de PowerShell, et installe quand même la mise à jour si le redémarrage ne peut pas être préparé.
+
 ## [0.23.1] - 2026-10-22
 
 ### Corrections
