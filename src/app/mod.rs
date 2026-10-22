@@ -1221,6 +1221,9 @@ impl eframe::App for CodingUnicorns {
                 });
             if confirmed && !self.rename_new_name.is_empty() {
                 self.rename_dialog_open = false;
+                if !self.current_lsp_connected() {
+                    self.toast("Can't rename: the language server is no longer running");
+                }
                 if let Some(path) = self.editor.current_path.clone() {
                     let (row, col) = self.editor.cursor.position();
                     if let Some(ext) = crate::language::language_key(&path).as_deref() {
