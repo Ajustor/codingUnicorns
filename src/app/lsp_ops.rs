@@ -389,14 +389,36 @@ impl CodingUnicorns {
         }
     }
 
-    /// Open the rename dialog with the current word under cursor.
+    /// The rename shortcut: rename the explorer's selected file when the
+    /// explorer has it, else open the Rename Symbol dialog with the word under
+    /// the cursor — only when a language server can do the renaming.
     pub fn start_rename(&mut self) {
+        if self.file_tree.rename_selected() {
+            return;
+        }
+        if !self.current_lsp_connected() {
+            self.toast(
+                "Rename Symbol needs a language server for this file. \
+                 To rename a file, select it in the explorer and press the shortcut again.",
+            );
+            return;
+        }
         if let Some(word) = self.editor.current_word_full_pub() {
             self.rename_new_name = word;
         } else {
             self.rename_new_name = String::new();
         }
         self.rename_dialog_open = true;
+    }
+
+    /// A language server is connected for the file shown in the editor.
+    pub(crate) fn current_lsp_connected(&self) -> bool {
+        self.editor
+            .current_path
+            .as_deref()
+            .and_then(crate::language::language_key)
+            .and_then(|ext| self.lsp.get(&ext))
+            .is_some_and(|c| c.is_connected)
     }
 
     /// Apply rename edits from LSP: to the editor's buffer for the file it shows

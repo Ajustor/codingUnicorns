@@ -217,6 +217,27 @@ impl FileTree {
         opened
     }
 
+    /// The rename shortcut (F2) pressed while the tree was clicked last:
+    /// rename the selected entry inline, starting from its current name.
+    /// Returns false when the shortcut is the editor's (Rename Symbol).
+    pub fn rename_selected(&mut self) -> bool {
+        if !self.active {
+            return false;
+        }
+        if self.rename_state.is_some() {
+            return true;
+        }
+        let Some(path) = self.selected.clone() else {
+            return false;
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.rename_state = Some((path, name));
+        true
+    }
+
     /// Take Ctrl+C / Ctrl+V / Delete out of this frame's input, before the
     /// editor sees them: copy the selected file, ask to duplicate the copied
     /// one, or ask to delete the selected one. Any other key means the user is
@@ -1006,6 +1027,36 @@ mod tests {
             t.rename_state,
             Some((dir.path().join("src"), "src".to_string()))
         );
+    }
+
+    #[test]
+    fn rename_shortcut_renames_the_selected_file_once_the_tree_is_clicked() {
+        let dir = workspace();
+        let mut t = loaded(dir.path());
+        assert!(!t.rename_selected(), "untouched tree: F2 is the editor's");
+        let mut h = Harness::new();
+        h.click(&mut t, "readme.md", egui::PointerButton::Primary);
+        assert!(t.rename_selected());
+        assert_eq!(
+            t.rename_state,
+            Some((dir.path().join("readme.md"), "readme.md".to_string()))
+        );
+        h.frame(&mut t, vec![]);
+        assert!(
+            h.find("readme.md").is_some(),
+            "field shows the current name"
+        );
+    }
+
+    #[test]
+    fn rename_shortcut_is_the_editors_once_another_key_is_typed() {
+        let dir = workspace();
+        let mut t = loaded(dir.path());
+        let mut h = Harness::new();
+        h.click(&mut t, "readme.md", egui::PointerButton::Primary);
+        h.key(&mut t, egui::Key::A);
+        assert!(!t.rename_selected());
+        assert!(t.rename_state.is_none());
     }
 
     #[test]

@@ -12,6 +12,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- F2 in the explorer renames the selected file inline, starting from its current name. It used to open Rename Symbol, which did nothing without a language server; that dialog now says so instead of closing silently.
 - In Report an Issue, picking Bug or Idea no longer sends what you type next into the open file: the title field keeps the focus. More generally, the editor no longer takes the keyboard back while a dialog is open over it.
 
 ## [0.23.0] - 2026-10-19
