@@ -113,6 +113,8 @@ pub struct ReportDialog {
     attach_log: bool,
     sending: Option<Receiver<Result<(), String>>>,
     error: Option<String>,
+    /// Give the title the focus on the next frame (just opened).
+    focus_title: bool,
 }
 
 impl Default for ReportDialog {
@@ -131,12 +133,14 @@ impl ReportDialog {
             attach_log: true,
             sending: None,
             error: None,
+            focus_title: false,
         }
     }
 
     pub fn open(&mut self) {
         self.open = true;
         self.error = None;
+        self.focus_title = true;
     }
 
     fn send(&mut self, url: &str, ctx: &egui::Context) {
@@ -204,13 +208,18 @@ impl ReportDialog {
                 );
                 ui.add_space(6.0);
             }
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.kind, Kind::Bug, "🐛 Bug");
-                ui.selectable_value(&mut self.kind, Kind::Idea, "💡 Idea");
-            });
+            // Picking the kind moves the focus off the fields: hand it back to
+            // the title, where typing goes on (as when the dialog opens).
+            let picked = ui
+                .horizontal(|ui| {
+                    let bug = ui.selectable_value(&mut self.kind, Kind::Bug, "🐛 Bug");
+                    let idea = ui.selectable_value(&mut self.kind, Kind::Idea, "💡 Idea");
+                    bug.clicked() || idea.clicked()
+                })
+                .inner;
             ui.add_space(6.0);
             ui.label("Title");
-            ui.add_enabled(
+            let title = ui.add_enabled(
                 !busy,
                 egui::TextEdit::singleline(&mut self.title)
                     .char_limit(MAX_TITLE)
@@ -220,6 +229,9 @@ impl ReportDialog {
                         Kind::Idea => "What you'd like, in a few words",
                     }),
             );
+            if picked || std::mem::take(&mut self.focus_title) {
+                title.request_focus();
+            }
             ui.add_space(6.0);
             ui.label(match self.kind {
                 Kind::Bug => "What did you do, what happened, what did you expect?",

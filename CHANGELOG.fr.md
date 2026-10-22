@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Dans « Report an Issue », choisir Bug ou Idea n'envoie plus la saisie suivante dans le fichier ouvert : le champ du titre garde le focus. Plus généralement, l'éditeur ne reprend plus le clavier tant qu'une fenêtre de dialogue est ouverte par-dessus.
+
 ## [0.23.0] - 2026-10-19
 
 ### Modifications

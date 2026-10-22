@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- In Report an Issue, picking Bug or Idea no longer sends what you type next into the open file: the title field keeps the focus. More generally, the editor no longer takes the keyboard back while a dialog is open over it.
+
 ## [0.23.0] - 2026-10-19
 
 ### Changed
