@@ -232,6 +232,87 @@ impl Editor {
         }
     }
 
+    /// True when some cursor's selection spans more than one line: Tab then
+    /// indents those lines instead of replacing the selection.
+    pub(super) fn has_multiline_selection(&self) -> bool {
+        self.all_cursors()
+            .any(|c| c.selection_range().is_some_and(|(s, e)| s.0 != e.0))
+    }
+
+    /// Tab / Shift+Tab on whole lines: add one indent level to (or remove one
+    /// from) every line a cursor touches, as one undo step. A selection ending
+    /// at column 0 leaves that last line alone; blank lines are not indented.
+    /// Selections and carets keep their place in the text.
+    pub(super) fn indent_lines(&mut self, outdent: bool) {
+        let mut rows: Vec<usize> = self
+            .all_cursors()
+            .flat_map(|c| {
+                let (s, e) = c.selection_range().unwrap_or((c.position(), c.position()));
+                let last = if e.0 > s.0 && e.1 == 0 { e.0 - 1 } else { e.0 };
+                s.0..=last
+            })
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+
+        let unit = self.indent_unit();
+        let size = self.detected_indent_size.max(1);
+        // Chars added (positive) or removed (negative) at the start of each row.
+        let mut delta: std::collections::HashMap<usize, isize> = Default::default();
+        for &row in &rows {
+            let line = self.buffer.line(row);
+            let d = if outdent {
+                if line.starts_with('\t') {
+                    -1
+                } else {
+                    -(line.chars().take(size).take_while(|c| *c == ' ').count() as isize)
+                }
+            } else if line.trim().is_empty() {
+                0
+            } else {
+                unit.chars().count() as isize
+            };
+            if d != 0 {
+                delta.insert(row, d);
+            }
+        }
+        if delta.is_empty() {
+            return;
+        }
+
+        self.buffer.checkpoint();
+        for &row in rows.iter().rev() {
+            match delta.get(&row) {
+                Some(&d) if d > 0 => self.buffer.insert_str(row, 0, &unit),
+                Some(&d) => {
+                    let start = self.buffer.char_index(row, 0);
+                    self.buffer.delete_range(start, start + d.unsigned_abs());
+                }
+                None => {}
+            }
+        }
+
+        // An indented line shifts every column but 0 (a selection starting at
+        // the line start keeps covering the whole line); an outdented one pulls
+        // columns back, never past the line start.
+        let shift = |(row, col): (usize, usize)| -> (usize, usize) {
+            match delta.get(&row) {
+                Some(&d) if d > 0 && col > 0 => (row, col + d as usize),
+                Some(&d) if d < 0 => (row, col.saturating_sub(d.unsigned_abs())),
+                _ => (row, col),
+            }
+        };
+        for c in std::iter::once(&mut self.cursor).chain(self.extra_cursors.iter_mut()) {
+            let (row, col) = shift(c.position());
+            c.set_position(row, col);
+            c.sel_anchor = c.sel_anchor.map(shift);
+        }
+        self.dedup_cursors();
+        self.is_modified = true;
+        self.content_version = self.content_version.wrapping_add(1);
+        self.cursor_blink_epoch = std::time::Instant::now();
+    }
+
     /// Text to insert for a newline at (row, col), and the caret offset inside it
     /// in chars. `rest` is what follows the inserted newline on that line (after
     /// a replaced selection). With `auto_indent` the new line copies the leading

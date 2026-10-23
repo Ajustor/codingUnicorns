@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- Tab avec plusieurs lignes sélectionnées les décale d'un niveau d'indentation au lieu de remplacer la sélection par une tabulation, et Shift+Tab retire un niveau aux lignes sélectionnées (ou à la ligne courante). Les lignes vides ne bougent pas, la sélection reste sur le texte décalé, et un seul Ctrl+Z annule le tout.
+
 ## [0.23.2] - 2026-10-22
 
 ### Corrections

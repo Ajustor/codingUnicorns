@@ -1730,10 +1730,15 @@ impl Editor {
                                             ac_dismiss = true;
                                         }
                                         egui::Key::Tab => {
-                                            if self.autocomplete.visible {
+                                            // Shift+Tab, or Tab over a multi-line
+                                            // selection, shifts whole lines.
+                                            if modifiers.shift || self.has_multiline_selection() {
+                                                self.indent_lines(modifiers.shift);
+                                                ac_dismiss = true;
+                                            } else if self.autocomplete.visible {
                                                 ac_confirm = true;
                                                 ac_nav = true;
-                                            } else if !modifiers.shift {
+                                            } else {
                                                 if self.detected_indent_spaces {
                                                     for _ in 0..self.detected_indent_size {
                                                         self.insert_char(' ', false);
@@ -4224,7 +4229,7 @@ mod tests {
         }
     }
 
-    /// Editor loaded with `content`, already focused by a warm-up frame.
+    /// Editor loaded with `content`, already focused by warm-up frames.
     fn setup(content: &str) -> (Harness, Editor) {
         setup_path(content, None)
     }
@@ -4233,6 +4238,10 @@ mod tests {
         let mut h = Harness::new();
         let mut ed = Editor::new();
         ed.set_content(content.to_string(), path);
+        // The first frame takes focus; egui only keeps the Tab/arrow lock filter
+        // of a widget that already had focus the frame before, so a second one
+        // is needed or the first Tab would move focus out of the editor.
+        h.idle(&mut ed);
         h.idle(&mut ed);
         (h, ed)
     }
@@ -4430,18 +4439,55 @@ mod tests {
     }
 
     #[test]
-    fn tab_inserts_detected_indent_and_shift_tab_does_nothing() {
+    fn tab_inserts_detected_indent_and_shift_tab_outdents_the_line() {
         let (mut h, mut ed) = setup("x");
         h.press(&mut ed, Key::Tab, NONE);
         assert_eq!(text(&ed), "    x");
         assert_eq!(ed.cursor.position(), (0, 4));
         h.press(&mut ed, Key::Tab, SHIFT);
-        assert_eq!(text(&ed), "    x");
+        assert_eq!(text(&ed), "x");
+        assert_eq!(ed.cursor.position(), (0, 0));
+        h.press(&mut ed, Key::Tab, SHIFT);
+        assert_eq!(text(&ed), "x");
 
         let (mut h, mut ed) = setup("\tfoo\n");
         ed.cursor.set_position(1, 0);
         h.press(&mut ed, Key::Tab, NONE);
         assert_eq!(text(&ed), "\tfoo\n\t");
+    }
+
+    #[test]
+    fn tab_on_multiline_selection_indents_lines_instead_of_replacing() {
+        let (mut h, mut ed) = setup("a\n\nbc\nd");
+        ed.cursor.set_position(0, 1);
+        ed.cursor.start_selection();
+        ed.cursor.set_position(2, 1);
+        h.press(&mut ed, Key::Tab, NONE);
+        // Blank line untouched, line 3 (outside the selection) untouched.
+        assert_eq!(text(&ed), "    a\n\n    bc\nd");
+        assert_eq!(ed.cursor.sel_anchor, Some((0, 5)));
+        assert_eq!(ed.cursor.position(), (2, 5));
+
+        h.press(&mut ed, Key::Tab, SHIFT);
+        assert_eq!(text(&ed), "a\n\nbc\nd");
+        assert_eq!(ed.cursor.sel_anchor, Some((0, 1)));
+        assert_eq!(ed.cursor.position(), (2, 1));
+
+        // Undo restores the indented block in one step.
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "    a\n\n    bc\nd");
+    }
+
+    #[test]
+    fn tab_on_full_line_selection_keeps_it_whole_and_skips_line_after() {
+        let (mut h, mut ed) = setup("\ta\n\tb\nc");
+        ed.cursor.set_position(0, 0);
+        ed.cursor.start_selection();
+        ed.cursor.set_position(2, 0);
+        h.press(&mut ed, Key::Tab, NONE);
+        assert_eq!(text(&ed), "\t\ta\n\t\tb\nc");
+        assert_eq!(ed.cursor.sel_anchor, Some((0, 0)));
+        assert_eq!(ed.cursor.position(), (2, 0));
     }
 
     #[test]

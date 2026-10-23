@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Tab with several lines selected indents them by one level instead of replacing the selection with a tab, and Shift+Tab removes one level from the selected lines (or the current line). Blank lines are left alone, the selection stays on the shifted text, and one Ctrl+Z undoes it.
+
 ## [0.23.2] - 2026-10-22
 
 ### Fixed
