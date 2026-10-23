@@ -2121,7 +2121,7 @@ impl Editor {
                     });
 
                     // Copy / Cut (need ui for output_mut)
-                    // egui-winit turns Ctrl+C / Ctrl+X into Event::Copy / Event::Cut
+                    // egui-winit turns Ctrl+C / Ctrl+X (Cmd on macOS) into Event::Copy / Event::Cut
                     // and emits no Key event for them; the Key arms cover other backends.
                     let do_copy = ui.input(|i| {
                         i.events.iter().any(|e| {
@@ -2131,7 +2131,7 @@ impl Editor {
                                     | egui::Event::Key {
                                         key: egui::Key::C,
                                         pressed: true,
-                                        modifiers: egui::Modifiers { ctrl: true, .. },
+                                        modifiers: egui::Modifiers { command: true, .. },
                                         ..
                                     }
                             )
@@ -2145,7 +2145,7 @@ impl Editor {
                                     | egui::Event::Key {
                                         key: egui::Key::X,
                                         pressed: true,
-                                        modifiers: egui::Modifiers { ctrl: true, .. },
+                                        modifiers: egui::Modifiers { command: true, .. },
                                         ..
                                     }
                             )
@@ -4814,17 +4814,19 @@ mod tests {
     fn word_and_line_edge_modifiers_follow_the_platform() {
         let opt = Modifiers::ALT;
         let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        // Ctrl as egui reports it: with `command` off macOS, alone on macOS.
+        let (win_ctrl, mac_ctrl) = (Modifiers::CTRL | Modifiers::COMMAND, Modifiers::CTRL);
         // macOS: Option moves by word, Cmd jumps to the line edges.
         assert!(word_modifier(&opt, true));
         assert!(word_modifier(&(opt | SHIFT), true), "Option+Shift selects");
-        assert!(!word_modifier(&CTRL, true));
+        assert!(!word_modifier(&mac_ctrl, true));
         assert!(line_edge_modifier(&cmd, true));
         assert!(!line_edge_modifier(&opt, true));
         // Elsewhere: Ctrl moves by word, Alt stays free for back/forward.
-        assert!(word_modifier(&CTRL, false));
-        assert!(word_modifier(&(CTRL | SHIFT), false));
+        assert!(word_modifier(&win_ctrl, false));
+        assert!(word_modifier(&(win_ctrl | SHIFT), false));
         assert!(!word_modifier(&opt, false));
-        assert!(!word_modifier(&(CTRL | ALT), false));
+        assert!(!word_modifier(&(win_ctrl | ALT), false));
         assert!(!line_edge_modifier(&cmd, false));
     }
 

@@ -32,15 +32,22 @@ impl Chord {
 
     /// True if this exact chord was pressed this frame.
     pub fn matches(&self, i: &egui::InputState) -> bool {
-        modifiers_match(&i.modifiers, self.ctrl, self.shift, self.alt) && i.key_pressed(self.key)
+        modifiers_match(&i.modifiers, self.key, self.ctrl, self.shift, self.alt)
+            && i.key_pressed(self.key)
     }
 }
 
-/// True when the held modifiers are exactly the ones a shortcut asks for.
-/// `command` is Cmd on macOS and Ctrl elsewhere; on macOS Ctrl is accepted
-/// too, for the shortcuts macOS keeps for itself on Cmd (Cmd+Space opens
-/// Spotlight, Cmd+` switches windows).
-pub fn modifiers_match(m: &egui::Modifiers, command: bool, shift: bool, alt: bool) -> bool {
+/// True when the held modifiers are exactly the ones a shortcut on `key`
+/// asks for. `command` is Cmd on macOS and Ctrl elsewhere. On macOS, Ctrl is
+/// what the keys macOS keeps for itself on Cmd take instead (see
+/// `stays_on_ctrl`).
+pub fn modifiers_match(
+    m: &egui::Modifiers,
+    key: egui::Key,
+    command: bool,
+    shift: bool,
+    alt: bool,
+) -> bool {
     let pattern = |command, ctrl| egui::Modifiers {
         command,
         ctrl,
@@ -48,13 +55,21 @@ pub fn modifiers_match(m: &egui::Modifiers, command: bool, shift: bool, alt: boo
         alt,
         ..Default::default()
     };
+    if cfg!(target_os = "macos") && command && stays_on_ctrl(key) {
+        return m.matches_exact(pattern(false, true));
+    }
     m.matches_exact(pattern(command, false))
-        || (cfg!(target_os = "macos") && command && m.matches_exact(pattern(false, true)))
+}
+
+/// Keys whose Cmd chords belong to macOS (Cmd+Space opens Spotlight, Cmd+`
+/// cycles windows, Cmd+Tab switches apps): their shortcuts stay on Ctrl there.
+pub fn stays_on_ctrl(key: egui::Key) -> bool {
+    matches!(key, egui::Key::Space | egui::Key::Backtick | egui::Key::Tab)
 }
 
 /// A shortcut label as written for this platform: "Ctrl+" becomes "Cmd+" on
 /// macOS, except for the shortcuts that stay on Ctrl there (see
-/// `modifiers_match`).
+/// `stays_on_ctrl`).
 pub fn platform_label(label: &str) -> String {
     if !cfg!(target_os = "macos") {
         return label.to_string();
@@ -197,33 +212,37 @@ mod tests {
 
     #[test]
     fn command_shortcuts_follow_the_platform() {
-        // Raw Ctrl as egui reports it on macOS (no `command`).
+        let m = |mods: &Modifiers, key, command| modifiers_match(mods, key, command, false, false);
+        // Ctrl as egui reports it: alone on macOS, with `command` elsewhere.
         let mac_ctrl = Modifiers::CTRL;
         let mac_cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
         if MAC {
-            assert!(modifiers_match(&mac_cmd, true, false, false));
-            // Ctrl still works, for Ctrl+Space / Ctrl+` that macOS keeps on Cmd.
-            assert!(modifiers_match(&mac_ctrl, true, false, false));
-            assert!(!modifiers_match(&mac_cmd, false, false, false));
-            assert!(!modifiers_match(&mac_ctrl, false, false, false));
+            assert!(m(&mac_cmd, Key::S, true));
+            // Ctrl+S is not Cmd+S (Ctrl+letters move the caret in macOS fields).
+            assert!(!m(&mac_ctrl, Key::S, true));
+            // macOS keeps Cmd+Space / Cmd+`: those shortcuts stay on Ctrl.
+            assert!(m(&mac_ctrl, Key::Space, true));
+            assert!(!m(&mac_cmd, Key::Space, true));
+            assert!(m(&mac_ctrl, Key::Backtick, true));
+            assert!(!m(&mac_cmd, Key::F5, false));
+            assert!(!m(&mac_ctrl, Key::F5, false));
             assert_eq!(platform_label("Ctrl+Shift+S"), "Cmd+Shift+S");
             assert_eq!(platform_label("Save (Ctrl+S)"), "Save (Cmd+S)");
             assert_eq!(platform_label("Ctrl+`"), "Ctrl+`");
             assert_eq!(platform_label("Ctrl+Backtick"), "Ctrl+Backtick");
             assert_eq!(platform_label("Ctrl+Space"), "Ctrl+Space");
         } else {
-            assert!(modifiers_match(
-                &(Modifiers::CTRL | Modifiers::COMMAND),
-                true,
-                false,
-                false
-            ));
-            assert!(!modifiers_match(&Modifiers::NONE, true, false, false));
+            let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+            assert!(m(&ctrl, Key::S, true));
+            assert!(m(&ctrl, Key::Space, true));
+            assert!(!m(&ctrl, Key::F5, false));
             assert_eq!(platform_label("Ctrl+Shift+S"), "Ctrl+Shift+S");
         }
-        assert!(modifiers_match(&Modifiers::NONE, false, false, false));
+        assert!(!m(&Modifiers::NONE, Key::S, true));
+        assert!(m(&Modifiers::NONE, Key::F5, false));
         assert!(!modifiers_match(
             &(CMD | Modifiers::SHIFT),
+            Key::S,
             true,
             false,
             false

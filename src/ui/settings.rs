@@ -753,7 +753,12 @@ fn keybinding_row(
                     } = event
                     {
                         binding.key = format!("{key:?}");
-                        binding.ctrl = modifiers.command;
+                        // Cmd on macOS, Ctrl elsewhere; Ctrl too on macOS for
+                        // the keys whose Cmd chords macOS keeps.
+                        binding.ctrl = modifiers.command
+                            || (cfg!(target_os = "macos")
+                                && modifiers.ctrl
+                                && crate::keybinds::stays_on_ctrl(*key));
                         binding.shift = modifiers.shift;
                         binding.alt = modifiers.alt;
                         *rebinding = None;

@@ -25,7 +25,13 @@ impl KeyBinding {
     pub fn matches(&self, i: &egui::InputState) -> bool {
         if let Some(k) = self.parse_key() {
             i.key_pressed(k)
-                && crate::keybinds::modifiers_match(&i.modifiers, self.ctrl, self.shift, self.alt)
+                && crate::keybinds::modifiers_match(
+                    &i.modifiers,
+                    k,
+                    self.ctrl,
+                    self.shift,
+                    self.alt,
+                )
         } else {
             false
         }
