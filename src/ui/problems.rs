@@ -137,7 +137,7 @@ impl ProblemsPanel {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button("✕")
-                    .on_hover_text("Close (Ctrl+Shift+M)")
+                    .on_hover_text(crate::keybinds::platform_label("Close (Ctrl+Shift+M)"))
                     .clicked()
                 {
                     self.open = false;

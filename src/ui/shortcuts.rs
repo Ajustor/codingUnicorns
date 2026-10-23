@@ -141,6 +141,7 @@ fn section(ui: &mut egui::Ui, title: &str) {
 }
 
 fn row(ui: &mut egui::Ui, keys: &str, description: &str) {
+    let keys = &crate::keybinds::platform_label(keys);
     ui.horizontal(|ui| {
         // Key badge
         egui::Frame::new()

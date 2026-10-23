@@ -753,7 +753,7 @@ fn keybinding_row(
                     } = event
                     {
                         binding.key = format!("{key:?}");
-                        binding.ctrl = modifiers.ctrl;
+                        binding.ctrl = modifiers.command;
                         binding.shift = modifiers.shift;
                         binding.alt = modifiers.alt;
                         *rebinding = None;

@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- macOS: shortcuts use Cmd instead of Ctrl (Cmd+S, Cmd+P, Cmd+C, Cmd+Z, Cmd+click to go to a definition…), and menus, the command palette and the shortcut list show Cmd. Ctrl+Space (completion), Ctrl+` (terminal) and Ctrl+Tab (next tab) stay on Ctrl, since macOS keeps Cmd+Space and Cmd+` for itself. In the terminal, Cmd+C copies and no longer interrupts the running command; Ctrl+C still does.
+
 ## [0.23.3] - 2026-10-23
 
 ### Fixed
