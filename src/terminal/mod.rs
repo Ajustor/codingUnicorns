@@ -555,9 +555,11 @@ Is it installed and on PATH?
                 }
                 // egui-winit turns Ctrl+C / Ctrl+X / Ctrl+V into these and emits no
                 // Key event. Ctrl+C copies a selection; without one (and without
-                // Shift) it is forwarded as the interrupt control code.
+                // Shift) it is forwarded as the interrupt control code. On macOS
+                // these come from Cmd+C / Cmd+X, which only copy: Ctrl+C there
+                // arrives as a Key event and interrupts below.
                 egui::Event::Copy => {
-                    if has_selection || shift {
+                    if has_selection || shift || cfg!(target_os = "macos") {
                         copy = true;
                     } else {
                         to_send.push('\x03');
@@ -565,7 +567,9 @@ Is it installed and on PATH?
                     false
                 }
                 egui::Event::Cut => {
-                    to_send.push('\x18');
+                    if !cfg!(target_os = "macos") {
+                        to_send.push('\x18');
+                    }
                     false
                 }
                 // Ctrl+V and Ctrl+Shift+V both arrive as this from egui-winit.
@@ -1194,10 +1198,16 @@ mod tests {
         assert!(t.selection.is_none(), "copy clears the selection");
         assert!(out.take().is_empty(), "^C is not sent when copying");
 
-        // No selection: Ctrl+C is an interrupt again.
+        // No selection: Ctrl+C is an interrupt again. On macOS the Copy event
+        // comes from Cmd+C, which never interrupts.
         let copied = run_frame_in(&ctx, &mut t, vec![egui::Event::Copy], ctrl);
         assert_eq!(copied, None);
-        assert_eq!(out.take(), b"\x03");
+        let interrupt: &[u8] = if cfg!(target_os = "macos") {
+            b""
+        } else {
+            b"\x03"
+        };
+        assert_eq!(out.take(), interrupt);
     }
 
     #[test]
@@ -1326,7 +1336,13 @@ mod tests {
                 egui::Event::Paste("echo hi".into()),
             ],
         );
-        assert_eq!(out.take(), b"\x03\x18echo hi");
+        // On macOS Copy / Cut come from Cmd+C / Cmd+X and send nothing.
+        let expected: &[u8] = if cfg!(target_os = "macos") {
+            b"echo hi"
+        } else {
+            b"\x03\x18echo hi"
+        };
+        assert_eq!(out.take(), expected);
     }
 
     #[test]

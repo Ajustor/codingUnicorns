@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 pub mod session;
 
+/// `ctrl` is the platform's command key: Cmd on macOS, Ctrl elsewhere.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyBinding {
     pub key: String,
@@ -24,9 +25,13 @@ impl KeyBinding {
     pub fn matches(&self, i: &egui::InputState) -> bool {
         if let Some(k) = self.parse_key() {
             i.key_pressed(k)
-                && i.modifiers.ctrl == self.ctrl
-                && i.modifiers.shift == self.shift
-                && i.modifiers.alt == self.alt
+                && crate::keybinds::modifiers_match(
+                    &i.modifiers,
+                    k,
+                    self.ctrl,
+                    self.shift,
+                    self.alt,
+                )
         } else {
             false
         }
@@ -109,7 +114,7 @@ impl KeyBinding {
             parts.push("Alt");
         }
         parts.push(&self.key);
-        parts.join("+")
+        crate::keybinds::platform_label(&parts.join("+"))
     }
 }
 
@@ -663,14 +668,17 @@ mod tests {
     #[test]
     fn display_joins_modifiers_in_order() {
         assert_eq!(kb("F5").display(), "F5");
-        assert_eq!(KeyBinding::new("S", true, false, false).display(), "Ctrl+S");
+        assert_eq!(
+            KeyBinding::new("S", true, false, false).display(),
+            crate::keybinds::platform_label("Ctrl+S")
+        );
         assert_eq!(
             KeyBinding::new("Z", true, true, false).display(),
-            "Ctrl+Shift+Z"
+            crate::keybinds::platform_label("Ctrl+Shift+Z")
         );
         assert_eq!(
             KeyBinding::new("ArrowUp", true, true, true).display(),
-            "Ctrl+Shift+Alt+ArrowUp"
+            crate::keybinds::platform_label("Ctrl+Shift+Alt+ArrowUp")
         );
         assert_eq!(KeyBinding::new("B", false, false, true).display(), "Alt+B");
     }
@@ -678,17 +686,25 @@ mod tests {
     #[test]
     fn matches_requires_key_and_exact_modifiers() {
         use egui::Modifiers as M;
+        // The platform's command key as egui reports it: Cmd on macOS, Ctrl
+        // elsewhere (both also set `command`).
+        let cmd = M {
+            ctrl: !cfg!(target_os = "macos"),
+            mac_cmd: cfg!(target_os = "macos"),
+            command: true,
+            ..M::NONE
+        };
         let save = KeyBinding::new("S", true, false, false);
-        assert!(matches_with(&save, Some(egui::Key::S), M::CTRL));
+        assert!(matches_with(&save, Some(egui::Key::S), cmd));
         assert!(!matches_with(&save, Some(egui::Key::S), M::NONE));
-        assert!(!matches_with(&save, Some(egui::Key::S), M::CTRL | M::SHIFT));
-        assert!(!matches_with(&save, Some(egui::Key::S), M::CTRL | M::ALT));
-        assert!(!matches_with(&save, Some(egui::Key::A), M::CTRL));
-        assert!(!matches_with(&save, None, M::CTRL));
+        assert!(!matches_with(&save, Some(egui::Key::S), cmd | M::SHIFT));
+        assert!(!matches_with(&save, Some(egui::Key::S), cmd | M::ALT));
+        assert!(!matches_with(&save, Some(egui::Key::A), cmd));
+        assert!(!matches_with(&save, None, cmd));
 
         let redo = KeyBinding::new("Z", true, true, false);
-        assert!(matches_with(&redo, Some(egui::Key::Z), M::CTRL | M::SHIFT));
-        assert!(!matches_with(&redo, Some(egui::Key::Z), M::CTRL));
+        assert!(matches_with(&redo, Some(egui::Key::Z), cmd | M::SHIFT));
+        assert!(!matches_with(&redo, Some(egui::Key::Z), cmd));
 
         let back = KeyBinding::new("ArrowLeft", false, false, true);
         assert!(matches_with(&back, Some(egui::Key::ArrowLeft), M::ALT));
@@ -720,10 +736,19 @@ mod tests {
     #[test]
     fn default_keybindings_spot_check() {
         let k = KeyBindings::default();
-        assert_eq!(k.save.display(), "Ctrl+S");
-        assert_eq!(k.open_file.display(), "Ctrl+Shift+O");
-        assert_eq!(k.toggle_terminal.display(), "Ctrl+Backtick");
-        assert_eq!(k.redo.display(), "Ctrl+Shift+Z");
+        assert_eq!(k.save.display(), crate::keybinds::platform_label("Ctrl+S"));
+        assert_eq!(
+            k.open_file.display(),
+            crate::keybinds::platform_label("Ctrl+Shift+O")
+        );
+        assert_eq!(
+            k.toggle_terminal.display(),
+            crate::keybinds::platform_label("Ctrl+Backtick")
+        );
+        assert_eq!(
+            k.redo.display(),
+            crate::keybinds::platform_label("Ctrl+Shift+Z")
+        );
         assert_eq!(k.move_line_up.display(), "Alt+ArrowUp");
         assert_eq!(k.goto_definition.display(), "F12");
         assert_eq!(k.debug_step_out.display(), "Shift+F11");
@@ -840,7 +865,10 @@ mod tests {
         assert!(c.check_updates);
         assert_eq!(c.last_workspace, None);
         assert_eq!(c.skipped_update_version, None);
-        assert_eq!(c.keybindings.save.display(), "Ctrl+S");
+        assert_eq!(
+            c.keybindings.save.display(),
+            crate::keybinds::platform_label("Ctrl+S")
+        );
         assert_eq!(c.keybindings.debug_step_out.display(), "Shift+F11");
     }
 
@@ -858,7 +886,10 @@ mod tests {
         assert_eq!(c.font.size, 14.0);
         assert_eq!(c.recent_workspaces, ["/w"]);
         assert_eq!(c.keybindings.save.display(), "F2");
-        assert_eq!(c.keybindings.find.display(), "Ctrl+F");
+        assert_eq!(
+            c.keybindings.find.display(),
+            crate::keybinds::platform_label("Ctrl+F")
+        );
     }
 
     #[test]

@@ -186,12 +186,18 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
     TopBottomPanel::top("menu_bar").show(ctx, |ui| {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("New File          Ctrl+N").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label("New File          Ctrl+N"))
+                    .clicked()
+                {
                     app.open_new_file();
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Open Folder…     Ctrl+O").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label("Open Folder…     Ctrl+O"))
+                    .clicked()
+                {
                     app.folder_pending = Some(app.trigger_open_folder());
                     ui.close_menu();
                 }
@@ -224,12 +230,18 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         ui.close_menu();
                     }
                 });
-                if ui.button("Open File…  Ctrl+Shift+O").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label("Open File…  Ctrl+Shift+O"))
+                    .clicked()
+                {
                     app.file_pending = Some(app.trigger_open_file());
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Save              Ctrl+S").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label("Save              Ctrl+S"))
+                    .clicked()
+                {
                     if app.save_editor_guarded(true) {
                         app.toast("Saved");
                     }
@@ -242,24 +254,41 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
             });
 
             ui.menu_button("View", |ui| {
-                if ui.button("Toggle Sidebar  Ctrl+B").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label("Toggle Sidebar  Ctrl+B"))
+                    .clicked()
+                {
                     app.show_sidebar = !app.show_sidebar;
                     ui.close_menu();
                 }
-                if ui.button("Toggle Terminal  Ctrl+`").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label("Toggle Terminal  Ctrl+`"))
+                    .clicked()
+                {
                     app.show_terminal = !app.show_terminal;
                     ui.close_menu();
                 }
-                if ui.button("Command Palette  Ctrl+P").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label("Command Palette  Ctrl+P"))
+                    .clicked()
+                {
                     app.command_palette.toggle();
                     ui.close_menu();
                 }
-                if ui.button("Markdown Preview  Ctrl+Shift+V").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label(
+                        "Markdown Preview  Ctrl+Shift+V",
+                    ))
+                    .clicked()
+                {
                     app.show_md_preview = !app.show_md_preview;
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Settings   Ctrl+,").clicked() {
+                if ui
+                    .button(crate::keybinds::platform_label("Settings   Ctrl+,"))
+                    .clicked()
+                {
                     app.tab_manager.open_settings();
                     app.settings_panel.open = true;
                     ui.close_menu();
@@ -317,7 +346,9 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             .frame(false);
                     if ui
                         .add(btn)
-                        .on_hover_text("Toggle Markdown preview (Ctrl+Shift+V)")
+                        .on_hover_text(crate::keybinds::platform_label(
+                            "Toggle Markdown preview (Ctrl+Shift+V)",
+                        ))
                         .clicked()
                     {
                         app.show_md_preview = !app.show_md_preview;
@@ -1372,7 +1403,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             &mut right_ui,
                             tab_rect2,
                             egui_phosphor::regular::X_SQUARE,
-                            "Close split (Ctrl+\\)",
+                            &crate::keybinds::platform_label("Close split (Ctrl+\\)"),
                         );
                     }
                 }
@@ -1458,7 +1489,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         ui,
                         tab_rect,
                         egui_phosphor::regular::SQUARE_SPLIT_HORIZONTAL,
-                        "Split editor (Ctrl+\\)",
+                        &crate::keybinds::platform_label("Split editor (Ctrl+\\)"),
                     ) {
                         app.toggle_split();
                     }
@@ -1697,9 +1728,18 @@ fn welcome_screen(ui: &mut egui::Ui, recent: &[String]) -> Option<std::path::Pat
                 .color(egui::Color32::GRAY),
         );
         ui.add_space(40.0);
-        ui.label(egui::RichText::new("Ctrl+P  — Command Palette").color(egui::Color32::GRAY));
-        ui.label(egui::RichText::new("Ctrl+B  — Toggle Sidebar").color(egui::Color32::GRAY));
-        ui.label(egui::RichText::new("Ctrl+`  — Toggle Terminal").color(egui::Color32::GRAY));
+        ui.label(
+            egui::RichText::new(crate::keybinds::platform_label("Ctrl+P  — Command Palette"))
+                .color(egui::Color32::GRAY),
+        );
+        ui.label(
+            egui::RichText::new(crate::keybinds::platform_label("Ctrl+B  — Toggle Sidebar"))
+                .color(egui::Color32::GRAY),
+        );
+        ui.label(
+            egui::RichText::new(crate::keybinds::platform_label("Ctrl+`  — Toggle Terminal"))
+                .color(egui::Color32::GRAY),
+        );
         ui.add_space(12.0);
         ui.label(
             egui::RichText::new("File → Open Folder to get started")

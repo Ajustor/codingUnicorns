@@ -227,9 +227,11 @@ impl RunPanel {
 
         // ── HINTS ───────────────────────────────────────────────────────
         ui.label(
-            egui::RichText::new("F5 — Run active configuration\nCtrl+F5 — Run without stopping")
-                .size(10.0)
-                .color(egui::Color32::GRAY),
+            egui::RichText::new(crate::keybinds::platform_label(
+                "F5 — Run active configuration\nCtrl+F5 — Run without stopping",
+            ))
+            .size(10.0)
+            .color(egui::Color32::GRAY),
         );
 
         if runner.configs.is_empty() {

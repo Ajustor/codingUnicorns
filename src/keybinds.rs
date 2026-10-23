@@ -2,7 +2,8 @@
 //! panels/modules register here so clashes are detected instead of silently
 //! shadowing each other. (Editor text-editing keys are handled separately.)
 
-/// A key chord: modifiers + a key.
+/// A key chord: modifiers + a key. `ctrl` is the platform's command key:
+/// Cmd on macOS, Ctrl elsewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chord {
     pub ctrl: bool,
@@ -31,11 +32,61 @@ impl Chord {
 
     /// True if this exact chord was pressed this frame.
     pub fn matches(&self, i: &egui::InputState) -> bool {
-        i.modifiers.ctrl == self.ctrl
-            && i.modifiers.shift == self.shift
-            && i.modifiers.alt == self.alt
+        modifiers_match(&i.modifiers, self.key, self.ctrl, self.shift, self.alt)
             && i.key_pressed(self.key)
     }
+}
+
+/// True when the held modifiers are exactly the ones a shortcut on `key`
+/// asks for. `command` is Cmd on macOS and Ctrl elsewhere. On macOS, Ctrl is
+/// what the keys macOS keeps for itself on Cmd take instead (see
+/// `stays_on_ctrl`).
+pub fn modifiers_match(
+    m: &egui::Modifiers,
+    key: egui::Key,
+    command: bool,
+    shift: bool,
+    alt: bool,
+) -> bool {
+    let pattern = |command, ctrl| egui::Modifiers {
+        command,
+        ctrl,
+        shift,
+        alt,
+        ..Default::default()
+    };
+    if cfg!(target_os = "macos") && command && stays_on_ctrl(key) {
+        return m.matches_exact(pattern(false, true));
+    }
+    m.matches_exact(pattern(command, false))
+}
+
+/// Keys whose Cmd chords belong to macOS (Cmd+Space opens Spotlight, Cmd+`
+/// cycles windows, Cmd+Tab switches apps): their shortcuts stay on Ctrl there.
+pub fn stays_on_ctrl(key: egui::Key) -> bool {
+    matches!(key, egui::Key::Space | egui::Key::Backtick | egui::Key::Tab)
+}
+
+/// A shortcut label as written for this platform: "Ctrl+" becomes "Cmd+" on
+/// macOS, except for the shortcuts that stay on Ctrl there (see
+/// `stays_on_ctrl`).
+pub fn platform_label(label: &str) -> String {
+    if !cfg!(target_os = "macos") {
+        return label.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = label;
+    while let Some(i) = rest.find("Ctrl+") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + "Ctrl+".len()..];
+        let stays_ctrl = ["`", "Backtick", "Space", "Tab"]
+            .iter()
+            .any(|k| after.starts_with(k));
+        out.push_str(if stays_ctrl { "Ctrl+" } else { "Cmd+" });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 impl std::fmt::Display for Chord {
@@ -51,15 +102,12 @@ impl std::fmt::Display for Chord {
             parts.push("Alt");
         }
         let key = format!("{:?}", self.key);
-        write!(
-            f,
-            "{}",
-            parts
-                .into_iter()
-                .chain(std::iter::once(key.as_str()))
-                .collect::<Vec<_>>()
-                .join("+")
-        )
+        let label = parts
+            .into_iter()
+            .chain(std::iter::once(key.as_str()))
+            .collect::<Vec<_>>()
+            .join("+");
+        write!(f, "{}", platform_label(&label))
     }
 }
 
@@ -152,6 +200,55 @@ mod tests {
         out.unwrap()
     }
 
+    /// The platform's command key as egui reports it: Cmd on macOS, Ctrl
+    /// elsewhere (both also set `command`).
+    const CMD: Modifiers = Modifiers {
+        ctrl: !MAC,
+        mac_cmd: MAC,
+        command: true,
+        ..Modifiers::NONE
+    };
+    const MAC: bool = cfg!(target_os = "macos");
+
+    #[test]
+    fn command_shortcuts_follow_the_platform() {
+        let m = |mods: &Modifiers, key, command| modifiers_match(mods, key, command, false, false);
+        // Ctrl as egui reports it: alone on macOS, with `command` elsewhere.
+        let mac_ctrl = Modifiers::CTRL;
+        let mac_cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        if MAC {
+            assert!(m(&mac_cmd, Key::S, true));
+            // Ctrl+S is not Cmd+S (Ctrl+letters move the caret in macOS fields).
+            assert!(!m(&mac_ctrl, Key::S, true));
+            // macOS keeps Cmd+Space / Cmd+`: those shortcuts stay on Ctrl.
+            assert!(m(&mac_ctrl, Key::Space, true));
+            assert!(!m(&mac_cmd, Key::Space, true));
+            assert!(m(&mac_ctrl, Key::Backtick, true));
+            assert!(!m(&mac_cmd, Key::F5, false));
+            assert!(!m(&mac_ctrl, Key::F5, false));
+            assert_eq!(platform_label("Ctrl+Shift+S"), "Cmd+Shift+S");
+            assert_eq!(platform_label("Save (Ctrl+S)"), "Save (Cmd+S)");
+            assert_eq!(platform_label("Ctrl+`"), "Ctrl+`");
+            assert_eq!(platform_label("Ctrl+Backtick"), "Ctrl+Backtick");
+            assert_eq!(platform_label("Ctrl+Space"), "Ctrl+Space");
+        } else {
+            let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+            assert!(m(&ctrl, Key::S, true));
+            assert!(m(&ctrl, Key::Space, true));
+            assert!(!m(&ctrl, Key::F5, false));
+            assert_eq!(platform_label("Ctrl+Shift+S"), "Ctrl+Shift+S");
+        }
+        assert!(!m(&Modifiers::NONE, Key::S, true));
+        assert!(m(&Modifiers::NONE, Key::F5, false));
+        assert!(!modifiers_match(
+            &(CMD | Modifiers::SHIFT),
+            Key::S,
+            true,
+            false,
+            false
+        ));
+    }
+
     #[test]
     fn helper_constructors_set_expected_modifiers() {
         assert_eq!(Chord::ctrl(Key::S), Chord::new(true, false, false, Key::S));
@@ -164,10 +261,10 @@ mod tests {
     #[test]
     fn display_lists_modifiers_in_fixed_order_then_key() {
         assert_eq!(Chord::new(false, false, false, Key::F5).to_string(), "F5");
-        assert_eq!(Chord::ctrl(Key::S).to_string(), "Ctrl+S");
+        assert_eq!(Chord::ctrl(Key::S).to_string(), platform_label("Ctrl+S"));
         assert_eq!(
             Chord::new(true, true, true, Key::ArrowUp).to_string(),
-            "Ctrl+Shift+Alt+ArrowUp"
+            platform_label("Ctrl+Shift+Alt+ArrowUp")
         );
         assert_eq!(
             Chord::new(false, true, true, Key::Tab).to_string(),
@@ -178,16 +275,16 @@ mod tests {
     #[test]
     fn matches_requires_exact_modifiers_and_key() {
         let chord = Chord::ctrl(Key::S);
-        assert!(with_input(Some(Key::S), Modifiers::CTRL, |i| chord.matches(i)));
+        assert!(with_input(Some(Key::S), CMD, |i| chord.matches(i)));
         // Extra modifier -> no match.
-        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        let ctrl_shift = CMD | Modifiers::SHIFT;
         assert!(!with_input(Some(Key::S), ctrl_shift, |i| chord.matches(i)));
         // Missing modifier -> no match.
         assert!(!with_input(Some(Key::S), Modifiers::NONE, |i| chord.matches(i)));
         // Wrong key -> no match.
-        assert!(!with_input(Some(Key::D), Modifiers::CTRL, |i| chord.matches(i)));
+        assert!(!with_input(Some(Key::D), CMD, |i| chord.matches(i)));
         // Modifiers held but no key press.
-        assert!(!with_input(None, Modifiers::CTRL, |i| chord.matches(i)));
+        assert!(!with_input(None, CMD, |i| chord.matches(i)));
         // Alt chords.
         let alt = Chord::new(false, false, true, Key::ArrowLeft);
         assert!(with_input(Some(Key::ArrowLeft), Modifiers::ALT, |i| alt.matches(i)));
@@ -218,21 +315,17 @@ mod tests {
         reg.register("save_dup", Chord::ctrl(Key::S), "");
 
         assert_eq!(
-            with_input(Some(Key::S), Modifiers::CTRL, |i| reg
-                .triggered(i)
-                .map(str::to_string)),
+            with_input(Some(Key::S), CMD, |i| reg.triggered(i).map(str::to_string)),
             Some("save".to_string())
         );
         assert_eq!(
-            with_input(Some(Key::P), Modifiers::CTRL | Modifiers::SHIFT, |i| reg
+            with_input(Some(Key::P), CMD | Modifiers::SHIFT, |i| reg
                 .triggered(i)
                 .map(str::to_string)),
             Some("palette".to_string())
         );
         assert_eq!(
-            with_input(Some(Key::P), Modifiers::CTRL, |i| reg
-                .triggered(i)
-                .map(str::to_string)),
+            with_input(Some(Key::P), CMD, |i| reg.triggered(i).map(str::to_string)),
             None
         );
     }

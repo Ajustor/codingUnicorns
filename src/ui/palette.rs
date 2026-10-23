@@ -601,7 +601,10 @@ impl CommandPalette {
                                         if cmd.shortcut().is_empty() {
                                             String::new()
                                         } else {
-                                            format!("    {}", cmd.shortcut())
+                                            format!(
+                                                "    {}",
+                                                crate::keybinds::platform_label(cmd.shortcut())
+                                            )
                                         }
                                     );
                                     let color = if is_selected {

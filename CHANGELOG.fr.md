@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.23.4] - 2026-10-23
+
+### Corrections
+
+- macOS : les raccourcis passent par Cmd au lieu de Ctrl (Cmd+S, Cmd+P, Cmd+C, Cmd+Z, Cmd+clic pour aller à une définition…), et les menus, la palette de commandes et la liste des raccourcis affichent Cmd. Ctrl+Espace (complétion), Ctrl+` (terminal) et Ctrl+Tab (onglet suivant) restent sur Ctrl, car macOS garde Cmd+Espace et Cmd+` pour lui. Dans le terminal, Cmd+C copie et n'interrompt plus la commande en cours ; Ctrl+C l'interrompt toujours.
+
 ## [0.23.3] - 2026-10-23
 
 ### Corrections

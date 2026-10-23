@@ -60,7 +60,7 @@ impl StatusBar {
                     .frame(false);
                     if ui
                         .add(btn)
-                        .on_hover_text("Problems (Ctrl+Shift+M)")
+                        .on_hover_text(crate::keybinds::platform_label("Problems (Ctrl+Shift+M)"))
                         .clicked()
                     {
                         problems_clicked = true;
