@@ -8,6 +8,13 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Corrections
+
+- PageUp / PageDown déplacent le curseur et la vue d'une page dans l'éditeur (Shift sélectionne). Ils ne faisaient rien jusqu'ici.
+- Cliquer sur une variable surligne toutes ses utilisations à l'écran, y compris celle cliquée, dans un cadre qui se distingue de la sélection. Avant, il fallait sélectionner un mot d'au moins trois lettres, et les lignes arrivant à l'écran en défilant n'étaient pas surlignées.
+
 ## [0.23.4] - 2026-10-23
 
 ### Corrections

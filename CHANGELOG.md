@@ -8,6 +8,13 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- PageUp / PageDown move the caret and the view by a page in the editor (Shift selects). They did nothing before.
+- Clicking a variable highlights every use of it on screen, the one clicked included, with an outlined box that stands out from the selection. Before, a word of at least three letters had to be selected, and lines scrolled into view were not highlighted.
+
 ## [0.23.4] - 2026-10-23
 
 ### Fixed

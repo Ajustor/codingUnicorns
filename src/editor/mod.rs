@@ -103,6 +103,22 @@ fn word_modifier(m: &egui::Modifiers, mac: bool) -> bool {
     }
 }
 
+/// One highlighted occurrence of the word under the caret: a tinted box with
+/// an accent outline, so every use stands out from the selection color.
+fn paint_occurrence(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    palette: &crate::ui::theme::Palette,
+) {
+    painter.rect_filled(rect, 2.0, palette.accent_muted);
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0_f32, palette.accent.gamma_multiply(0.7)),
+        egui::StrokeKind::Inside,
+    );
+}
+
 /// macOS: Cmd+Left/Right jump to the line start/end.
 fn line_edge_modifier(m: &egui::Modifiers, mac: bool) -> bool {
     mac && m.mac_cmd && !m.alt && !m.ctrl
@@ -272,11 +288,14 @@ pub struct Editor {
     // ── Cursor blink ────────────────────────────────────────────────────────
     /// Epoch-ms of the last cursor movement / keypress, used to reset blink.
     cursor_blink_epoch: std::time::Instant,
-    // ── Selection word highlighting ─────────────────────────────────────
-    /// Visible occurrences of the word under cursor: (row, col_start, col_end).
+    // ── Word highlighting ───────────────────────────────────────────────
+    /// Visible occurrences of the word under the caret or selected: (row,
+    /// col_start, col_end).
     word_occurrences: Vec<(usize, usize, usize)>,
     /// Content version when word_occurrences was last computed.
     word_occurrences_version: i32,
+    /// Visible lines (first, last) word_occurrences was computed for.
+    word_occurrences_range: (usize, usize),
     /// Cached per-line shape data for the minimap (indent + length).
     minimap_lines: Vec<crate::ui::minimap::LineShape>,
     /// Content version when minimap_lines was last computed.
@@ -381,6 +400,7 @@ impl Editor {
             cursor_blink_epoch: std::time::Instant::now(),
             word_occurrences: vec![],
             word_occurrences_version: -1,
+            word_occurrences_range: (0, 0),
             minimap_lines: vec![],
             minimap_lines_version: -1,
             word_occurrences_word: String::new(),
@@ -1638,6 +1658,18 @@ impl Editor {
                                                 }
                                             }
                                             self.dedup_cursors();
+                                            ac_dismiss = true;
+                                        }
+
+                                        // PageUp / PageDown — move a page (Shift selects).
+                                        egui::Key::PageUp | egui::Key::PageDown
+                                            if !modifiers.command && !modifiers.alt =>
+                                        {
+                                            self.move_page(
+                                                *key == egui::Key::PageDown,
+                                                modifiers.shift,
+                                                rect.height(),
+                                            );
                                             ac_dismiss = true;
                                         }
 
@@ -2915,13 +2947,13 @@ impl Editor {
                             let occ_ex =
                                 x_start + prefix_width(ui, &line, occ_end, &font_id, char_width);
                             if occ_ex > occ_sx {
-                                painter.rect_filled(
+                                paint_occurrence(
+                                    &painter,
                                     egui::Rect::from_min_max(
                                         egui::pos2(occ_sx - self.scroll_offset.x, y),
                                         egui::pos2(occ_ex - self.scroll_offset.x, y + line_height),
                                     ),
-                                    2.0,
-                                    palette.accent_muted,
+                                    &palette,
                                 );
                             }
                         }
@@ -5943,6 +5975,45 @@ bar",
         assert_eq!(ed.scroll_offset.y, 10.0 * ed.line_height);
     }
 
+    #[test]
+    fn page_down_and_up_move_the_caret_and_the_view_by_a_page() {
+        let content = (0..200)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        ed.cursor.set_position(0, 2);
+        // 600px view: the rows that fit, minus one kept for context.
+        let page = (600.0 / ed.line_height) as usize - 1;
+
+        h.press(&mut ed, Key::PageDown, NONE);
+        assert_eq!(ed.cursor.position(), (page, 2));
+        assert_eq!(ed.scroll_offset.y, page as f32 * ed.line_height);
+        assert!(!ed.cursor.has_selection());
+
+        h.press(&mut ed, Key::PageDown, SHIFT);
+        assert_eq!(ed.cursor.position(), (2 * page, 2));
+        assert_eq!(ed.cursor.sel_anchor, Some((page, 2)));
+
+        h.press(&mut ed, Key::PageUp, NONE);
+        assert_eq!(ed.cursor.position(), (page, 2));
+        assert!(!ed.cursor.has_selection());
+        assert_eq!(ed.scroll_offset.y, page as f32 * ed.line_height);
+
+        // Less than a page left: the caret lands on the first char.
+        h.press(&mut ed, Key::PageUp, NONE);
+        h.press(&mut ed, Key::PageUp, NONE);
+        assert_eq!(ed.cursor.position(), (0, 0));
+        assert_eq!(ed.scroll_offset.y, 0.0);
+
+        // ...or on the last one, and the view stops at the end of the file.
+        for _ in 0..20 {
+            h.press(&mut ed, Key::PageDown, NONE);
+        }
+        assert_eq!(ed.cursor.position(), (199, 7));
+        assert_eq!(ed.scroll_offset.y, 201.0 * ed.line_height - 600.0);
+    }
+
     // ── Word wrap ───────────────────────────────────────────────────────────
 
     fn setup_wrapped(content: &str) -> (Harness, Editor) {
@@ -6200,11 +6271,63 @@ bar",
         assert_eq!(ed.minimap_lines_version, ed.content_version);
         assert!(!ed.minimap_lines.is_empty());
 
-        // Selecting a word highlights its other occurrences.
+        // Selecting a word highlights all its occurrences.
         ed.cursor.set_position(1, 11);
         ed.cursor.sel_anchor = Some((1, 8));
         h.idle(&mut ed);
-        assert_eq!(ed.word_occurrences, vec![(2, 4, 7), (2, 10, 13)]);
+        let foo = vec![(1, 8, 11), (2, 4, 7), (2, 10, 13)];
+        assert_eq!(ed.word_occurrences, foo);
+    }
+
+    #[test]
+    fn clicking_a_variable_highlights_its_uses() {
+        let (mut h, mut ed) = setup("let foo = 1;\nfoo + food;\nx = foo");
+        let foo = vec![(0, 4, 7), (1, 0, 3), (2, 4, 7)];
+
+        // Caret inside the word, or right after it.
+        h.click(&mut ed, 1, 1, NONE);
+        assert_eq!(ed.cursor.position(), (1, 1));
+        assert_eq!(ed.word_occurrences, foo, "`food` is another word");
+        ed.cursor.set_position(2, 7);
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, foo);
+
+        // Single-letter names count; numbers, spaces and punctuation do not.
+        ed.cursor.set_position(2, 0);
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, vec![(2, 0, 1)]);
+        ed.cursor.set_position(0, 10);
+        h.idle(&mut ed);
+        assert!(ed.word_occurrences.is_empty(), "on `1`");
+        ed.cursor.set_position(1, 4);
+        h.idle(&mut ed);
+        assert!(ed.word_occurrences.is_empty(), "between `+` and a space");
+
+        // Editing keeps the highlights in step with the text.
+        ed.cursor.set_position(0, 4);
+        h.type_text(&mut ed, "a");
+        assert_eq!(ed.word_occurrences, vec![(0, 4, 8)]);
+    }
+
+    #[test]
+    fn word_highlights_follow_scrolling() {
+        let content = (0..200)
+            .map(|i| {
+                if i % 50 == 0 {
+                    "foo".to_string()
+                } else {
+                    format!("x{i}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, vec![(0, 0, 3)]);
+        // Same word, same text: lines scrolled into view get highlighted too.
+        ed.scroll_offset.y = 140.0 * ed.line_height;
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, vec![(150, 0, 3)]);
     }
 
     #[test]
