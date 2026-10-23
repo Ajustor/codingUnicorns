@@ -198,45 +198,60 @@ impl Editor {
         self.update_find_matches();
     }
 
-    /// Recompute visible word occurrences if the word under cursor changed.
-    /// Only highlights when there is an active selection (not just cursor on a word).
+    /// The identifier whose occurrences get highlighted: the selected one, or
+    /// the one the caret is in or touches. Numbers and multi-line or
+    /// non-identifier selections highlight nothing.
+    fn highlighted_word(&self) -> Option<String> {
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+        let word = match self.cursor.selection_range() {
+            Some(((sr, sc), (er, ec))) => {
+                if sr != er || ec <= sc {
+                    return None;
+                }
+                let line = self.buffer.line(sr);
+                let selected: String = line.chars().skip(sc).take(ec - sc).collect();
+                selected.chars().all(is_word_char).then_some(selected)?
+            }
+            None => {
+                let (row, col) = self.cursor.position();
+                let line: Vec<char> = self.buffer.line(row).chars().collect();
+                // The caret sits between chars: take the word on its right,
+                // else the one it just ended.
+                let at = if line.get(col).is_some_and(|c| is_word_char(*c)) {
+                    col
+                } else if col > 0 && line.get(col - 1).is_some_and(|c| is_word_char(*c)) {
+                    col - 1
+                } else {
+                    return None;
+                };
+                super::utils::get_word_at(&self.buffer, row, at)?
+            }
+        };
+        (!word.starts_with(|c: char| c.is_ascii_digit())).then_some(word)
+    }
+
+    /// Recompute the visible occurrences of the highlighted word (see
+    /// `highlighted_word`) when the word, the text or the visible lines change.
     pub(super) fn update_word_occurrences(
         &mut self,
         first_visible_line: usize,
         last_visible_line: usize,
     ) {
-        let (row, col) = self.cursor.position();
-
-        // Only highlight when there is an active selection of a single word
-        let word = if let Some(((sr, sc), (er, ec))) = self.cursor.selection_range() {
-            if sr == er && ec > sc {
-                let line = self.buffer.line(sr);
-                let selected: String = line.chars().skip(sc).take(ec - sc).collect();
-                if selected.len() >= 3 && selected.chars().all(|c| c.is_alphanumeric() || c == '_')
-                {
-                    selected
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            }
-        } else {
-            // No selection = no highlighting
-            String::new()
-        };
-
+        let word = self.highlighted_word().unwrap_or_default();
+        let range = (first_visible_line, last_visible_line);
         if word == self.word_occurrences_word
             && self.content_version == self.word_occurrences_version
+            && range == self.word_occurrences_range
         {
             return;
         }
 
         self.word_occurrences.clear();
         self.word_occurrences_version = self.content_version;
+        self.word_occurrences_range = range;
         self.word_occurrences_word = word.clone();
 
-        if word.len() < 3 {
+        if word.is_empty() {
             return;
         }
 
@@ -259,12 +274,8 @@ impl Editor {
                     let after_ok = col_pos + word_len >= chars.len()
                         || !is_word_char(chars[col_pos + word_len]);
                     if before_ok && after_ok {
-                        let is_cursor_pos =
-                            line_idx == row && col_pos <= col && col <= col_pos + word_len;
-                        if !is_cursor_pos {
-                            self.word_occurrences
-                                .push((line_idx, col_pos, col_pos + word_len));
-                        }
+                        self.word_occurrences
+                            .push((line_idx, col_pos, col_pos + word_len));
                     }
                     col_pos += word_len;
                 } else {
@@ -647,12 +658,15 @@ bar"
     }
 
     #[test]
-    fn word_occurrences_find_whole_words_except_the_selected_one() {
+    fn word_occurrences_find_whole_words_including_the_selected_one() {
         let mut ed = editor("foo bar foo\nfoobar foo\n_foo foo\nfo");
         select(&mut ed, 0, 0, 3);
         ed.update_word_occurrences(0, 100);
         assert_eq!(ed.word_occurrences_word, "foo");
-        assert_eq!(ed.word_occurrences, vec![(0, 8, 11), (1, 7, 10), (2, 5, 8)]);
+        assert_eq!(
+            ed.word_occurrences,
+            vec![(0, 0, 3), (0, 8, 11), (1, 7, 10), (2, 5, 8)]
+        );
     }
 
     #[test]
@@ -661,6 +675,9 @@ bar"
         select(&mut ed, 0, 0, 3);
         ed.update_word_occurrences(2, 2);
         assert_eq!(ed.word_occurrences, vec![(2, 0, 3)]);
+        // Scrolling (other visible lines) recomputes for the same word.
+        ed.update_word_occurrences(3, 3);
+        assert_eq!(ed.word_occurrences, vec![(3, 0, 3)]);
     }
 
     #[test]
@@ -668,7 +685,8 @@ bar"
         let mut ed = editor("abc abc");
         select(&mut ed, 0, 0, 3);
         ed.update_word_occurrences(0, 0);
-        assert_eq!(ed.word_occurrences, vec![(0, 4, 7)]);
+        let abc = vec![(0, 0, 3), (0, 4, 7)];
+        assert_eq!(ed.word_occurrences, abc);
 
         ed.word_occurrences.clear();
         ed.update_word_occurrences(0, 0);
@@ -676,22 +694,21 @@ bar"
 
         ed.content_version += 1;
         ed.update_word_occurrences(0, 0);
-        assert_eq!(ed.word_occurrences, vec![(0, 4, 7)], "recomputed");
+        assert_eq!(ed.word_occurrences, abc, "recomputed");
     }
 
     #[test]
-    fn word_occurrences_require_a_single_word_selection_of_three_chars() {
+    fn word_occurrences_follow_the_caret_word_or_a_single_word_selection() {
         let mut ed = editor("ab ab ab\nfoo bar foo bar");
-        // No selection.
+        // No selection: the word the caret is in.
         ed.cursor.set_position(1, 1);
         ed.update_word_occurrences(0, 1);
-        assert!(ed.word_occurrences.is_empty());
-        assert_eq!(ed.word_occurrences_version, 0);
+        assert_eq!(ed.word_occurrences, vec![(1, 0, 3), (1, 8, 11)]);
 
-        // Too short.
+        // Short words count too.
         select(&mut ed, 0, 0, 2);
         ed.update_word_occurrences(0, 1);
-        assert!(ed.word_occurrences.is_empty());
+        assert_eq!(ed.word_occurrences, vec![(0, 0, 2), (0, 3, 5), (0, 6, 8)]);
 
         // Contains a non-word character.
         select(&mut ed, 1, 0, 7);

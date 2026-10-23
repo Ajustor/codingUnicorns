@@ -373,6 +373,56 @@ impl Editor {
         self.apply_cursor_edits(edits);
     }
 
+    /// PageUp / PageDown: move every cursor one page (the rows that fit in
+    /// `view_height`, minus one kept for context), extending selections with
+    /// `select`, and scroll the view by the same amount so the caret keeps its
+    /// place on screen.
+    pub(super) fn move_page(&mut self, down: bool, select: bool, view_height: f32) {
+        let lh = self.line_height.max(1.0);
+        let rows = ((view_height / lh) as usize).max(2) - 1;
+        let cols = self.wrap.cols;
+        let wrapped = self.wrap.active();
+        let buffer = &self.buffer;
+        let last = buffer.num_lines().saturating_sub(1);
+        for c in std::iter::once(&mut self.cursor).chain(self.extra_cursors.iter_mut()) {
+            let start = c.row;
+            for _ in 0..rows {
+                if wrapped {
+                    super::wrap::move_visual(c, buffer, cols, down, select);
+                } else {
+                    match (down, select) {
+                        (true, true) => c.move_down_select(buffer),
+                        (true, false) => c.move_down(buffer),
+                        (false, true) => c.move_up_select(buffer),
+                        (false, false) => c.move_up(buffer),
+                    }
+                }
+            }
+            // Less than a page left: land on the file's first / last char.
+            if !wrapped && down && start + rows > last {
+                c.col = buffer.line_len(c.row);
+            } else if !wrapped && !down && start < rows {
+                c.col = 0;
+            }
+        }
+        self.dedup_cursors();
+
+        let total_rows = if wrapped {
+            self.wrap.total_rows()
+        } else {
+            self.buffer.num_lines()
+        };
+        let max_y = ((total_rows + 1) as f32 * lh - view_height).max(0.0);
+        let step = rows as f32 * lh;
+        self.scroll_offset.y = if down {
+            (self.scroll_offset.y + step).min(max_y)
+        } else {
+            (self.scroll_offset.y - step).max(0.0)
+        };
+        self.scroll_to_cursor = true;
+        self.cursor_blink_epoch = std::time::Instant::now();
+    }
+
     // ── Edits at every cursor ──────────────────────────────────────────────
 
     /// The primary cursor, then the extra ones.

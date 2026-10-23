@@ -325,7 +325,7 @@ impl Editor {
         for &(occ_row, occ_start, occ_end) in &self.word_occurrences {
             if occ_row == line_idx {
                 for r in spans(occ_start, occ_end) {
-                    p.painter.rect_filled(r, 2.0, p.palette.accent_muted);
+                    super::paint_occurrence(p.painter, r, &p.palette);
                 }
             }
         }
