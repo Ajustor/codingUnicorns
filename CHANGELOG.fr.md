@@ -8,6 +8,25 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.23.5] - 2026-10-23
+
+### Corrections
+
+- PageUp / PageDown déplacent le curseur et la vue d'une page dans l'éditeur (Shift sélectionne). Ils ne faisaient rien jusqu'ici.
+- Cliquer sur une variable surligne toutes ses utilisations à l'écran, y compris celle cliquée, dans un cadre qui se distingue de la sélection. Avant, il fallait sélectionner un mot d'au moins trois lettres, et les lignes arrivant à l'écran en défilant n'étaient pas surlignées.
+
+## [0.23.4] - 2026-10-23
+
+### Corrections
+
+- macOS : les raccourcis passent par Cmd au lieu de Ctrl (Cmd+S, Cmd+P, Cmd+C, Cmd+Z, Cmd+clic pour aller à une définition…), et les menus, la palette de commandes et la liste des raccourcis affichent Cmd. Ctrl+Espace (complétion), Ctrl+` (terminal) et Ctrl+Tab (onglet suivant) restent sur Ctrl, car macOS garde Cmd+Espace et Cmd+` pour lui. Dans le terminal, Cmd+C copie et n'interrompt plus la commande en cours ; Ctrl+C l'interrompt toujours.
+
+## [0.23.3] - 2026-10-23
+
+### Corrections
+
+- Tab avec plusieurs lignes sélectionnées les décale d'un niveau d'indentation au lieu de remplacer la sélection par une tabulation, et Shift+Tab retire un niveau aux lignes sélectionnées (ou à la ligne courante). Les lignes vides ne bougent pas, la sélection reste sur le texte décalé, et un seul Ctrl+Z annule le tout.
+
 ## [0.23.2] - 2026-10-22
 
 ### Corrections

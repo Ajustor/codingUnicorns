@@ -158,12 +158,13 @@ const STEPS: &[Step] = &[
         title: "You're all set",
         body: |kb| {
             format!(
-                "Ctrl+Shift+I opens a Claude Code panel to work on the project with Claude \
+                "{} opens a Claude Code panel to work on the project with Claude \
                  (needs the claude CLI).\n\n\
                  {} lists every shortcut, and the Settings ({}) change the theme, the \
                  editor options and the keybindings.\n\n\
                  Found a bug or have an idea? Help → Report an Issue sends it to the \
                  developers. Replay this tour any time from the Help menu.",
+                crate::keybinds::platform_label("Ctrl+Shift+I"),
                 kb.shortcuts_help.display(),
                 kb.settings.display()
             )

@@ -103,6 +103,22 @@ fn word_modifier(m: &egui::Modifiers, mac: bool) -> bool {
     }
 }
 
+/// One highlighted occurrence of the word under the caret: a tinted box with
+/// an accent outline, so every use stands out from the selection color.
+fn paint_occurrence(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    palette: &crate::ui::theme::Palette,
+) {
+    painter.rect_filled(rect, 2.0, palette.accent_muted);
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0_f32, palette.accent.gamma_multiply(0.7)),
+        egui::StrokeKind::Inside,
+    );
+}
+
 /// macOS: Cmd+Left/Right jump to the line start/end.
 fn line_edge_modifier(m: &egui::Modifiers, mac: bool) -> bool {
     mac && m.mac_cmd && !m.alt && !m.ctrl
@@ -272,11 +288,14 @@ pub struct Editor {
     // ── Cursor blink ────────────────────────────────────────────────────────
     /// Epoch-ms of the last cursor movement / keypress, used to reset blink.
     cursor_blink_epoch: std::time::Instant,
-    // ── Selection word highlighting ─────────────────────────────────────
-    /// Visible occurrences of the word under cursor: (row, col_start, col_end).
+    // ── Word highlighting ───────────────────────────────────────────────
+    /// Visible occurrences of the word under the caret or selected: (row,
+    /// col_start, col_end).
     word_occurrences: Vec<(usize, usize, usize)>,
     /// Content version when word_occurrences was last computed.
     word_occurrences_version: i32,
+    /// Visible lines (first, last) word_occurrences was computed for.
+    word_occurrences_range: (usize, usize),
     /// Cached per-line shape data for the minimap (indent + length).
     minimap_lines: Vec<crate::ui::minimap::LineShape>,
     /// Content version when minimap_lines was last computed.
@@ -381,6 +400,7 @@ impl Editor {
             cursor_blink_epoch: std::time::Instant::now(),
             word_occurrences: vec![],
             word_occurrences_version: -1,
+            word_occurrences_range: (0, 0),
             minimap_lines: vec![],
             minimap_lines_version: -1,
             word_occurrences_word: String::new(),
@@ -955,7 +975,7 @@ impl Editor {
 
                 // Show text cursor when hovering over the editor area; switch to pointer when Ctrl is held.
                 if response.hovered() {
-                    if ui.input(|i| i.modifiers.ctrl) {
+                    if ui.input(|i| i.modifiers.command) {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         // Compute the word bounds under the mouse for the underline.
                         if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
@@ -989,7 +1009,7 @@ impl Editor {
                 }
 
                 // Hover-word detection for signature tooltip (only when Ctrl is NOT held).
-                if response.hovered() && !ui.input(|i| i.modifiers.ctrl) {
+                if response.hovered() && !ui.input(|i| i.modifiers.command) {
                     if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
                         let local = mouse_pos - rect.min;
                         let (row, col) =
@@ -1072,7 +1092,7 @@ impl Editor {
                 }
 
                 // Diagnostic hover detection: check if mouse is over a diagnostic span.
-                if response.hovered() && !ui.input(|i| i.modifiers.ctrl) {
+                if response.hovered() && !ui.input(|i| i.modifiers.command) {
                     if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
                         let local = mouse_pos - rect.min;
                         let (row, col) =
@@ -1263,7 +1283,9 @@ impl Editor {
                                     // the next typed run becomes its own undo step.
                                     self.typing_burst = None;
                                     match key {
-                                        egui::Key::Enter if modifiers.ctrl && modifiers.shift => {
+                                        egui::Key::Enter
+                                            if modifiers.command && modifiers.shift =>
+                                        {
                                             self.buffer.checkpoint();
                                             let row = self.cursor.row;
                                             self.buffer.split_line(row, 0);
@@ -1274,7 +1296,7 @@ impl Editor {
                                             self.content_version =
                                                 self.content_version.wrapping_add(1);
                                         }
-                                        egui::Key::Enter if modifiers.ctrl => {
+                                        egui::Key::Enter if modifiers.command => {
                                             self.buffer.checkpoint();
                                             let row = self.cursor.row;
                                             let line_len = self.buffer.line_len(row);
@@ -1315,7 +1337,9 @@ impl Editor {
                                             text_typed = true;
                                         }
 
-                                        egui::Key::ArrowUp if modifiers.ctrl && modifiers.shift => {
+                                        egui::Key::ArrowUp
+                                            if modifiers.command && modifiers.shift =>
+                                        {
                                             let row = self.cursor.row;
                                             if row > 0 {
                                                 self.buffer.checkpoint();
@@ -1330,7 +1354,7 @@ impl Editor {
                                             }
                                         }
                                         egui::Key::ArrowDown
-                                            if modifiers.ctrl && modifiers.shift =>
+                                            if modifiers.command && modifiers.shift =>
                                         {
                                             let row = self.cursor.row;
                                             if row + 1 < self.buffer.num_lines() {
@@ -1349,7 +1373,7 @@ impl Editor {
                                         egui::Key::ArrowUp
                                             if modifiers.alt
                                                 && !modifiers.shift
-                                                && !modifiers.ctrl =>
+                                                && !modifiers.command =>
                                         {
                                             let row = self.cursor.row;
                                             if row > 0 {
@@ -1368,7 +1392,7 @@ impl Editor {
                                         egui::Key::ArrowDown
                                             if modifiers.alt
                                                 && !modifiers.shift
-                                                && !modifiers.ctrl =>
+                                                && !modifiers.command =>
                                         {
                                             let row = self.cursor.row;
                                             if row + 1 < self.buffer.num_lines() {
@@ -1387,7 +1411,7 @@ impl Editor {
                                         egui::Key::ArrowUp
                                             if modifiers.alt
                                                 && modifiers.shift
-                                                && !modifiers.ctrl =>
+                                                && !modifiers.command =>
                                         {
                                             let row = self.cursor.row;
                                             self.buffer.checkpoint();
@@ -1402,12 +1426,14 @@ impl Editor {
                                         egui::Key::ArrowDown
                                             if modifiers.alt
                                                 && modifiers.shift
-                                                && !modifiers.ctrl =>
+                                                && !modifiers.command =>
                                         {
                                             self.duplicate_line();
                                         }
                                         // Ctrl+Alt+Up — add cursor above (VSCode: Ctrl+Alt+Up)
-                                        egui::Key::ArrowUp if modifiers.alt && modifiers.ctrl => {
+                                        egui::Key::ArrowUp
+                                            if modifiers.alt && modifiers.command =>
+                                        {
                                             let mut new_extras: Vec<Cursor> = vec![];
                                             let (pr, pc) = self.cursor.position();
                                             if pr > 0 {
@@ -1433,7 +1459,9 @@ impl Editor {
                                             self.dedup_cursors();
                                         }
                                         // Ctrl+Alt+Down — add cursor below (VSCode: Ctrl+Alt+Down)
-                                        egui::Key::ArrowDown if modifiers.alt && modifiers.ctrl => {
+                                        egui::Key::ArrowDown
+                                            if modifiers.alt && modifiers.command =>
+                                        {
                                             let mut new_extras: Vec<Cursor> = vec![];
                                             let (pr, pc) = self.cursor.position();
                                             if pr + 1 < self.buffer.num_lines() {
@@ -1633,7 +1661,19 @@ impl Editor {
                                             ac_dismiss = true;
                                         }
 
-                                        egui::Key::Home if modifiers.ctrl && modifiers.shift => {
+                                        // PageUp / PageDown — move a page (Shift selects).
+                                        egui::Key::PageUp | egui::Key::PageDown
+                                            if !modifiers.command && !modifiers.alt =>
+                                        {
+                                            self.move_page(
+                                                *key == egui::Key::PageDown,
+                                                modifiers.shift,
+                                                rect.height(),
+                                            );
+                                            ac_dismiss = true;
+                                        }
+
+                                        egui::Key::Home if modifiers.command && modifiers.shift => {
                                             self.cursor.start_selection();
                                             self.cursor.set_position(0, 0);
                                             self.scroll_offset = egui::Vec2::ZERO;
@@ -1644,7 +1684,7 @@ impl Editor {
                                             self.dedup_cursors();
                                             ac_dismiss = true;
                                         }
-                                        egui::Key::End if modifiers.ctrl && modifiers.shift => {
+                                        egui::Key::End if modifiers.command && modifiers.shift => {
                                             self.cursor.start_selection();
                                             let last = self.buffer.num_lines().saturating_sub(1);
                                             self.cursor
@@ -1656,7 +1696,7 @@ impl Editor {
                                             self.dedup_cursors();
                                             ac_dismiss = true;
                                         }
-                                        egui::Key::Home if modifiers.ctrl => {
+                                        egui::Key::Home if modifiers.command => {
                                             self.cursor.clear_selection();
                                             self.cursor.set_position(0, 0);
                                             self.scroll_offset = egui::Vec2::ZERO;
@@ -1667,7 +1707,7 @@ impl Editor {
                                             self.dedup_cursors();
                                             ac_dismiss = true;
                                         }
-                                        egui::Key::End if modifiers.ctrl => {
+                                        egui::Key::End if modifiers.command => {
                                             self.cursor.clear_selection();
                                             let last = self.buffer.num_lines().saturating_sub(1);
                                             self.cursor
@@ -1730,10 +1770,15 @@ impl Editor {
                                             ac_dismiss = true;
                                         }
                                         egui::Key::Tab => {
-                                            if self.autocomplete.visible {
+                                            // Shift+Tab, or Tab over a multi-line
+                                            // selection, shifts whole lines.
+                                            if modifiers.shift || self.has_multiline_selection() {
+                                                self.indent_lines(modifiers.shift);
+                                                ac_dismiss = true;
+                                            } else if self.autocomplete.visible {
                                                 ac_confirm = true;
                                                 ac_nav = true;
-                                            } else if !modifiers.shift {
+                                            } else {
                                                 if self.detected_indent_spaces {
                                                     for _ in 0..self.detected_indent_size {
                                                         self.insert_char(' ', false);
@@ -1746,7 +1791,7 @@ impl Editor {
                                         }
 
                                         // Save
-                                        egui::Key::S if modifiers.ctrl => {
+                                        egui::Key::S if modifiers.command => {
                                             if self.current_path.is_none() {
                                                 self.save_as_requested = true;
                                             } else {
@@ -1758,20 +1803,20 @@ impl Editor {
                                         }
 
                                         // Undo
-                                        egui::Key::Z if modifiers.ctrl && !modifiers.shift => {
+                                        egui::Key::Z if modifiers.command && !modifiers.shift => {
                                             self.buffer.undo();
                                             self.is_modified = true;
                                             self.content_version =
                                                 self.content_version.wrapping_add(1);
                                         }
                                         // Redo (Ctrl+Shift+Z or Ctrl+Y)
-                                        egui::Key::Z if modifiers.ctrl && modifiers.shift => {
+                                        egui::Key::Z if modifiers.command && modifiers.shift => {
                                             self.buffer.redo();
                                             self.is_modified = true;
                                             self.content_version =
                                                 self.content_version.wrapping_add(1);
                                         }
-                                        egui::Key::Y if modifiers.ctrl => {
+                                        egui::Key::Y if modifiers.command => {
                                             self.buffer.redo();
                                             self.is_modified = true;
                                             self.content_version =
@@ -1779,7 +1824,7 @@ impl Editor {
                                         }
 
                                         // Select All
-                                        egui::Key::A if modifiers.ctrl => {
+                                        egui::Key::A if modifiers.command => {
                                             let last_row =
                                                 self.buffer.num_lines().saturating_sub(1);
                                             let last_col = self.buffer.line_len(last_row);
@@ -1790,7 +1835,7 @@ impl Editor {
                                         }
 
                                         // Ctrl+D — select word then find next occurrence (VSCode style)
-                                        egui::Key::D if modifiers.ctrl && !modifiers.shift => {
+                                        egui::Key::D if modifiers.command && !modifiers.shift => {
                                             if let Some(word) = self.current_word_full() {
                                                 let word_len = word.chars().count();
                                                 if !self.cursor.has_selection() {
@@ -1842,7 +1887,7 @@ impl Editor {
                                         }
 
                                         // Ctrl+Shift+L — select ALL occurrences of current word/selection
-                                        egui::Key::L if modifiers.ctrl && modifiers.shift => {
+                                        egui::Key::L if modifiers.command && modifiers.shift => {
                                             if let Some(word) = self.current_word_full() {
                                                 let word_len = word.chars().count();
                                                 self.extra_cursors.clear();
@@ -1900,11 +1945,11 @@ impl Editor {
                                         }
 
                                         // Copy (Ctrl+C)
-                                        egui::Key::C if modifiers.ctrl => {
+                                        egui::Key::C if modifiers.command => {
                                             // handled below via output_mut – skip here since we need ui
                                         }
                                         // Cut (Ctrl+X)
-                                        egui::Key::X if modifiers.ctrl => {
+                                        egui::Key::X if modifiers.command => {
                                             // handled below
                                         }
 
@@ -1924,7 +1969,7 @@ impl Editor {
                                         // Ctrl+Shift+F: workspace search, handled by the
                                         // app. Matched here so it doesn't fall through to
                                         // Ctrl+F (find bar).
-                                        egui::Key::F if modifiers.ctrl && modifiers.shift => {}
+                                        egui::Key::F if modifiers.command && modifiers.shift => {}
 
                                         // Format document (Shift+Alt+F → LSP), as in VSCode
                                         egui::Key::F if modifiers.shift && modifiers.alt => {
@@ -1932,23 +1977,23 @@ impl Editor {
                                         }
 
                                         // Find
-                                        egui::Key::F if modifiers.ctrl => {
+                                        egui::Key::F if modifiers.command => {
                                             self.open_find(false);
                                         }
 
                                         // Find & Replace (Ctrl+H)
-                                        egui::Key::H if modifiers.ctrl => {
+                                        egui::Key::H if modifiers.command => {
                                             self.open_find(true);
                                         }
 
                                         // Go to line (Ctrl+G)
-                                        egui::Key::G if modifiers.ctrl => {
+                                        egui::Key::G if modifiers.command => {
                                             self.show_goto_line = true;
                                             self.goto_line_input.clear();
                                         }
 
                                         // Toggle line comment (Ctrl+/)
-                                        egui::Key::Slash if modifiers.ctrl => {
+                                        egui::Key::Slash if modifiers.command => {
                                             self.buffer.checkpoint();
                                             let prefix = self.comment_prefix();
                                             let prefix_len = prefix.chars().count();
@@ -2003,12 +2048,12 @@ impl Editor {
                                         }
 
                                         // Duplicate current line (Ctrl+Shift+D)
-                                        egui::Key::D if modifiers.ctrl && modifiers.shift => {
+                                        egui::Key::D if modifiers.command && modifiers.shift => {
                                             self.duplicate_line();
                                         }
 
                                         // Delete current line(s) (Ctrl+Shift+K)
-                                        egui::Key::K if modifiers.ctrl && modifiers.shift => {
+                                        egui::Key::K if modifiers.command && modifiers.shift => {
                                             self.buffer.checkpoint();
                                             let mut rows = self.all_cursor_rows();
                                             rows.sort_unstable();
@@ -2026,7 +2071,7 @@ impl Editor {
                                         }
 
                                         // Indent selected/current lines (Ctrl+])
-                                        egui::Key::CloseBracket if modifiers.ctrl => {
+                                        egui::Key::CloseBracket if modifiers.command => {
                                             self.buffer.checkpoint();
                                             let rows = self.selected_line_rows();
                                             for row in &rows {
@@ -2042,7 +2087,7 @@ impl Editor {
                                         }
 
                                         // Unindent selected/current lines (Ctrl+[)
-                                        egui::Key::OpenBracket if modifiers.ctrl => {
+                                        egui::Key::OpenBracket if modifiers.command => {
                                             self.buffer.checkpoint();
                                             let rows = self.selected_line_rows();
                                             for row in &rows {
@@ -2108,7 +2153,7 @@ impl Editor {
                     });
 
                     // Copy / Cut (need ui for output_mut)
-                    // egui-winit turns Ctrl+C / Ctrl+X into Event::Copy / Event::Cut
+                    // egui-winit turns Ctrl+C / Ctrl+X (Cmd on macOS) into Event::Copy / Event::Cut
                     // and emits no Key event for them; the Key arms cover other backends.
                     let do_copy = ui.input(|i| {
                         i.events.iter().any(|e| {
@@ -2118,7 +2163,7 @@ impl Editor {
                                     | egui::Event::Key {
                                         key: egui::Key::C,
                                         pressed: true,
-                                        modifiers: egui::Modifiers { ctrl: true, .. },
+                                        modifiers: egui::Modifiers { command: true, .. },
                                         ..
                                     }
                             )
@@ -2132,7 +2177,7 @@ impl Editor {
                                     | egui::Event::Key {
                                         key: egui::Key::X,
                                         pressed: true,
-                                        modifiers: egui::Modifiers { ctrl: true, .. },
+                                        modifiers: egui::Modifiers { command: true, .. },
                                         ..
                                     }
                             )
@@ -2233,7 +2278,7 @@ impl Editor {
                                 self.hit_test(local, gutter_width, line_height, char_width);
                             (r, c.min(self.buffer.line_len(r)))
                         };
-                        if ui.input(|i| i.modifiers.ctrl) {
+                        if ui.input(|i| i.modifiers.command) {
                             let mut extra = Cursor::new();
                             extra.set_position(row, col);
                             self.extra_cursors.push(extra);
@@ -2292,7 +2337,7 @@ impl Editor {
                                 self.hit_test(local, gutter_width, line_height, char_width);
                             (r, c.min(self.buffer.line_len(r)))
                         };
-                        if ui.input(|i| i.modifiers.ctrl) {
+                        if ui.input(|i| i.modifiers.command) {
                             // Ctrl+click: navigate to definition of the word under the pointer.
                             // Move cursor to the clicked position first so LSP uses the right location.
                             if let Some(word) = get_word_at(&self.buffer, row, col) {
@@ -2379,7 +2424,12 @@ impl Editor {
 
                     ui.separator();
 
-                    if ui.button("Go to Definition    Ctrl+Click").clicked() {
+                    if ui
+                        .button(crate::keybinds::platform_label(
+                            "Go to Definition    Ctrl+Click",
+                        ))
+                        .clicked()
+                    {
                         let (row, col) = self.cursor.position();
                         if let Some(word) = get_word_at(&self.buffer, row, col) {
                             self.go_to_definition_request = Some(word);
@@ -2387,7 +2437,10 @@ impl Editor {
                         ui.close_menu();
                     }
 
-                    if ui.button("Find    Ctrl+F").clicked() {
+                    if ui
+                        .button(crate::keybinds::platform_label("Find    Ctrl+F"))
+                        .clicked()
+                    {
                         self.open_find(false);
                         ui.close_menu();
                     }
@@ -2894,13 +2947,13 @@ impl Editor {
                             let occ_ex =
                                 x_start + prefix_width(ui, &line, occ_end, &font_id, char_width);
                             if occ_ex > occ_sx {
-                                painter.rect_filled(
+                                paint_occurrence(
+                                    &painter,
                                     egui::Rect::from_min_max(
                                         egui::pos2(occ_sx - self.scroll_offset.x, y),
                                         egui::pos2(occ_ex - self.scroll_offset.x, y + line_height),
                                     ),
-                                    2.0,
-                                    palette.accent_muted,
+                                    &palette,
                                 );
                             }
                         }
@@ -4038,7 +4091,14 @@ mod tests {
 
     use egui::{Event, Key, Modifiers, PointerButton};
 
-    const CTRL: Modifiers = Modifiers::CTRL;
+    /// The platform's command key as egui reports it: Cmd on macOS, Ctrl
+    /// elsewhere (both also set `command`).
+    const CTRL: Modifiers = Modifiers {
+        ctrl: !MAC,
+        mac_cmd: MAC,
+        command: true,
+        ..Modifiers::NONE
+    };
     const SHIFT: Modifiers = Modifiers::SHIFT;
     const ALT: Modifiers = Modifiers::ALT;
     const NONE: Modifiers = Modifiers::NONE;
@@ -4224,7 +4284,7 @@ mod tests {
         }
     }
 
-    /// Editor loaded with `content`, already focused by a warm-up frame.
+    /// Editor loaded with `content`, already focused by warm-up frames.
     fn setup(content: &str) -> (Harness, Editor) {
         setup_path(content, None)
     }
@@ -4233,6 +4293,10 @@ mod tests {
         let mut h = Harness::new();
         let mut ed = Editor::new();
         ed.set_content(content.to_string(), path);
+        // The first frame takes focus; egui only keeps the Tab/arrow lock filter
+        // of a widget that already had focus the frame before, so a second one
+        // is needed or the first Tab would move focus out of the editor.
+        h.idle(&mut ed);
         h.idle(&mut ed);
         (h, ed)
     }
@@ -4430,18 +4494,55 @@ mod tests {
     }
 
     #[test]
-    fn tab_inserts_detected_indent_and_shift_tab_does_nothing() {
+    fn tab_inserts_detected_indent_and_shift_tab_outdents_the_line() {
         let (mut h, mut ed) = setup("x");
         h.press(&mut ed, Key::Tab, NONE);
         assert_eq!(text(&ed), "    x");
         assert_eq!(ed.cursor.position(), (0, 4));
         h.press(&mut ed, Key::Tab, SHIFT);
-        assert_eq!(text(&ed), "    x");
+        assert_eq!(text(&ed), "x");
+        assert_eq!(ed.cursor.position(), (0, 0));
+        h.press(&mut ed, Key::Tab, SHIFT);
+        assert_eq!(text(&ed), "x");
 
         let (mut h, mut ed) = setup("\tfoo\n");
         ed.cursor.set_position(1, 0);
         h.press(&mut ed, Key::Tab, NONE);
         assert_eq!(text(&ed), "\tfoo\n\t");
+    }
+
+    #[test]
+    fn tab_on_multiline_selection_indents_lines_instead_of_replacing() {
+        let (mut h, mut ed) = setup("a\n\nbc\nd");
+        ed.cursor.set_position(0, 1);
+        ed.cursor.start_selection();
+        ed.cursor.set_position(2, 1);
+        h.press(&mut ed, Key::Tab, NONE);
+        // Blank line untouched, line 3 (outside the selection) untouched.
+        assert_eq!(text(&ed), "    a\n\n    bc\nd");
+        assert_eq!(ed.cursor.sel_anchor, Some((0, 5)));
+        assert_eq!(ed.cursor.position(), (2, 5));
+
+        h.press(&mut ed, Key::Tab, SHIFT);
+        assert_eq!(text(&ed), "a\n\nbc\nd");
+        assert_eq!(ed.cursor.sel_anchor, Some((0, 1)));
+        assert_eq!(ed.cursor.position(), (2, 1));
+
+        // Undo restores the indented block in one step.
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "    a\n\n    bc\nd");
+    }
+
+    #[test]
+    fn tab_on_full_line_selection_keeps_it_whole_and_skips_line_after() {
+        let (mut h, mut ed) = setup("\ta\n\tb\nc");
+        ed.cursor.set_position(0, 0);
+        ed.cursor.start_selection();
+        ed.cursor.set_position(2, 0);
+        h.press(&mut ed, Key::Tab, NONE);
+        assert_eq!(text(&ed), "\t\ta\n\t\tb\nc");
+        assert_eq!(ed.cursor.sel_anchor, Some((0, 0)));
+        assert_eq!(ed.cursor.position(), (2, 0));
     }
 
     #[test]
@@ -4745,17 +4846,19 @@ mod tests {
     fn word_and_line_edge_modifiers_follow_the_platform() {
         let opt = Modifiers::ALT;
         let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        // Ctrl as egui reports it: with `command` off macOS, alone on macOS.
+        let (win_ctrl, mac_ctrl) = (Modifiers::CTRL | Modifiers::COMMAND, Modifiers::CTRL);
         // macOS: Option moves by word, Cmd jumps to the line edges.
         assert!(word_modifier(&opt, true));
         assert!(word_modifier(&(opt | SHIFT), true), "Option+Shift selects");
-        assert!(!word_modifier(&CTRL, true));
+        assert!(!word_modifier(&mac_ctrl, true));
         assert!(line_edge_modifier(&cmd, true));
         assert!(!line_edge_modifier(&opt, true));
         // Elsewhere: Ctrl moves by word, Alt stays free for back/forward.
-        assert!(word_modifier(&CTRL, false));
-        assert!(word_modifier(&(CTRL | SHIFT), false));
+        assert!(word_modifier(&win_ctrl, false));
+        assert!(word_modifier(&(win_ctrl | SHIFT), false));
         assert!(!word_modifier(&opt, false));
-        assert!(!word_modifier(&(CTRL | ALT), false));
+        assert!(!word_modifier(&(win_ctrl | ALT), false));
         assert!(!line_edge_modifier(&cmd, false));
     }
 
@@ -5175,7 +5278,12 @@ mod tests {
     fn shortcut_keys_set_request_flags() {
         let (mut h, mut ed) = setup("abc");
         ed.cursor.set_position(0, 2);
-        h.press(&mut ed, Key::Space, CTRL);
+        // Ctrl+Space stays on Ctrl on macOS too (Cmd+Space is Spotlight).
+        let ctrl = Modifiers {
+            command: !MAC,
+            ..Modifiers::CTRL
+        };
+        h.press(&mut ed, Key::Space, ctrl);
         assert!(ed.completion_request_pending);
         assert_eq!(
             (ed.completion_trigger_row, ed.completion_trigger_col),
@@ -5867,6 +5975,45 @@ bar",
         assert_eq!(ed.scroll_offset.y, 10.0 * ed.line_height);
     }
 
+    #[test]
+    fn page_down_and_up_move_the_caret_and_the_view_by_a_page() {
+        let content = (0..200)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        ed.cursor.set_position(0, 2);
+        // 600px view: the rows that fit, minus one kept for context.
+        let page = (600.0 / ed.line_height) as usize - 1;
+
+        h.press(&mut ed, Key::PageDown, NONE);
+        assert_eq!(ed.cursor.position(), (page, 2));
+        assert_eq!(ed.scroll_offset.y, page as f32 * ed.line_height);
+        assert!(!ed.cursor.has_selection());
+
+        h.press(&mut ed, Key::PageDown, SHIFT);
+        assert_eq!(ed.cursor.position(), (2 * page, 2));
+        assert_eq!(ed.cursor.sel_anchor, Some((page, 2)));
+
+        h.press(&mut ed, Key::PageUp, NONE);
+        assert_eq!(ed.cursor.position(), (page, 2));
+        assert!(!ed.cursor.has_selection());
+        assert_eq!(ed.scroll_offset.y, page as f32 * ed.line_height);
+
+        // Less than a page left: the caret lands on the first char.
+        h.press(&mut ed, Key::PageUp, NONE);
+        h.press(&mut ed, Key::PageUp, NONE);
+        assert_eq!(ed.cursor.position(), (0, 0));
+        assert_eq!(ed.scroll_offset.y, 0.0);
+
+        // ...or on the last one, and the view stops at the end of the file.
+        for _ in 0..20 {
+            h.press(&mut ed, Key::PageDown, NONE);
+        }
+        assert_eq!(ed.cursor.position(), (199, 7));
+        assert_eq!(ed.scroll_offset.y, 201.0 * ed.line_height - 600.0);
+    }
+
     // ── Word wrap ───────────────────────────────────────────────────────────
 
     fn setup_wrapped(content: &str) -> (Harness, Editor) {
@@ -6124,11 +6271,63 @@ bar",
         assert_eq!(ed.minimap_lines_version, ed.content_version);
         assert!(!ed.minimap_lines.is_empty());
 
-        // Selecting a word highlights its other occurrences.
+        // Selecting a word highlights all its occurrences.
         ed.cursor.set_position(1, 11);
         ed.cursor.sel_anchor = Some((1, 8));
         h.idle(&mut ed);
-        assert_eq!(ed.word_occurrences, vec![(2, 4, 7), (2, 10, 13)]);
+        let foo = vec![(1, 8, 11), (2, 4, 7), (2, 10, 13)];
+        assert_eq!(ed.word_occurrences, foo);
+    }
+
+    #[test]
+    fn clicking_a_variable_highlights_its_uses() {
+        let (mut h, mut ed) = setup("let foo = 1;\nfoo + food;\nx = foo");
+        let foo = vec![(0, 4, 7), (1, 0, 3), (2, 4, 7)];
+
+        // Caret inside the word, or right after it.
+        h.click(&mut ed, 1, 1, NONE);
+        assert_eq!(ed.cursor.position(), (1, 1));
+        assert_eq!(ed.word_occurrences, foo, "`food` is another word");
+        ed.cursor.set_position(2, 7);
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, foo);
+
+        // Single-letter names count; numbers, spaces and punctuation do not.
+        ed.cursor.set_position(2, 0);
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, vec![(2, 0, 1)]);
+        ed.cursor.set_position(0, 10);
+        h.idle(&mut ed);
+        assert!(ed.word_occurrences.is_empty(), "on `1`");
+        ed.cursor.set_position(1, 4);
+        h.idle(&mut ed);
+        assert!(ed.word_occurrences.is_empty(), "between `+` and a space");
+
+        // Editing keeps the highlights in step with the text.
+        ed.cursor.set_position(0, 4);
+        h.type_text(&mut ed, "a");
+        assert_eq!(ed.word_occurrences, vec![(0, 4, 8)]);
+    }
+
+    #[test]
+    fn word_highlights_follow_scrolling() {
+        let content = (0..200)
+            .map(|i| {
+                if i % 50 == 0 {
+                    "foo".to_string()
+                } else {
+                    format!("x{i}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, vec![(0, 0, 3)]);
+        // Same word, same text: lines scrolled into view get highlighted too.
+        ed.scroll_offset.y = 140.0 * ed.line_height;
+        h.idle(&mut ed);
+        assert_eq!(ed.word_occurrences, vec![(150, 0, 3)]);
     }
 
     #[test]

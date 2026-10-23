@@ -68,6 +68,11 @@ impl ShortcutsHelp {
                     row(ui, "Home / End", "Go to start / end of line");
                     row(ui, "Ctrl+Home", "Go to start of file");
                     row(ui, "Ctrl+End", "Go to end of file");
+                    row(
+                        ui,
+                        "PageUp / PageDown",
+                        "Move a page up / down (Shift selects)",
+                    );
                     row(ui, "Backspace", "Delete character before cursor");
                     row(ui, "Enter", "Insert new line");
                     row(ui, "Ctrl+Enter", "Insert line below cursor");
@@ -141,6 +146,7 @@ fn section(ui: &mut egui::Ui, title: &str) {
 }
 
 fn row(ui: &mut egui::Ui, keys: &str, description: &str) {
+    let keys = &crate::keybinds::platform_label(keys);
     ui.horizontal(|ui| {
         // Key badge
         egui::Frame::new()

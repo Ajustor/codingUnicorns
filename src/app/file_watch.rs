@@ -310,7 +310,7 @@ impl FileWatchState {
 fn is_ctrl_s(e: &egui::Event) -> bool {
     matches!(
         e,
-        egui::Event::Key { key: egui::Key::S, pressed: true, modifiers, .. } if modifiers.ctrl
+        egui::Event::Key { key: egui::Key::S, pressed: true, modifiers, .. } if modifiers.command
     )
 }
 

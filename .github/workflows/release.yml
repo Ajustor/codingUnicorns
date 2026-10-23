@@ -256,42 +256,42 @@ jobs:
           }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
       - name: Upload AppImage (Linux)
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coding-unicorns-linux-x64-appimage
           path: coding-unicorns-linux-x64.AppImage
 
       - name: Upload disk image (macOS)
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coding-unicorns-macos-arm64-dmg
           path: coding-unicorns-macos-arm64.dmg
 
       - name: Upload installer package (macOS)
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coding-unicorns-macos-arm64-pkg
           path: coding-unicorns-macos-arm64.pkg
 
       - name: Upload Windows installer (MSI)
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coding-unicorns-setup-msi
           path: coding-unicorns-setup.msi
 
       - name: Upload icon (ICO)
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coding-unicorns-icon-ico
           path: assets/icon.ico
@@ -304,7 +304,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
 
@@ -321,7 +321,7 @@ jobs:
           fi
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Coding Unicorns ${{ github.ref_name }}
           draft: false
@@ -356,13 +356,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
 
       - name: Configure Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Build site
         env:
@@ -372,10 +372,10 @@ jobs:
         run: bash scripts/build-site.sh "$TAG" "$BASE_URL" artifacts
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
       - name: Deploy to GitHub Pages
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

@@ -232,6 +232,87 @@ impl Editor {
         }
     }
 
+    /// True when some cursor's selection spans more than one line: Tab then
+    /// indents those lines instead of replacing the selection.
+    pub(super) fn has_multiline_selection(&self) -> bool {
+        self.all_cursors()
+            .any(|c| c.selection_range().is_some_and(|(s, e)| s.0 != e.0))
+    }
+
+    /// Tab / Shift+Tab on whole lines: add one indent level to (or remove one
+    /// from) every line a cursor touches, as one undo step. A selection ending
+    /// at column 0 leaves that last line alone; blank lines are not indented.
+    /// Selections and carets keep their place in the text.
+    pub(super) fn indent_lines(&mut self, outdent: bool) {
+        let mut rows: Vec<usize> = self
+            .all_cursors()
+            .flat_map(|c| {
+                let (s, e) = c.selection_range().unwrap_or((c.position(), c.position()));
+                let last = if e.0 > s.0 && e.1 == 0 { e.0 - 1 } else { e.0 };
+                s.0..=last
+            })
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+
+        let unit = self.indent_unit();
+        let size = self.detected_indent_size.max(1);
+        // Chars added (positive) or removed (negative) at the start of each row.
+        let mut delta: std::collections::HashMap<usize, isize> = Default::default();
+        for &row in &rows {
+            let line = self.buffer.line(row);
+            let d = if outdent {
+                if line.starts_with('\t') {
+                    -1
+                } else {
+                    -(line.chars().take(size).take_while(|c| *c == ' ').count() as isize)
+                }
+            } else if line.trim().is_empty() {
+                0
+            } else {
+                unit.chars().count() as isize
+            };
+            if d != 0 {
+                delta.insert(row, d);
+            }
+        }
+        if delta.is_empty() {
+            return;
+        }
+
+        self.buffer.checkpoint();
+        for &row in rows.iter().rev() {
+            match delta.get(&row) {
+                Some(&d) if d > 0 => self.buffer.insert_str(row, 0, &unit),
+                Some(&d) => {
+                    let start = self.buffer.char_index(row, 0);
+                    self.buffer.delete_range(start, start + d.unsigned_abs());
+                }
+                None => {}
+            }
+        }
+
+        // An indented line shifts every column but 0 (a selection starting at
+        // the line start keeps covering the whole line); an outdented one pulls
+        // columns back, never past the line start.
+        let shift = |(row, col): (usize, usize)| -> (usize, usize) {
+            match delta.get(&row) {
+                Some(&d) if d > 0 && col > 0 => (row, col + d as usize),
+                Some(&d) if d < 0 => (row, col.saturating_sub(d.unsigned_abs())),
+                _ => (row, col),
+            }
+        };
+        for c in std::iter::once(&mut self.cursor).chain(self.extra_cursors.iter_mut()) {
+            let (row, col) = shift(c.position());
+            c.set_position(row, col);
+            c.sel_anchor = c.sel_anchor.map(shift);
+        }
+        self.dedup_cursors();
+        self.is_modified = true;
+        self.content_version = self.content_version.wrapping_add(1);
+        self.cursor_blink_epoch = std::time::Instant::now();
+    }
+
     /// Text to insert for a newline at (row, col), and the caret offset inside it
     /// in chars. `rest` is what follows the inserted newline on that line (after
     /// a replaced selection). With `auto_indent` the new line copies the leading
@@ -290,6 +371,56 @@ impl Editor {
             })
             .collect();
         self.apply_cursor_edits(edits);
+    }
+
+    /// PageUp / PageDown: move every cursor one page (the rows that fit in
+    /// `view_height`, minus one kept for context), extending selections with
+    /// `select`, and scroll the view by the same amount so the caret keeps its
+    /// place on screen.
+    pub(super) fn move_page(&mut self, down: bool, select: bool, view_height: f32) {
+        let lh = self.line_height.max(1.0);
+        let rows = ((view_height / lh) as usize).max(2) - 1;
+        let cols = self.wrap.cols;
+        let wrapped = self.wrap.active();
+        let buffer = &self.buffer;
+        let last = buffer.num_lines().saturating_sub(1);
+        for c in std::iter::once(&mut self.cursor).chain(self.extra_cursors.iter_mut()) {
+            let start = c.row;
+            for _ in 0..rows {
+                if wrapped {
+                    super::wrap::move_visual(c, buffer, cols, down, select);
+                } else {
+                    match (down, select) {
+                        (true, true) => c.move_down_select(buffer),
+                        (true, false) => c.move_down(buffer),
+                        (false, true) => c.move_up_select(buffer),
+                        (false, false) => c.move_up(buffer),
+                    }
+                }
+            }
+            // Less than a page left: land on the file's first / last char.
+            if !wrapped && down && start + rows > last {
+                c.col = buffer.line_len(c.row);
+            } else if !wrapped && !down && start < rows {
+                c.col = 0;
+            }
+        }
+        self.dedup_cursors();
+
+        let total_rows = if wrapped {
+            self.wrap.total_rows()
+        } else {
+            self.buffer.num_lines()
+        };
+        let max_y = ((total_rows + 1) as f32 * lh - view_height).max(0.0);
+        let step = rows as f32 * lh;
+        self.scroll_offset.y = if down {
+            (self.scroll_offset.y + step).min(max_y)
+        } else {
+            (self.scroll_offset.y - step).max(0.0)
+        };
+        self.scroll_to_cursor = true;
+        self.cursor_blink_epoch = std::time::Instant::now();
     }
 
     // ── Edits at every cursor ──────────────────────────────────────────────

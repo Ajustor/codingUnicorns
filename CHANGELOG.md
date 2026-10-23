@@ -8,6 +8,25 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.23.5] - 2026-10-23
+
+### Fixed
+
+- PageUp / PageDown move the caret and the view by a page in the editor (Shift selects). They did nothing before.
+- Clicking a variable highlights every use of it on screen, the one clicked included, with an outlined box that stands out from the selection. Before, a word of at least three letters had to be selected, and lines scrolled into view were not highlighted.
+
+## [0.23.4] - 2026-10-23
+
+### Fixed
+
+- macOS: shortcuts use Cmd instead of Ctrl (Cmd+S, Cmd+P, Cmd+C, Cmd+Z, Cmd+click to go to a definition…), and menus, the command palette and the shortcut list show Cmd. Ctrl+Space (completion), Ctrl+` (terminal) and Ctrl+Tab (next tab) stay on Ctrl, since macOS keeps Cmd+Space and Cmd+` for itself. In the terminal, Cmd+C copies and no longer interrupts the running command; Ctrl+C still does.
+
+## [0.23.3] - 2026-10-23
+
+### Fixed
+
+- Tab with several lines selected indents them by one level instead of replacing the selection with a tab, and Shift+Tab removes one level from the selected lines (or the current line). Blank lines are left alone, the selection stays on the shifted text, and one Ctrl+Z undoes it.
+
 ## [0.23.2] - 2026-10-22
 
 ### Fixed
