@@ -8,6 +8,16 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- A translation now takes the place of its key, as i18n-ally does: `{t.panier.titre}` reads *Panier* until the cursor comes onto the line, which brings the key back to edit it. With the speedster-js module 0.2.3, a key chosen at run time (`{t.statuts[commande.statut]}`) lists the messages it can show.
+
+### Added
+
+- Ctrl+click (or F12) on a translation or its key opens the translation file at that key.
+
 ## [0.25.0] - 2026-11-05
 
 ### Changed

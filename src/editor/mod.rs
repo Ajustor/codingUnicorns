@@ -41,9 +41,28 @@ pub(crate) const MAX_TOKENIZED_LINE_CHARS: usize = 20_000;
 /// visible, not as a whole.
 pub(crate) const VIEWPORT_THRESHOLD: usize = 4000;
 
-/// Pixel width of the first `cols` chars of `line`.
 /// Space left each side of an inlay, in character widths.
 const INLAY_MARGIN: f32 = 0.3;
+
+/// A hint drawn inside a line (see [`crate::plugin::InlineHint`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Inlay {
+    /// The column it is drawn at, between the characters `col - 1` and `col`.
+    pub col: usize,
+    /// The characters `from..col` are hidden behind it (a key behind its
+    /// translation); `from == col` hides nothing.
+    pub from: usize,
+    pub text: String,
+    /// File and 0-based line Ctrl+click on it (or on what it stands for) opens.
+    pub target: Option<(std::path::PathBuf, usize)>,
+}
+
+impl Inlay {
+    /// Characters hidden behind it.
+    fn hidden(&self) -> usize {
+        self.col - self.from
+    }
+}
 
 /// Width of an inlay showing `text`: the text with a space each side (in the
 /// editor's monospace font, which makes it exact) and its margins.
@@ -51,24 +70,32 @@ fn inlay_width(text: &str, char_width: f32) -> f32 {
     (text.chars().count() as f32 + 2.0 + 2.0 * INLAY_MARGIN) * char_width
 }
 
-/// Pixels the inlays of a line (sorted by column) add before column `col`.
-/// `at_char`: where the character at `col` starts, after an inlay standing at
-/// `col`; otherwise where the caret at `col` stands, before it.
-fn inlay_shift(inlays: &[(usize, String)], col: usize, at_char: bool, char_width: f32) -> f32 {
+/// Pixels the inlays of a line (sorted by column) add before column `col`,
+/// less the characters they hide. `at_char`: where the character at `col`
+/// starts, after an inlay standing at `col`; otherwise where the caret at
+/// `col` stands, before it. A column hidden behind an inlay is at its start.
+fn inlay_shift(inlays: &[Inlay], col: usize, at_char: bool, char_width: f32) -> f32 {
     inlays
         .iter()
-        .take_while(|(c, _)| if at_char { *c <= col } else { *c < col })
-        .map(|(_, text)| inlay_width(text, char_width))
+        .map(|inlay| {
+            if inlay.col < col || (at_char && inlay.col == col) {
+                inlay_width(&inlay.text, char_width) - inlay.hidden() as f32 * char_width
+            } else if col > inlay.from {
+                -((col - inlay.from) as f32) * char_width
+            } else {
+                0.0
+            }
+        })
         .sum()
 }
 
 /// The tokens of a line with its inlays between them: each inlay in a muted,
 /// italic pill (a space each side on a raised background), `INLAY_MARGIN`
-/// from the text around it.
+/// from the text around it, in place of the characters it hides.
 fn append_with_inlays(
     job: &mut egui::text::LayoutJob,
     tokens: &[highlight::Token],
-    inlays: &[(usize, String)],
+    inlays: &[Inlay],
     font_id: &egui::FontId,
     char_width: f32,
     palette: &crate::ui::theme::Palette,
@@ -100,14 +127,17 @@ fn append_with_inlays(
         };
         let mut piece = String::new();
         for ch in tok.text.chars() {
-            while let Some((_, text)) = pending.next_if(|(c, _)| *c == col) {
+            while let Some(inlay) = pending.next_if(|i| i.col == col) {
                 if !piece.is_empty() {
                     job.append(&std::mem::take(&mut piece), lead, format.clone());
                     lead = 0.0;
                 }
-                pill(job, text, &mut lead);
+                pill(job, &inlay.text, &mut lead);
             }
-            piece.push(ch);
+            // The pill coming next stands for this character.
+            if pending.peek().is_none_or(|i| i.from > col) {
+                piece.push(ch);
+            }
             col += 1;
         }
         if !piece.is_empty() {
@@ -116,11 +146,12 @@ fn append_with_inlays(
         }
     }
     // Inlays at the end of the line (or past it, from a stale answer).
-    for (_, text) in pending {
-        pill(job, text, &mut lead);
+    for inlay in pending {
+        pill(job, &inlay.text, &mut lead);
     }
 }
 
+/// Pixel width of the first `cols` chars of `line`.
 fn prefix_width(
     ui: &egui::Ui,
     line: &str,
@@ -240,6 +271,9 @@ pub struct Editor {
     other_had_focus: bool,
     /// Populated by Ctrl+click; consumed by the app to navigate to definition.
     pub go_to_definition_request: Option<String>,
+    /// Populated by Ctrl+click on an inlay with a target (a translation key);
+    /// consumed by the app to open that file at that 0-based line.
+    pub go_to_location_request: Option<(std::path::PathBuf, usize)>,
     /// Word under the mouse when Ctrl is held: (row, start_col, end_col).
     pub ctrl_hover_word_bounds: Option<(usize, usize, usize)>,
     /// Word currently under the mouse pointer (for hover tooltip).
@@ -295,9 +329,9 @@ pub struct Editor {
     pub show_blame: bool,
     /// Text the language module shows at the end of lines, by line.
     inline_hints: std::collections::HashMap<usize, String>,
-    /// Hints drawn inside lines, at a column (a translation after its key),
-    /// by line, sorted by column.
-    pub(super) inlays: std::collections::HashMap<usize, Vec<(usize, String)>>,
+    /// Hints drawn inside lines, at a column (a translation in place of its
+    /// key), by line, sorted by column. See [`Editor::line_inlays`].
+    pub(super) inlays: std::collections::HashMap<usize, Vec<Inlay>>,
     /// Content version the hints were asked for, and when.
     inline_hints_asked: Option<(i32, std::time::Instant)>,
     /// Set when a signature help request should be sent.
@@ -429,6 +463,7 @@ impl Editor {
             has_focus: false,
             other_had_focus: false,
             go_to_definition_request: None,
+            go_to_location_request: None,
             ctrl_hover_word_bounds: None,
             hover_word: None,
             hover_pos: egui::Pos2::ZERO,
@@ -791,8 +826,21 @@ impl Editor {
         for hint in hints {
             if let Some(col) = hint.col {
                 let line = self.inlays.entry(hint.line).or_default();
-                let at = line.partition_point(|(c, _)| *c <= col);
-                line.insert(at, (col, hint.text));
+                let at = line.partition_point(|i| i.col <= col);
+                // What it hides ends where the previous one is drawn.
+                let floor = at.checked_sub(1).map_or(0, |prev| line[prev].col);
+                let inlay = Inlay {
+                    col,
+                    from: hint
+                        .from
+                        .filter(|&f| f <= col)
+                        .map_or(col, |f| f.max(floor)),
+                    text: hint.text,
+                    target: hint
+                        .target
+                        .map(|t| (std::path::PathBuf::from(t.path), t.line)),
+                };
+                line.insert(at, inlay);
                 continue;
             }
             self.inline_hints
@@ -803,6 +851,43 @@ impl Editor {
                 })
                 .or_insert(hint.text);
         }
+    }
+
+    /// The inlays drawn on `row`: none on a long line (drawn by its visible
+    /// columns only); on a line being edited (a cursor or the selection on it)
+    /// they hide nothing, so what they stand for can be read and changed.
+    pub(super) fn line_inlays(&self, row: usize) -> Vec<Inlay> {
+        let Some(inlays) = self.inlays.get(&row) else {
+            return Vec::new();
+        };
+        if self.buffer.line(row).len() > LONG_LINE_BYTES {
+            return Vec::new();
+        }
+        let selected = self
+            .cursor
+            .selection_range()
+            .is_some_and(|((start, _), (end, _))| (start..=end).contains(&row));
+        let editing = selected
+            || self.cursor.position().0 == row
+            || self.extra_cursors.iter().any(|c| c.position().0 == row);
+        inlays
+            .iter()
+            .map(|inlay| Inlay {
+                from: if editing { inlay.col } else { inlay.from },
+                ..inlay.clone()
+            })
+            .collect()
+    }
+
+    /// Where Ctrl+click at `row`, `col` goes when it falls on an inlay or on
+    /// what it stands for.
+    pub fn inlay_target_at(&self, row: usize, col: usize) -> Option<(std::path::PathBuf, usize)> {
+        self.inlays
+            .get(&row)?
+            .iter()
+            .find(|i| (i.from..=i.col).contains(&col))?
+            .target
+            .clone()
     }
 
     // Render entry point: the parameter list is wide because it threads shared
@@ -2482,7 +2567,10 @@ impl Editor {
                         if ui.input(|i| i.modifiers.command) {
                             // Ctrl+click: navigate to definition of the word under the pointer.
                             // Move cursor to the clicked position first so LSP uses the right location.
-                            if let Some(word) = get_word_at(&self.buffer, row, col) {
+                            // On a translation (or its key): its place in the catalogue.
+                            if let Some(target) = self.inlay_target_at(row, col) {
+                                self.go_to_location_request = Some(target);
+                            } else if let Some(word) = get_word_at(&self.buffer, row, col) {
                                 self.cursor.set_position(row, col);
                                 self.go_to_definition_request = Some(word);
                             }
@@ -3010,12 +3098,8 @@ impl Editor {
                     }
 
                     let line = self.buffer.line(line_idx);
-                    // Inlays of this line (none on a long line, drawn by its
-                    // visible columns only), and a column's x with them.
-                    let inlays: Vec<(usize, String)> = match self.inlays.get(&line_idx) {
-                        Some(inlays) if line.len() <= LONG_LINE_BYTES => inlays.clone(),
-                        _ => Vec::new(),
-                    };
+                    // Inlays of this line, and a column's x with them.
+                    let inlays = self.line_inlays(line_idx);
                     let col_x = |col: usize, at_char: bool| {
                         prefix_width(ui, &line, col, &font_id, char_width)
                             + inlay_shift(&inlays, col, at_char, char_width)
@@ -4035,15 +4119,38 @@ mod tests {
 
     // ── Inlays ──────────────────────────────────────────────────────────────
 
+    fn inlay(col: usize, from: usize, text: &str) -> Inlay {
+        Inlay {
+            col,
+            from,
+            text: text.to_string(),
+            target: None,
+        }
+    }
+
     #[test]
     fn inlay_shift_puts_the_caret_before_and_the_character_after() {
-        let inlays = vec![(3, "ab".to_string()), (5, "c".to_string())];
+        let inlays = vec![inlay(3, 3, "ab"), inlay(5, 5, "c")];
         let w = |t: &str| inlay_width(t, 10.0);
         assert_eq!(w("ab"), (2.0 + 2.0 + 2.0 * INLAY_MARGIN) * 10.0);
         assert_eq!(inlay_shift(&inlays, 3, false, 10.0), 0.0);
         assert_eq!(inlay_shift(&inlays, 3, true, 10.0), w("ab"));
         assert_eq!(inlay_shift(&inlays, 4, false, 10.0), w("ab"));
         assert_eq!(inlay_shift(&inlays, 6, false, 10.0), w("ab") + w("c"));
+    }
+
+    #[test]
+    fn inlay_shift_takes_off_what_an_inlay_hides() {
+        // Columns 2..6 hidden behind the pill.
+        let inlays = vec![inlay(6, 2, "ab")];
+        let w = inlay_width("ab", 10.0);
+        assert_eq!(inlay_shift(&inlays, 2, true, 10.0), 0.0);
+        // Inside what it hides: at its start.
+        assert_eq!(inlay_shift(&inlays, 4, false, 10.0), -20.0);
+        assert_eq!(inlay_shift(&inlays, 6, false, 10.0), -40.0);
+        // After it: its width instead of the hidden characters.
+        assert_eq!(inlay_shift(&inlays, 6, true, 10.0), w - 40.0);
+        assert_eq!(inlay_shift(&inlays, 8, false, 10.0), w - 40.0);
     }
 
     #[test]
@@ -4059,7 +4166,7 @@ mod tests {
                 kind: TokenKind::Normal,
             },
         ];
-        let inlays = vec![(4, "Bonjour".to_string()), (6, "fin".to_string())];
+        let inlays = vec![inlay(4, 4, "Bonjour"), inlay(6, 6, "fin")];
         let mut job = egui::text::LayoutJob::default();
         let palette = crate::ui::theme::Palette::from_theme(&crate::config::Theme::default());
         let font = egui::FontId::monospace(14.0);
@@ -4079,12 +4186,18 @@ mod tests {
         let after = section("}x");
         assert_eq!(after.leading_space, INLAY_MARGIN * 8.0);
         assert_eq!(after.format.color, TokenKind::Normal.color());
+
+        // Hiding what they stand for, across tokens.
+        let mut job = egui::text::LayoutJob::default();
+        let inlays = vec![inlay(4, 1, "Bonjour"), inlay(6, 5, "fin")];
+        append_with_inlays(&mut job, &tokens, &inlays, &font, 8.0, &palette);
+        assert_eq!(job.text, "{ Bonjour } fin ");
     }
 
     #[test]
     fn clicks_on_and_after_an_inlay() {
         let mut ed = editor_with("{t.a}xyz");
-        ed.inlays.insert(0, vec![(4, "Bonjour".to_string())]);
+        ed.inlays.insert(0, vec![inlay(4, 4, "Bonjour")]);
         let (cw, lh) = (10.0, 20.0);
         assert_eq!(ed.hit_test(egui::vec2(25.0, 5.0), 0.0, lh, cw), (0, 3));
         // On the inlay: its column.
@@ -4094,6 +4207,32 @@ mod tests {
         assert_eq!(ed.hit_test(egui::vec2(after, 5.0), 0.0, lh, cw), (0, 5));
         ed.inlays.clear();
         assert_eq!(ed.hit_test(egui::vec2(60.0, 5.0), 0.0, lh, cw), (0, 6));
+    }
+
+    #[test]
+    fn an_inlay_hides_its_key_unless_its_line_is_edited() {
+        let mut ed = editor_with("{t.a}xyz\nz");
+        let mut translation = inlay(4, 1, "Bonjour");
+        translation.target = Some(("fr.json".into(), 3));
+        ed.inlays.insert(0, vec![translation]);
+        ed.cursor.set_position(1, 0);
+        let (cw, lh) = (10.0, 20.0);
+        assert_eq!(ed.line_inlays(0)[0].from, 1);
+        // The pill stands where `t` was; a click on it lands at its column.
+        assert_eq!(ed.hit_test(egui::vec2(2.0, 5.0), 0.0, lh, cw), (0, 0));
+        assert_eq!(ed.hit_test(egui::vec2(15.0, 5.0), 0.0, lh, cw), (0, 4));
+        let after = 10.0 + inlay_width("Bonjour", cw) + 10.0;
+        assert_eq!(ed.hit_test(egui::vec2(after, 5.0), 0.0, lh, cw), (0, 5));
+        // Ctrl+click on the pill or on the key goes to the catalogue.
+        assert_eq!(ed.inlay_target_at(0, 4), Some(("fr.json".into(), 3)));
+        assert_eq!(ed.inlay_target_at(0, 1), Some(("fr.json".into(), 3)));
+        assert_eq!(ed.inlay_target_at(0, 5), None);
+        assert_eq!(ed.inlay_target_at(1, 0), None);
+
+        // With the cursor on its line, the key is shown, the pill after it.
+        ed.cursor.set_position(0, 0);
+        assert_eq!(ed.line_inlays(0)[0].from, 4);
+        assert_eq!(ed.hit_test(egui::vec2(15.0, 5.0), 0.0, lh, cw), (0, 2));
     }
 
     #[test]

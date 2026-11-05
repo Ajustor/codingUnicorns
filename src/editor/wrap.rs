@@ -195,20 +195,18 @@ impl Editor {
         if !self.wrap.active() {
             let row = (((local.y + self.scroll_offset.y) / line_height) as usize).min(last);
             let mut x_in_text = (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-            let inlays = self
-                .inlays
-                .get(&row)
-                .filter(|_| self.buffer.line(row).len() <= super::LONG_LINE_BYTES);
-            for (col, text) in inlays.into_iter().flatten() {
-                let start = *col as f32 * char_width;
+            // A pill stands where the first character it hides would be; a
+            // click on it lands at its column.
+            for inlay in self.line_inlays(row) {
+                let start = inlay.from as f32 * char_width;
                 if x_in_text <= start {
                     break;
                 }
-                let width = super::inlay_width(text, char_width);
+                let width = super::inlay_width(&inlay.text, char_width);
                 if x_in_text < start + width {
-                    return (row, *col);
+                    return (row, inlay.col);
                 }
-                x_in_text -= width;
+                x_in_text -= width - inlay.hidden() as f32 * char_width;
             }
             return (row, (x_in_text / char_width).round() as usize);
         }

@@ -8,6 +8,16 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Modifications
+
+- Une traduction prend désormais la place de sa clé, comme avec i18n-ally : `{t.panier.titre}` se lit *Panier* jusqu'à ce que le curseur arrive sur la ligne, ce qui fait revenir la clé pour la modifier. Avec le module speedster-js 0.2.3, une clé choisie à l'exécution (`{t.statuts[commande.statut]}`) liste les messages qu'elle peut afficher.
+
+### Ajouts
+
+- Ctrl+clic (ou F12) sur une traduction ou sa clé ouvre le fichier de traductions sur cette clé.
+
 ## [0.25.0] - 2026-11-05
 
 ### Modifications

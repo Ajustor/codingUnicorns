@@ -262,6 +262,12 @@ impl CodingUnicorns {
 
     /// Navigate to the definition of `word` via LSP (async), then file-path lookup, then workspace search.
     pub fn handle_go_to_definition(&mut self, word: &str) {
+        // A translation key: its place in the catalogue, from the module's hint.
+        let (row, col) = self.editor.cursor.position();
+        if let Some((path, line)) = self.editor.inlay_target_at(row, col) {
+            self.push_nav_and_goto(path, line);
+            return;
+        }
         // Strategy 0: try LSP definition (async — will navigate when the response arrives).
         let mut lsp_sent = false;
         if let Some(path) = self.editor.current_path.clone() {
