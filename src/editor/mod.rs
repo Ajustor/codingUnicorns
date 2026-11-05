@@ -214,6 +214,10 @@ pub struct Editor {
     pub blame_path: Option<std::path::PathBuf>,
     /// Whether to show git blame in the gutter.
     pub show_blame: bool,
+    /// Text the language module shows at the end of lines, by line.
+    inline_hints: std::collections::HashMap<usize, String>,
+    /// Content version the hints were asked for, and when.
+    inline_hints_asked: Option<(i32, std::time::Instant)>,
     /// Set when a signature help request should be sent.
     pub signature_help_request_pending: bool,
     /// The signature help text to display.
@@ -368,6 +372,8 @@ impl Editor {
             blame_data: vec![],
             blame_path: None,
             show_blame: false,
+            inline_hints: std::collections::HashMap::new(),
+            inline_hints_asked: None,
             signature_help_request_pending: false,
             signature_help_text: None,
             signature_help_row: 0,
@@ -441,6 +447,8 @@ impl Editor {
         self.find_matches.clear();
         self.diag_hover_msg = None;
         self.blame_data.clear();
+        self.inline_hints.clear();
+        self.inline_hints_asked = None;
         self.signature_help_text = None;
         self.signature_help_request_pending = false;
         self.folded_lines.clear();
@@ -666,6 +674,48 @@ impl Editor {
     // Render entry point: the parameter list is wide because it threads shared
     // services + the theme palette/spacing into one draw call.
     #[allow(clippy::too_many_arguments)]
+    /// Ask the language module for its end-of-line hints when the content
+    /// changed, and every 2 s otherwise: what they show (a translation file)
+    /// changes without the buffer changing.
+    fn refresh_inline_hints(
+        &mut self,
+        enabled: bool,
+        plugin_manager: &crate::plugin::manager::PluginManager,
+    ) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+        let path = match &self.current_path {
+            Some(path) if enabled && !self.large_file => path,
+            _ => {
+                self.inline_hints.clear();
+                self.inline_hints_asked = None;
+                return;
+            }
+        };
+        if matches!(self.inline_hints_asked,
+            Some((version, at)) if version == self.content_version && at.elapsed() < EVERY)
+        {
+            return;
+        }
+        self.inline_hints_asked = Some((self.content_version, std::time::Instant::now()));
+        let hints = plugin_manager
+            .inline_hints(
+                &self.highlighter.language,
+                &path.to_string_lossy(),
+                &self.buffer.to_string(),
+            )
+            .unwrap_or_default();
+        self.inline_hints.clear();
+        for hint in hints {
+            self.inline_hints
+                .entry(hint.line)
+                .and_modify(|text| {
+                    text.push_str("  ·  ");
+                    text.push_str(&hint.text);
+                })
+                .or_insert(hint.text);
+        }
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -2546,6 +2596,7 @@ impl Editor {
                         );
                     }
                 }
+                self.refresh_inline_hints(config.editor.inline_hints, plugin_manager);
 
                 // Fold regions: recompute only when the content changed — NOT every
                 // frame. (The old `is_empty()` check recomputed on every frame for
@@ -3165,8 +3216,10 @@ impl Editor {
                             },
                         );
                     }
+                    let long_line = visible_cols.is_some();
                     let text_x = visible_cols.map_or(0.0, |c| c.start as f32 * char_width);
                     let galley = ui.fonts(|f| f.layout_job(job));
+                    let text_width = galley.size().x;
                     // Clip to the content area (right of the gutter) so horizontally
                     // scrolled text doesn't draw over the line-number gutter.
                     let text_clip = egui::Rect::from_min_max(
@@ -3181,6 +3234,21 @@ impl Editor {
                         galley,
                         fg_color,
                     );
+
+                    // Inline hint (a translation…), after the line's text. Not on a
+                    // long line, drawn by its visible columns only.
+                    if let (Some(hint), false) = (self.inline_hints.get(&line_idx), long_line) {
+                        painter.with_clip_rect(text_clip).text(
+                            egui::pos2(
+                                x_start - self.scroll_offset.x + text_width + 2.0 * char_width,
+                                y + line_height * 0.5,
+                            ),
+                            egui::Align2::LEFT_CENTER,
+                            hint,
+                            font_id.clone(),
+                            egui::Color32::from_gray(120),
+                        );
+                    }
 
                     // Ctrl+hover underline (VSCode-style go-to-definition hint)
                     if let Some((hover_row, hover_start, hover_end)) = self.ctrl_hover_word_bounds {

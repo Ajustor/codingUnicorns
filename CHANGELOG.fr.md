@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Ajouts
+
+- Indications en ligne : les modules de langage peuvent afficher un texte en gris en fin de ligne, comme la traduction de la clé lue par la ligne (à la manière d'i18n-ally dans VS Code). Le module speedster-js s'en sert pour `{t.panier.titre}`. Elles se désactivent dans Settings → Editor → Inline hints.
+
 ## [0.23.5] - 2026-10-23
 
 ### Corrections

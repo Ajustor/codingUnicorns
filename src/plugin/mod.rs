@@ -6,6 +6,15 @@ pub use types::{PluginCommand, PluginContext, PluginResponse, SidebarPanel};
 
 use crate::editor::highlight::Token;
 
+/// A hint a language module wants shown at the end of a line (see
+/// [`Plugin::inline_hints`]).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct InlineHint {
+    /// 0-based line.
+    pub line: usize,
+    pub text: String,
+}
+
 /// The Plugin trait — all plugins implement this.
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
@@ -57,6 +66,13 @@ pub trait Plugin: Send + Sync {
         _lang: &str,
         _text: &str,
     ) -> Option<Vec<Vec<crate::editor::highlight::Token>>> {
+        None
+    }
+
+    /// Text shown in grey at the end of lines, such as the translation of the
+    /// key a line reads (as i18n-ally does). `path` is the file's path, from
+    /// which a module finds the files it reads; `text` is the buffer's content.
+    fn inline_hints(&self, _lang: &str, _path: &str, _text: &str) -> Option<Vec<InlineHint>> {
         None
     }
 

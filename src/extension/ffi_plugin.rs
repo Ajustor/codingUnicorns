@@ -38,6 +38,8 @@ pub struct FfiLangPlugin {
     tokenize_document_lang_fn: Option<StrFn2>,
     /// `hover_info_lang_ffi(lang, word, content)`.
     hover_lang_fn: Option<StrFn3>,
+    /// `inline_hints_ffi(lang, path, text)`: JSON `[{"line","text"}]`.
+    inline_hints_fn: Option<StrFn3>,
     /// `ui_view_ffi(panel_id)`: JSON view of a panel.
     ui_view_fn: Option<unsafe extern "C" fn(*const c_char) -> *mut c_char>,
     /// `ui_event_ffi(panel_id, event_json)`: JSON actions, or null.
@@ -158,6 +160,7 @@ impl FfiLangPlugin {
                 .ok()
                 .map(|s| *s);
             let hover_lang_fn = lib.get::<StrFn3>(b"hover_info_lang_ffi\0").ok().map(|s| *s);
+            let inline_hints_fn = lib.get::<StrFn3>(b"inline_hints_ffi\0").ok().map(|s| *s);
             let ui_view_fn = lib
                 .get::<unsafe extern "C" fn(*const c_char) -> *mut c_char>(b"ui_view_ffi\0")
                 .ok()
@@ -178,6 +181,7 @@ impl FfiLangPlugin {
                 tokenize_line_lang_fn,
                 tokenize_document_lang_fn,
                 hover_lang_fn,
+                inline_hints_fn,
                 ui_view_fn,
                 ui_event_fn,
                 tokenize_fn,
@@ -308,6 +312,20 @@ impl Plugin for FfiLangPlugin {
             }),
             None => self.call_hover(word, file_content),
         }
+    }
+
+    fn inline_hints(
+        &self,
+        lang: &str,
+        path: &str,
+        text: &str,
+    ) -> Option<Vec<crate::plugin::InlineHint>> {
+        if !self.extensions.iter().any(|e| e == lang) {
+            return None;
+        }
+        let f = self.inline_hints_fn?;
+        let json = self.call_str(&[lang, path, text], |a| unsafe { f(a[0], a[1], a[2]) })?;
+        serde_json::from_str(&json).ok()
     }
 
     fn ui_panels(&self) -> Vec<PanelSpec> {
@@ -769,6 +787,37 @@ mod tests {
         assert!(p.tokenize_line("rs", "x").is_none(), "unhandled language");
     }
 
+    unsafe extern "C" fn hints(
+        lang: *const c_char,
+        path: *const c_char,
+        _text: *const c_char,
+    ) -> *mut c_char {
+        let l = CStr::from_ptr(lang).to_str().unwrap();
+        let p = CStr::from_ptr(path).to_str().unwrap();
+        CString::new(format!(r#"[{{"line":2,"text":"{l} {p}"}}]"#))
+            .unwrap()
+            .into_raw()
+    }
+
+    #[test]
+    fn inline_hints_receive_the_language_and_path() {
+        let mut p = full_plugin();
+        assert!(p.inline_hints("tl", "a.tl", "").is_none(), "no export");
+        p.inline_hints_fn = Some(hints);
+        let got = p.inline_hints("tl", "a.tl", "x").unwrap();
+        assert_eq!(
+            got,
+            vec![crate::plugin::InlineHint {
+                line: 2,
+                text: "tl a.tl".into()
+            }]
+        );
+        assert!(
+            p.inline_hints("rs", "a.rs", "").is_none(),
+            "unhandled language"
+        );
+    }
+
     #[test]
     fn per_language_server_overrides_the_module_server() {
         let p = full_plugin();
@@ -830,6 +879,7 @@ mod tests {
             tokenize_line_lang_fn: None,
             tokenize_document_lang_fn: None,
             hover_lang_fn: None,
+            inline_hints_fn: None,
             ui_view_fn: Some(ui_view),
             ui_event_fn: Some(ui_event),
             tokenize_fn: Some(tokenize),
@@ -855,6 +905,7 @@ mod tests {
             tokenize_line_lang_fn: None,
             tokenize_document_lang_fn: None,
             hover_lang_fn: None,
+            inline_hints_fn: None,
             ui_view_fn: None,
             ui_event_fn: None,
             tokenize_fn: None,

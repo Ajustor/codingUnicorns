@@ -132,6 +132,18 @@ impl PluginManager {
         None
     }
 
+    /// Inline hints for a file of type `lang`, from the first plugin giving some.
+    pub fn inline_hints(
+        &self,
+        lang: &str,
+        path: &str,
+        text: &str,
+    ) -> Option<Vec<super::InlineHint>> {
+        self.plugins
+            .iter()
+            .find_map(|p| p.inline_hints(lang, path, text))
+    }
+
     /// Return the LSP server command for the plugin that handles the given file extension.
     /// Returns the first plugin whose `file_extensions()` includes `ext`, or `None`.
     pub fn lsp_server_for_ext(&self, ext: &str) -> Option<(String, Vec<String>)> {
