@@ -193,9 +193,24 @@ impl Editor {
     ) -> (usize, usize) {
         let last = self.buffer.num_lines().saturating_sub(1);
         if !self.wrap.active() {
-            let row = ((local.y + self.scroll_offset.y) / line_height) as usize;
-            let x_in_text = (local.x - gutter_width + self.scroll_offset.x).max(0.0);
-            return (row.min(last), (x_in_text / char_width).round() as usize);
+            let row = (((local.y + self.scroll_offset.y) / line_height) as usize).min(last);
+            let mut x_in_text = (local.x - gutter_width + self.scroll_offset.x).max(0.0);
+            let inlays = self
+                .inlays
+                .get(&row)
+                .filter(|_| self.buffer.line(row).len() <= super::LONG_LINE_BYTES);
+            for (col, text) in inlays.into_iter().flatten() {
+                let start = *col as f32 * char_width;
+                if x_in_text <= start {
+                    break;
+                }
+                let width = super::inlay_width(text, char_width);
+                if x_in_text < start + width {
+                    return (row, *col);
+                }
+                x_in_text -= width;
+            }
+            return (row, (x_in_text / char_width).round() as usize);
         }
         let vrow = ((local.y + self.scroll_offset.y).max(0.0) / line_height) as usize;
         let (mut line, mut seg) = self.wrap.line_at_row(vrow);

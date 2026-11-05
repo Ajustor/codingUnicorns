@@ -809,6 +809,7 @@ mod tests {
             got,
             vec![crate::plugin::InlineHint {
                 line: 2,
+                col: None,
                 text: "tl a.tl".into()
             }]
         );
@@ -1050,6 +1051,12 @@ mod tests {
                 .tokenize_document(lang, &text.replace("\\n", "\n"))
                 .unwrap();
             println!("{lang} tokens: {lines:?}");
+        }
+        // The inline hints of a file, in the module's first language.
+        if let Ok(path) = std::env::var("CU_E2E_HINTS") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let lang = &manifest.capabilities.languages[0];
+            println!("hints: {:?}", p.inline_hints(lang, &path, &text));
         }
         for panel in p.ui_panels() {
             let mut view = String::new();
