@@ -810,7 +810,9 @@ mod tests {
             vec![crate::plugin::InlineHint {
                 line: 2,
                 col: None,
-                text: "tl a.tl".into()
+                from: None,
+                text: "tl a.tl".into(),
+                target: None,
             }]
         );
         assert!(

@@ -17,7 +17,23 @@ pub struct InlineHint {
     /// at the end of the line.
     #[serde(default)]
     pub col: Option<usize>,
+    /// With `col`: the hint stands for the characters `from..col` (a
+    /// translation for its key), drawn in their place while the cursor is on
+    /// another line, as i18n-ally does.
+    #[serde(default)]
+    pub from: Option<usize>,
     pub text: String,
+    /// Where Ctrl+click on what the hint explains goes (the key in the
+    /// translation file).
+    #[serde(default)]
+    pub target: Option<HintTarget>,
+}
+
+/// A place in a file: 0-based line.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct HintTarget {
+    pub path: String,
+    pub line: usize,
 }
 
 /// The Plugin trait — all plugins implement this.

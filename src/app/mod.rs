@@ -1389,6 +1389,9 @@ impl eframe::App for CodingUnicorns {
         if let Some(word) = self.editor.go_to_definition_request.take() {
             self.handle_go_to_definition(&word);
         }
+        if let Some((path, line)) = self.editor.go_to_location_request.take() {
+            self.push_nav_and_goto(path, line);
+        }
 
         // Run plugins and collect their status text — only when what they see
         // changed: the context holds a copy of the whole buffer, which plugins
