@@ -384,6 +384,9 @@ pub struct EditorConfig {
     pub show_minimap: bool,
     #[serde(default = "default_true")]
     pub highlight_current_line: bool,
+    /// Hints language modules show at the end of lines (translations…).
+    #[serde(default = "default_true")]
+    pub inline_hints: bool,
 }
 
 impl Default for EditorConfig {
@@ -398,6 +401,7 @@ impl Default for EditorConfig {
             show_gitignored: true,
             show_minimap: true,
             highlight_current_line: true,
+            inline_hints: true,
         }
     }
 }

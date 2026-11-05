@@ -151,6 +151,14 @@ impl SettingsPanel {
                     );
                 }
 
+                if setting_matches(&q, &["inline", "hint", "translation", "i18n"]) {
+                    changed |= checkbox(ui, &mut config.editor.inline_hints, "Inline hints");
+                    hint(
+                        ui,
+                        "Text language modules show at the end of lines, such as the translation of a key.",
+                    );
+                }
+
                 if setting_matches(&q, &["gitignore", "ignored", "hidden", "files", "tree"]) {
                     changed |= checkbox(
                         ui,
