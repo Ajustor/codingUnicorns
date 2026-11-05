@@ -671,9 +671,6 @@ impl Editor {
         self.content_version = self.content_version.wrapping_add(1);
     }
 
-    // Render entry point: the parameter list is wide because it threads shared
-    // services + the theme palette/spacing into one draw call.
-    #[allow(clippy::too_many_arguments)]
     /// Ask the language module for its end-of-line hints when the content
     /// changed, and every 2 s otherwise: what they show (a translation file)
     /// changes without the buffer changing.
@@ -716,6 +713,9 @@ impl Editor {
         }
     }
 
+    // Render entry point: the parameter list is wide because it threads shared
+    // services + the theme palette/spacing into one draw call.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
