@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Inline hints can stand inside a line, right after what they explain: the speedster-js module now shows a translation just after its key (`{t.panier.titre` *Panier* `}`), in an italic pill, as i18n-ally does in VS Code. The caret, selections and clicks skip over it. On word-wrapped and very long lines they are not shown.
+
 ## [0.24.0] - 2026-11-05
 
 ### Added

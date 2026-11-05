@@ -12,6 +12,11 @@ use crate::editor::highlight::Token;
 pub struct InlineHint {
     /// 0-based line.
     pub line: usize,
+    /// 0-based column (in characters) the hint is drawn at, between the
+    /// characters before and after it, as VS Code's inlay hints; without one,
+    /// at the end of the line.
+    #[serde(default)]
+    pub col: Option<usize>,
     pub text: String,
 }
 

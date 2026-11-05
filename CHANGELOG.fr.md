@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [Unreleased]
+
+### Modifications
+
+- Les indications en ligne peuvent se placer dans la ligne, juste après ce qu'elles expliquent : le module speedster-js affiche désormais une traduction juste après sa clé (`{t.panier.titre` *Panier* `}`), dans une pastille en italique, comme i18n-ally dans VS Code. Le curseur, les sélections et les clics passent par-dessus. Elles ne s'affichent pas en retour à la ligne automatique ni sur les lignes très longues.
+
 ## [0.24.0] - 2026-11-05
 
 ### Ajouts

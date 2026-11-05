@@ -42,6 +42,85 @@ pub(crate) const MAX_TOKENIZED_LINE_CHARS: usize = 20_000;
 pub(crate) const VIEWPORT_THRESHOLD: usize = 4000;
 
 /// Pixel width of the first `cols` chars of `line`.
+/// Space left each side of an inlay, in character widths.
+const INLAY_MARGIN: f32 = 0.3;
+
+/// Width of an inlay showing `text`: the text with a space each side (in the
+/// editor's monospace font, which makes it exact) and its margins.
+fn inlay_width(text: &str, char_width: f32) -> f32 {
+    (text.chars().count() as f32 + 2.0 + 2.0 * INLAY_MARGIN) * char_width
+}
+
+/// Pixels the inlays of a line (sorted by column) add before column `col`.
+/// `at_char`: where the character at `col` starts, after an inlay standing at
+/// `col`; otherwise where the caret at `col` stands, before it.
+fn inlay_shift(inlays: &[(usize, String)], col: usize, at_char: bool, char_width: f32) -> f32 {
+    inlays
+        .iter()
+        .take_while(|(c, _)| if at_char { *c <= col } else { *c < col })
+        .map(|(_, text)| inlay_width(text, char_width))
+        .sum()
+}
+
+/// The tokens of a line with its inlays between them: each inlay in a muted,
+/// italic pill (a space each side on a raised background), `INLAY_MARGIN`
+/// from the text around it.
+fn append_with_inlays(
+    job: &mut egui::text::LayoutJob,
+    tokens: &[highlight::Token],
+    inlays: &[(usize, String)],
+    font_id: &egui::FontId,
+    char_width: f32,
+    palette: &crate::ui::theme::Palette,
+) {
+    let margin = INLAY_MARGIN * char_width;
+    let mut pending = inlays.iter().peekable();
+    let mut col = 0;
+    // Space owed before the next text, right after a pill.
+    let mut lead = 0.0;
+    let pill = |job: &mut egui::text::LayoutJob, text: &str, lead: &mut f32| {
+        job.append(
+            &format!(" {text} "),
+            *lead + margin,
+            egui::TextFormat {
+                font_id: font_id.clone(),
+                color: palette.text_muted,
+                background: palette.surface_raised,
+                italics: true,
+                ..Default::default()
+            },
+        );
+        *lead = margin;
+    };
+    for tok in tokens {
+        let format = egui::TextFormat {
+            font_id: font_id.clone(),
+            color: tok.kind.color(),
+            ..Default::default()
+        };
+        let mut piece = String::new();
+        for ch in tok.text.chars() {
+            while let Some((_, text)) = pending.next_if(|(c, _)| *c == col) {
+                if !piece.is_empty() {
+                    job.append(&std::mem::take(&mut piece), lead, format.clone());
+                    lead = 0.0;
+                }
+                pill(job, text, &mut lead);
+            }
+            piece.push(ch);
+            col += 1;
+        }
+        if !piece.is_empty() {
+            job.append(&piece, lead, format);
+            lead = 0.0;
+        }
+    }
+    // Inlays at the end of the line (or past it, from a stale answer).
+    for (_, text) in pending {
+        pill(job, text, &mut lead);
+    }
+}
+
 fn prefix_width(
     ui: &egui::Ui,
     line: &str,
@@ -216,6 +295,9 @@ pub struct Editor {
     pub show_blame: bool,
     /// Text the language module shows at the end of lines, by line.
     inline_hints: std::collections::HashMap<usize, String>,
+    /// Hints drawn inside lines, at a column (a translation after its key),
+    /// by line, sorted by column.
+    pub(super) inlays: std::collections::HashMap<usize, Vec<(usize, String)>>,
     /// Content version the hints were asked for, and when.
     inline_hints_asked: Option<(i32, std::time::Instant)>,
     /// Set when a signature help request should be sent.
@@ -373,6 +455,7 @@ impl Editor {
             blame_path: None,
             show_blame: false,
             inline_hints: std::collections::HashMap::new(),
+            inlays: std::collections::HashMap::new(),
             inline_hints_asked: None,
             signature_help_request_pending: false,
             signature_help_text: None,
@@ -448,6 +531,7 @@ impl Editor {
         self.diag_hover_msg = None;
         self.blame_data.clear();
         self.inline_hints.clear();
+        self.inlays.clear();
         self.inline_hints_asked = None;
         self.signature_help_text = None;
         self.signature_help_request_pending = false;
@@ -684,6 +768,7 @@ impl Editor {
             Some(path) if enabled && !self.large_file => path,
             _ => {
                 self.inline_hints.clear();
+                self.inlays.clear();
                 self.inline_hints_asked = None;
                 return;
             }
@@ -702,7 +787,14 @@ impl Editor {
             )
             .unwrap_or_default();
         self.inline_hints.clear();
+        self.inlays.clear();
         for hint in hints {
+            if let Some(col) = hint.col {
+                let line = self.inlays.entry(hint.line).or_default();
+                let at = line.partition_point(|(c, _)| *c <= col);
+                line.insert(at, (col, hint.text));
+                continue;
+            }
             self.inline_hints
                 .entry(hint.line)
                 .and_modify(|text| {
@@ -2918,6 +3010,16 @@ impl Editor {
                     }
 
                     let line = self.buffer.line(line_idx);
+                    // Inlays of this line (none on a long line, drawn by its
+                    // visible columns only), and a column's x with them.
+                    let inlays: Vec<(usize, String)> = match self.inlays.get(&line_idx) {
+                        Some(inlays) if line.len() <= LONG_LINE_BYTES => inlays.clone(),
+                        _ => Vec::new(),
+                    };
+                    let col_x = |col: usize, at_char: bool| {
+                        prefix_width(ui, &line, col, &font_id, char_width)
+                            + inlay_shift(&inlays, col, at_char, char_width)
+                    };
                     let x_start = rect.min.x + gutter_width;
                     // Where column 0 is painted: the text scrolls horizontally, the
                     // gutter doesn't. What is drawn over the text uses this origin and
@@ -2973,10 +3075,8 @@ impl Editor {
                         } else {
                             find_highlight
                         };
-                        let measure =
-                            |cols: usize| prefix_width(ui, &line, cols, &font_id, char_width);
-                        let pre_w = measure(m.start);
-                        let span_w = measure(m.end) - pre_w;
+                        let pre_w = col_x(m.start, true);
+                        let span_w = col_x(m.end, false) - pre_w;
                         let hx = x_start + pre_w - self.scroll_offset.x;
                         if hx < rect.max.x && hx + span_w > x_start {
                             painter.rect_filled(
@@ -2993,10 +3093,8 @@ impl Editor {
                     // Word occurrence highlighting
                     for &(occ_row, occ_start, occ_end) in &self.word_occurrences {
                         if occ_row == line_idx {
-                            let occ_sx =
-                                x_start + prefix_width(ui, &line, occ_start, &font_id, char_width);
-                            let occ_ex =
-                                x_start + prefix_width(ui, &line, occ_end, &font_id, char_width);
+                            let occ_sx = x_start + col_x(occ_start, true);
+                            let occ_ex = x_start + col_x(occ_end, false);
                             if occ_ex > occ_sx {
                                 paint_occurrence(
                                     &painter,
@@ -3020,10 +3118,8 @@ impl Editor {
                                 self.buffer.line_len(line_idx)
                             };
                             // Measure pixel positions using font layout for accuracy
-                            let sx = text_origin
-                                + prefix_width(ui, &line, sel_start_col, &font_id, char_width);
-                            let ex = text_origin
-                                + prefix_width(ui, &line, sel_end_col, &font_id, char_width);
+                            let sx = text_origin + col_x(sel_start_col, true);
+                            let ex = text_origin + col_x(sel_end_col, false);
                             if ex > sx {
                                 text_painter.rect_filled(
                                     egui::Rect::from_min_max(
@@ -3047,10 +3143,8 @@ impl Editor {
                                 } else {
                                     self.buffer.line_len(line_idx)
                                 };
-                                let sx = text_origin
-                                    + prefix_width(ui, &line, sel_start_col, &font_id, char_width);
-                                let ex = text_origin
-                                    + prefix_width(ui, &line, sel_end_col, &font_id, char_width);
+                                let sx = text_origin + col_x(sel_start_col, true);
+                                let ex = text_origin + col_x(sel_end_col, false);
                                 if ex > sx {
                                     text_painter.rect_filled(
                                         egui::Rect::from_min_max(
@@ -3068,8 +3162,7 @@ impl Editor {
                     let (cur_row, cur_col) = self.cursor.position();
                     if line_idx == cur_row {
                         // Cursor: measure actual pixel offset of char col in the line
-                        let cx =
-                            text_origin + prefix_width(ui, &line, cur_col, &font_id, char_width);
+                        let cx = text_origin + col_x(cur_col, false);
                         // Blink: 530ms on / 530ms off, reset on any input event.
                         let blink_ms = self.cursor_blink_epoch.elapsed().as_millis() % 1060;
                         let cursor_visible = blink_ms < 530;
@@ -3101,8 +3194,7 @@ impl Editor {
                     for extra_cur in &self.extra_cursors {
                         let (ecr, ecc) = extra_cur.position();
                         if line_idx == ecr {
-                            let ecx =
-                                text_origin + prefix_width(ui, &line, ecc, &font_id, char_width);
+                            let ecx = text_origin + col_x(ecc, false);
                             text_painter.line_segment(
                                 [egui::pos2(ecx, y), egui::pos2(ecx, y + line_height)],
                                 egui::Stroke::new(2.0_f32, accent_color),
@@ -3147,9 +3239,7 @@ impl Editor {
                     if let Some((or, oc, cr, cc)) = self.bracket_match {
                         for (br, bc) in [(or, oc), (cr, cc)] {
                             if line_idx == br {
-                                let bx = x_start
-                                    + prefix_width(ui, &line, bc, &font_id, char_width)
-                                    - self.scroll_offset.x;
+                                let bx = x_start + col_x(bc, true) - self.scroll_offset.x;
                                 painter.rect_filled(
                                     egui::Rect::from_min_size(
                                         egui::pos2(bx, y),
@@ -3188,7 +3278,12 @@ impl Editor {
                     };
                     let mut job = egui::text::LayoutJob::default();
                     let mut col = 0;
-                    for tok in &tokens {
+                    if !inlays.is_empty() {
+                        append_with_inlays(
+                            &mut job, &tokens, &inlays, &font_id, char_width, &palette,
+                        );
+                    }
+                    for tok in tokens.iter().filter(|_| inlays.is_empty()) {
                         let text: std::borrow::Cow<str> = match &visible_cols {
                             None => tok.text.as_str().into(),
                             Some(cols) => {
@@ -3255,6 +3350,7 @@ impl Editor {
                         if line_idx == hover_row {
                             let line = self.buffer.line(line_idx);
                             let underline_x_start = text_origin
+                                + inlay_shift(&inlays, hover_start, true, char_width)
                                 + ui.fonts(|f| {
                                     let text: String = line.chars().take(hover_start).collect();
                                     f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
@@ -3262,6 +3358,7 @@ impl Editor {
                                         .x
                                 });
                             let underline_x_end = text_origin
+                                + inlay_shift(&inlays, hover_end, false, char_width)
                                 + ui.fonts(|f| {
                                     let text: String = line.chars().take(hover_end).collect();
                                     f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE)
@@ -3283,9 +3380,13 @@ impl Editor {
                     for diag in &self.diagnostics {
                         if diag.line as usize == line_idx {
                             let underline_y = y + line_height - 2.0;
-                            let x_diag_start = text_origin + diag.col as f32 * char_width;
+                            let x_diag_start = text_origin
+                                + diag.col as f32 * char_width
+                                + inlay_shift(&inlays, diag.col as usize, true, char_width);
                             let diag_width = if diag.end_col > diag.col {
                                 (diag.end_col - diag.col) as f32 * char_width
+                                    + inlay_shift(&inlays, diag.end_col as usize, false, char_width)
+                                    - inlay_shift(&inlays, diag.col as usize, true, char_width)
                             } else {
                                 100.0
                             };
@@ -3930,6 +4031,69 @@ mod tests {
         let mut ed = Editor::new();
         ed.set_content(content.to_string(), None);
         ed
+    }
+
+    // ── Inlays ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn inlay_shift_puts_the_caret_before_and_the_character_after() {
+        let inlays = vec![(3, "ab".to_string()), (5, "c".to_string())];
+        let w = |t: &str| inlay_width(t, 10.0);
+        assert_eq!(w("ab"), (2.0 + 2.0 + 2.0 * INLAY_MARGIN) * 10.0);
+        assert_eq!(inlay_shift(&inlays, 3, false, 10.0), 0.0);
+        assert_eq!(inlay_shift(&inlays, 3, true, 10.0), w("ab"));
+        assert_eq!(inlay_shift(&inlays, 4, false, 10.0), w("ab"));
+        assert_eq!(inlay_shift(&inlays, 6, false, 10.0), w("ab") + w("c"));
+    }
+
+    #[test]
+    fn inlays_are_laid_out_between_characters() {
+        use highlight::{Token, TokenKind};
+        let tokens = vec![
+            Token {
+                text: "{t.a".into(),
+                kind: TokenKind::Property,
+            },
+            Token {
+                text: "}x".into(),
+                kind: TokenKind::Normal,
+            },
+        ];
+        let inlays = vec![(4, "Bonjour".to_string()), (6, "fin".to_string())];
+        let mut job = egui::text::LayoutJob::default();
+        let palette = crate::ui::theme::Palette::from_theme(&crate::config::Theme::default());
+        let font = egui::FontId::monospace(14.0);
+        append_with_inlays(&mut job, &tokens, &inlays, &font, 8.0, &palette);
+        assert_eq!(job.text, "{t.a Bonjour }x fin ");
+        let section = |text: &str| {
+            job.sections
+                .iter()
+                .find(|s| &job.text[s.byte_range.clone()] == text)
+                .unwrap()
+                .clone()
+        };
+        let pill = section(" Bonjour ");
+        assert!(pill.format.italics);
+        assert_eq!(pill.leading_space, INLAY_MARGIN * 8.0);
+        // The text after a pill keeps its colour, after the margin.
+        let after = section("}x");
+        assert_eq!(after.leading_space, INLAY_MARGIN * 8.0);
+        assert_eq!(after.format.color, TokenKind::Normal.color());
+    }
+
+    #[test]
+    fn clicks_on_and_after_an_inlay() {
+        let mut ed = editor_with("{t.a}xyz");
+        ed.inlays.insert(0, vec![(4, "Bonjour".to_string())]);
+        let (cw, lh) = (10.0, 20.0);
+        assert_eq!(ed.hit_test(egui::vec2(25.0, 5.0), 0.0, lh, cw), (0, 3));
+        // On the inlay: its column.
+        assert_eq!(ed.hit_test(egui::vec2(60.0, 5.0), 0.0, lh, cw), (0, 4));
+        // After it: shifted by its width.
+        let after = 40.0 + inlay_width("Bonjour", cw) + 10.0;
+        assert_eq!(ed.hit_test(egui::vec2(after, 5.0), 0.0, lh, cw), (0, 5));
+        ed.inlays.clear();
+        assert_eq!(ed.hit_test(egui::vec2(60.0, 5.0), 0.0, lh, cw), (0, 6));
     }
 
     #[test]
