@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.26.2] - 2026-11-06
+
+### Modifications
+
+- Ctrl+Z (Cmd+Z sur macOS) annule la saisie mot par mot, comme VS Code, au lieu de toute la saisie d'un coup.
+
 ## [0.26.1] - 2026-11-06
 
 ### Corrections

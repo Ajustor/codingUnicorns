@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.26.2] - 2026-11-06
+
+### Changed
+
+- Ctrl+Z (Cmd+Z on macOS) undoes typing word by word, as VS Code does, instead of the whole run at once.
+
 ## [0.26.1] - 2026-11-06
 
 ### Fixed
