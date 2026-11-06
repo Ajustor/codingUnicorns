@@ -10,6 +10,9 @@ pub struct Buffer {
     history: Vec<Rope>,
     /// Redo snapshots; same structural sharing as `history`.
     future: Vec<Rope>,
+    /// The text as last loaded or saved (an O(1) clone): undoing back to it
+    /// makes the buffer unmodified again.
+    saved: Rope,
 }
 
 impl std::fmt::Display for Buffer {
@@ -20,16 +23,14 @@ impl std::fmt::Display for Buffer {
 
 impl Buffer {
     pub fn new() -> Self {
-        Self {
-            rope: Rope::from_str(""),
-            history: vec![],
-            future: vec![],
-        }
+        Self::from_str("")
     }
 
     pub fn from_str(s: &str) -> Self {
+        let rope = Rope::from_str(s);
         Self {
-            rope: Rope::from_str(s),
+            saved: rope.clone(),
+            rope,
             history: vec![],
             future: vec![],
         }
@@ -76,6 +77,16 @@ impl Buffer {
         let idx = idx.min(self.rope.len_chars());
         let row = self.rope.char_to_line(idx);
         (row, idx - self.rope.line_to_char(row))
+    }
+
+    /// Remember the current text as the one on disk.
+    pub fn mark_saved(&mut self) {
+        self.saved = self.rope.clone();
+    }
+
+    /// Whether the text is the one last loaded or saved.
+    pub fn is_saved(&self) -> bool {
+        self.rope == self.saved
     }
 
     pub fn checkpoint(&mut self) {
@@ -272,6 +283,22 @@ mod tests {
         assert_eq!(buf.char_index(2, 1), 9);
         // Row past the end is clamped to the last line.
         assert_eq!(buf.char_index(50, 0), 8);
+    }
+
+    #[test]
+    fn undoing_back_to_the_saved_text_makes_it_saved_again() {
+        let mut buf = Buffer::from_str("a");
+        assert!(buf.is_saved());
+        buf.checkpoint();
+        buf.insert_char(0, 1, 'b');
+        assert!(!buf.is_saved());
+        buf.undo();
+        assert!(buf.is_saved());
+        buf.redo();
+        buf.mark_saved();
+        assert!(buf.is_saved());
+        buf.undo();
+        assert!(!buf.is_saved(), "the saved text is now \"ab\"");
     }
 
     #[test]

@@ -711,9 +711,8 @@ impl eframe::App for CodingUnicorns {
                             }
                         }
                         if ui.button("Discard & Close").clicked() {
-                            self.tab_manager.close(pending_id);
                             self.close_tab_id_pending = None;
-                            self.load_active_tab();
+                            self.discard_tab(pending_id);
                         }
                         if ui.button("Cancel").clicked() {
                             self.close_tab_id_pending = None;

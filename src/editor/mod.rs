@@ -234,6 +234,41 @@ fn line_edge_modifier(m: &egui::Modifiers, mac: bool) -> bool {
     mac && m.mac_cmd && !m.alt && !m.ctrl
 }
 
+/// Whether `key` with `m` held types a char (sent as a `Text` event along with
+/// the key press) rather than running a command or moving the caret.
+fn types_text(key: egui::Key, m: &egui::Modifiers) -> bool {
+    use egui::Key as K;
+    // Letters and digits: the only keys named by one alphanumeric char.
+    let alphanumeric = matches!(key.name().as_bytes(), [c] if c.is_ascii_alphanumeric());
+    !m.command
+        && !m.ctrl
+        && !m.alt
+        && !m.mac_cmd
+        && (alphanumeric
+            || matches!(
+                key,
+                K::Space
+                    | K::Colon
+                    | K::Comma
+                    | K::Backslash
+                    | K::Slash
+                    | K::Pipe
+                    | K::Questionmark
+                    | K::Exclamationmark
+                    | K::OpenBracket
+                    | K::CloseBracket
+                    | K::OpenCurlyBracket
+                    | K::CloseCurlyBracket
+                    | K::Backtick
+                    | K::Minus
+                    | K::Period
+                    | K::Plus
+                    | K::Equals
+                    | K::Semicolon
+                    | K::Quote
+            ))
+}
+
 /// Editor state right after the last typed char: primary cursor position, whether
 /// it has a selection, extra cursor count and content version. Typing continues
 /// the current undo burst only while this is unchanged.
@@ -755,6 +790,7 @@ impl Editor {
         };
         let bytes = text_format::encode(&self.buffer.to_string(), self.text_format);
         std::fs::write(path, bytes)?;
+        self.buffer.mark_saved();
         self.is_modified = false;
         self.invalidate_line_diff();
         Ok(())
@@ -1507,8 +1543,12 @@ impl Editor {
                                     ..
                                 } => {
                                     // Any non-text key ends the current typing run, so
-                                    // the next typed run becomes its own undo step.
-                                    self.typing_burst = None;
+                                    // the next typed run becomes its own undo step. The
+                                    // key press egui-winit sends with each typed char
+                                    // must not: Ctrl+Z would take back one char only.
+                                    if !types_text(*key, modifiers) {
+                                        self.typing_burst = None;
+                                    }
                                     match key {
                                         egui::Key::Enter
                                             if modifiers.command && modifiers.shift =>
@@ -2032,20 +2072,20 @@ impl Editor {
                                         // Undo
                                         egui::Key::Z if modifiers.command && !modifiers.shift => {
                                             self.buffer.undo();
-                                            self.is_modified = true;
+                                            self.is_modified = !self.buffer.is_saved();
                                             self.content_version =
                                                 self.content_version.wrapping_add(1);
                                         }
                                         // Redo (Ctrl+Shift+Z or Ctrl+Y)
                                         egui::Key::Z if modifiers.command && modifiers.shift => {
                                             self.buffer.redo();
-                                            self.is_modified = true;
+                                            self.is_modified = !self.buffer.is_saved();
                                             self.content_version =
                                                 self.content_version.wrapping_add(1);
                                         }
                                         egui::Key::Y if modifiers.command => {
                                             self.buffer.redo();
-                                            self.is_modified = true;
+                                            self.is_modified = !self.buffer.is_saved();
                                             self.content_version =
                                                 self.content_version.wrapping_add(1);
                                         }
@@ -4777,6 +4817,34 @@ mod tests {
         assert_eq!(text(&ed), "xabc");
         h.press(&mut ed, Key::Z, CTRL);
         assert_eq!(text(&ed), "x");
+    }
+
+    #[test]
+    fn ctrl_z_undoes_a_typing_run_sent_as_keys_and_text() {
+        // egui-winit sends a Key press along with the Text of each typed char:
+        // the key must not end the run, or Ctrl+Z only takes back one char.
+        let (mut h, mut ed) = setup("x");
+        ed.cursor.set_position(0, 1);
+        for (key, ch, m) in [
+            (Key::A, "a", NONE),
+            (Key::B, "B", SHIFT),
+            (Key::Space, " ", NONE),
+        ] {
+            let press = Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: m,
+            };
+            h.frame(&mut ed, vec![press, Event::Text(ch.to_string())], m);
+        }
+        assert_eq!(text(&ed), "xaB ");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "x");
+        assert!(!ed.is_modified, "back to the text on disk");
+        h.press(&mut ed, Key::Y, CTRL);
+        assert!(ed.is_modified);
     }
 
     #[test]

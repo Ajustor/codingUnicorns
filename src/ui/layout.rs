@@ -828,7 +828,13 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                                     match std::fs::copy(&src, &dest) {
                                         Ok(_) => {
                                             app.file_tree.reload_children();
-                                            app.file_tree.selected = Some(dest);
+                                            app.file_tree.selected = Some(dest.clone());
+                                            // Show the copy, not the file it came from.
+                                            if app.active_pane == 1 && app.editor2.is_some() {
+                                                app.open_file_in_pane2(dest);
+                                            } else {
+                                                app.open_file(dest);
+                                            }
                                         }
                                         Err(e) => {
                                             app.toast(format!("Could not copy the file: {e}"))

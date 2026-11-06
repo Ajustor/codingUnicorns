@@ -323,6 +323,24 @@ impl CodingUnicorns {
         }
     }
 
+    /// Close tab `id` without saving: its edits are dropped, also when the
+    /// editor shows it and the next tab is no file (settings, pull request),
+    /// which leaves the editor untouched: reopening the file would bring the
+    /// discarded edits back.
+    pub fn discard_tab(&mut self, id: usize) {
+        let path = self
+            .tab_manager
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.path.clone());
+        if path.is_some() && self.editor.current_path == path {
+            self.editor.set_content(String::new(), None);
+        }
+        self.tab_manager.close(id);
+        self.load_active_tab();
+    }
+
     pub fn open_file_at_line(&mut self, path: PathBuf, line: usize) {
         self.open_file(path);
         let max = self.editor.buffer.num_lines().saturating_sub(1);
