@@ -23,19 +23,23 @@ impl CursorEdit {
 }
 
 impl Editor {
-    /// Insert a typed char at every cursor. Consecutive calls form one typing burst
-    /// sharing a single undo checkpoint; the burst ends as soon as anything else
-    /// moves a cursor, changes the selection or edits the buffer.
+    /// Insert a typed char at every cursor. Consecutive calls form one typing burst,
+    /// cut into one undo step per word (see `TypingKind`); the burst ends as soon
+    /// as anything else moves a cursor, changes the selection or edits the buffer.
     pub fn insert_char(&mut self, ch: char, auto_close_enabled: bool) {
         self.insert_char_with(ch, auto_close_enabled, true);
     }
 
     fn insert_char_with(&mut self, ch: char, auto_close_enabled: bool, smart_indent: bool) {
-        if self.typing_burst != Some(self.typing_burst_state()) {
+        let continuing = self.typing_burst == Some(self.typing_burst_state());
+        let prev = self.typing_kind.filter(|_| continuing);
+        let kind = super::TypingKind::of(ch, prev);
+        if prev.is_none_or(|p| p.splits_before(kind)) {
             self.buffer.checkpoint();
         }
         self.insert_char_inner(ch, auto_close_enabled, smart_indent);
         self.typing_burst = Some(self.typing_burst_state());
+        self.typing_kind = Some(kind);
     }
 
     fn insert_char_inner(&mut self, ch: char, auto_close_enabled: bool, smart_indent: bool) {

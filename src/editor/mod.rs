@@ -274,6 +274,35 @@ fn types_text(key: egui::Key, m: &egui::Modifiers) -> bool {
 /// the current undo burst only while this is unchanged.
 type TypingBurstState = ((usize, usize), bool, usize, i32);
 
+/// What the last typed char of a run was, to cut the run into undo steps the
+/// way VS Code does: one per word, a space opening the next word's step.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TypingKind {
+    /// Anything but a space or tab.
+    Other,
+    /// A space or tab after something else.
+    FirstSpace,
+    /// A space or tab after another one.
+    MoreSpace,
+}
+
+impl TypingKind {
+    fn of(ch: char, prev: Option<TypingKind>) -> Self {
+        match (ch, prev) {
+            (' ' | '\t', Some(TypingKind::FirstSpace | TypingKind::MoreSpace)) => Self::MoreSpace,
+            (' ' | '\t', _) => Self::FirstSpace,
+            _ => Self::Other,
+        }
+    }
+
+    /// Whether typing a `next` char after `self` starts a new undo step: where
+    /// words and spaces meet, except right after the first space.
+    fn splits_before(self, next: TypingKind) -> bool {
+        let is_space = |k| k != TypingKind::Other;
+        self != TypingKind::FirstSpace && is_space(self) != is_space(next)
+    }
+}
+
 pub struct Editor {
     pub buffer: Buffer,
     pub cursor: Cursor,
@@ -332,6 +361,8 @@ pub struct Editor {
     /// step (see `insert_char`). Cleared by any non-text key, and implicitly broken
     /// by cursor movement or any other edit, so each typing burst is one undo unit.
     typing_burst: Option<TypingBurstState>,
+    /// The kind of the last char typed in the current burst.
+    typing_kind: Option<TypingKind>,
     /// Cached longest line length (chars) + the content_version it was computed for.
     /// Avoids an O(file) max-width scan every frame for the horizontal scrollbar.
     max_line_chars: usize,
@@ -509,6 +540,7 @@ impl Editor {
             hl_pending_version: -1,
             hl_pending_at: None,
             typing_burst: None,
+            typing_kind: None,
             max_line_chars: 0,
             max_line_chars_version: -1,
             hover_lsp_request_pending: false,
@@ -4829,6 +4861,7 @@ mod tests {
             (Key::A, "a", NONE),
             (Key::B, "B", SHIFT),
             (Key::Space, " ", NONE),
+            (Key::C, "c", NONE),
         ] {
             let press = Event::Key {
                 key,
@@ -4839,7 +4872,9 @@ mod tests {
             };
             h.frame(&mut ed, vec![press, Event::Text(ch.to_string())], m);
         }
-        assert_eq!(text(&ed), "xaB ");
+        assert_eq!(text(&ed), "xaB c");
+        h.press(&mut ed, Key::Z, CTRL);
+        assert_eq!(text(&ed), "xaB", "one word per step");
         h.press(&mut ed, Key::Z, CTRL);
         assert_eq!(text(&ed), "x");
         assert!(!ed.is_modified, "back to the text on disk");
@@ -4871,6 +4906,20 @@ mod tests {
         assert_eq!(text(&ed), "b");
         h.press(&mut ed, Key::Z, CTRL);
         assert_eq!(text(&ed), "ab");
+    }
+
+    #[test]
+    fn ctrl_z_undoes_typing_word_by_word_as_vs_code_does() {
+        // A run splits where words and spaces meet; a single space starts the
+        // next word's step, several spaces make a step of their own.
+        let (mut h, mut ed) = setup("");
+        h.type_text(&mut ed, "hello there  foo");
+        for after in ["hello there  ", "hello there", "hello", ""] {
+            h.press(&mut ed, Key::Z, CTRL);
+            assert_eq!(text(&ed), after);
+        }
+        h.press(&mut ed, Key::Y, CTRL);
+        assert_eq!(text(&ed), "hello");
     }
 
     #[test]
