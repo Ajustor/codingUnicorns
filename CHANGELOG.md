@@ -8,6 +8,14 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.26.1] - 2026-11-06
+
+### Fixed
+
+- Ctrl+Z undoes a whole run of typing again, not one character at a time, and a file undone back to its saved text no longer shows as modified.
+- "Discard & Close" really drops the edits: when the tab taking over was Settings or a pull request, reopening the file brought the discarded edits back.
+- Pasting a copied file in the explorer (Ctrl+C, Ctrl+V) opens the copy.
+
 ## [0.26.0] - 2026-11-05
 
 ### Changed

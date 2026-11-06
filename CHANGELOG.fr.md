@@ -8,6 +8,14 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.26.1] - 2026-11-06
+
+### Corrections
+
+- Ctrl+Z annule de nouveau toute une saisie, et non un caractère à la fois, et un fichier ramené par annulation à son texte enregistré n'apparaît plus comme modifié.
+- « Discard & Close » abandonne vraiment les modifications : quand l'onglet suivant était les Paramètres ou une pull request, rouvrir le fichier faisait revenir les modifications abandonnées.
+- Coller un fichier copié dans l'explorateur (Ctrl+C, Ctrl+V) ouvre la copie.
+
 ## [0.26.0] - 2026-11-05
 
 ### Modifications
