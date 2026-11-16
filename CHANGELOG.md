@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.26.3] - 2026-11-16
+
+### Fixed
+
+- End on a line wider than the editor scrolls to its end, and the view follows the caret moved by the keyboard (arrows past the edge of the screen, typing).
+
 ## [0.26.2] - 2026-11-06
 
 ### Changed

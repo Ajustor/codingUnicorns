@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.26.3] - 2026-11-16
+
+### Corrections
+
+- Fin sur une ligne plus large que l'éditeur fait défiler jusqu'à sa fin, et la vue suit le curseur déplacé au clavier (flèches au-delà du bord de l'écran, saisie).
+
 ## [0.26.2] - 2026-11-06
 
 ### Modifications
