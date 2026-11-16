@@ -1397,7 +1397,7 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                         );
                         let mut tab_ui2 = right_ui.new_child(
                             egui::UiBuilder::new()
-                                .max_rect(tab_rect2)
+                                .max_rect(tab_rect2.with_max_x(tab_rect2.right() - 34.0))
                                 .layout(*right_ui.layout()),
                         );
                         tab_ui2.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
@@ -1479,9 +1479,10 @@ pub fn render(app: &mut CodingUnicorns, ctx: &Context) {
                             app.config.theme.background[2].saturating_add(7),
                         ),
                     );
+                    // The tabs stop short of the split button at the right end.
                     let mut tab_ui = ui.new_child(
                         egui::UiBuilder::new()
-                            .max_rect(tab_rect)
+                            .max_rect(tab_rect.with_max_x(tab_rect.right() - 34.0))
                             .layout(*ui.layout()),
                     );
                     tab_ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);

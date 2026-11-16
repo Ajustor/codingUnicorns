@@ -44,6 +44,11 @@ pub struct TabManager {
     pub close_request: Option<usize>,
     /// A bulk close picked in a tab's context menu, with that tab's id.
     pub bulk_close: Option<(CloseScope, usize)>,
+    /// The active tab as of the last tab bar frame.
+    seen_active: Option<usize>,
+    /// A newly active tab the tab bar scrolls to until it is fully visible
+    /// (on the first frames the bar's width is not known yet).
+    reveal: Option<usize>,
 }
 
 impl TabManager {
@@ -54,6 +59,8 @@ impl TabManager {
             next_id: 0,
             close_request: None,
             bulk_close: None,
+            seen_active: None,
+            reveal: None,
         }
     }
 
@@ -318,86 +325,115 @@ impl TabManager {
             })
             .collect();
 
-        ui.horizontal(|ui| {
-            ui.style_mut().spacing.item_spacing.x = 0.0;
-            for (tab_id, tab_path, tab_title, tab_modified, tab_special_icon) in &tabs_data {
-                let is_active = active_tab == Some(*tab_id);
-                let bg = if is_active {
-                    egui::Color32::from_rgb(30, 30, 30)
-                } else {
-                    egui::Color32::from_rgb(45, 45, 45)
-                };
-                let frame_resp = egui::Frame::new().fill(bg).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if let Some(icon) = tab_special_icon {
-                            ui.label(
-                                egui::RichText::new(*icon)
-                                    .color(egui::Color32::from_gray(160))
-                                    .size(14.0),
-                            );
+        // Tabs wider than the bar scroll (the wheel scrolls them too); the active
+        // tab is brought into view whenever it changes.
+        if self.seen_active != active_tab {
+            self.seen_active = active_tab;
+            self.reveal = active_tab;
+        }
+        let reveal = self.reveal;
+        let mut revealed = false;
+        egui::ScrollArea::horizontal()
+            .id_salt("tab_bar")
+            .auto_shrink([false, true])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.style_mut().spacing.item_spacing.x = 0.0;
+                    for (tab_id, tab_path, tab_title, tab_modified, tab_special_icon) in &tabs_data
+                    {
+                        let is_active = active_tab == Some(*tab_id);
+                        let bg = if is_active {
+                            egui::Color32::from_rgb(30, 30, 30)
                         } else {
-                            let name = tab_path
-                                .file_name()
-                                .map(|n| n.to_string_lossy())
-                                .unwrap_or_else(|| tab_title.as_str().into());
-                            let (icon, icon_color) = crate::filetree::file_icon(&name);
-                            ui.label(egui::RichText::new(icon).color(icon_color).size(14.0));
-                        }
-                        ui.add_space(2.0);
-                        let tab_label = if *tab_modified {
-                            egui::RichText::new(format!("● {}", tab_title))
-                                .color(egui::Color32::from_rgb(255, 180, 50))
-                        } else {
-                            egui::RichText::new(tab_title.as_str()).color(if is_active {
-                                egui::Color32::WHITE
-                            } else {
-                                egui::Color32::from_rgb(160, 160, 160)
-                            })
+                            egui::Color32::from_rgb(45, 45, 45)
                         };
-                        let label_resp = ui.selectable_label(is_active, tab_label);
-                        if label_resp.clicked() {
-                            if tab_special_icon.is_some() {
-                                activate_id = Some(*tab_id);
-                            } else {
-                                to_open = Some(tab_path.clone());
-                            }
-                        }
-                        label_resp.context_menu(|ui| {
-                            if ui.button("Close").clicked() {
-                                to_close = Some(*tab_id);
-                                ui.close_menu();
-                            }
-                            let scopes = [
-                                ("Close Others", CloseScope::Others),
-                                ("Close to the Right", CloseScope::ToTheRight),
-                                ("Close Saved", CloseScope::Saved),
-                                ("Close All", CloseScope::All),
-                            ];
-                            for (label, scope) in scopes {
-                                if ui.button(label).clicked() {
-                                    self.bulk_close = Some((scope, *tab_id));
-                                    ui.close_menu();
+                        let frame_resp = egui::Frame::new().fill(bg).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if let Some(icon) = tab_special_icon {
+                                    ui.label(
+                                        egui::RichText::new(*icon)
+                                            .color(egui::Color32::from_gray(160))
+                                            .size(14.0),
+                                    );
+                                } else {
+                                    let name = tab_path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy())
+                                        .unwrap_or_else(|| tab_title.as_str().into());
+                                    let (icon, icon_color) = crate::filetree::file_icon(&name);
+                                    ui.label(
+                                        egui::RichText::new(icon).color(icon_color).size(14.0),
+                                    );
                                 }
-                            }
+                                ui.add_space(2.0);
+                                let tab_label = if *tab_modified {
+                                    egui::RichText::new(format!("● {}", tab_title))
+                                        .color(egui::Color32::from_rgb(255, 180, 50))
+                                } else {
+                                    egui::RichText::new(tab_title.as_str()).color(if is_active {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        egui::Color32::from_rgb(160, 160, 160)
+                                    })
+                                };
+                                let label_resp = ui.selectable_label(is_active, tab_label);
+                                if label_resp.clicked() {
+                                    if tab_special_icon.is_some() {
+                                        activate_id = Some(*tab_id);
+                                    } else {
+                                        to_open = Some(tab_path.clone());
+                                    }
+                                }
+                                label_resp.context_menu(|ui| {
+                                    if ui.button("Close").clicked() {
+                                        to_close = Some(*tab_id);
+                                        ui.close_menu();
+                                    }
+                                    let scopes = [
+                                        ("Close Others", CloseScope::Others),
+                                        ("Close to the Right", CloseScope::ToTheRight),
+                                        ("Close Saved", CloseScope::Saved),
+                                        ("Close All", CloseScope::All),
+                                    ];
+                                    for (label, scope) in scopes {
+                                        if ui.button(label).clicked() {
+                                            self.bulk_close = Some((scope, *tab_id));
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                                if ui.small_button("×").clicked() {
+                                    to_close = Some(*tab_id);
+                                }
+                            });
                         });
-                        if ui.small_button("×").clicked() {
-                            to_close = Some(*tab_id);
+                        // Middle-click closes the tab.
+                        let tab_id_copy = *tab_id;
+                        if ui.input(|i| {
+                            i.pointer.button_released(egui::PointerButton::Middle)
+                                && i.pointer
+                                    .hover_pos()
+                                    .is_some_and(|p| frame_resp.response.rect.contains(p))
+                        }) {
+                            to_close = Some(tab_id_copy);
                         }
-                    });
-                });
-                // Middle-click closes the tab.
-                let tab_id_copy = *tab_id;
-                if ui.input(|i| {
-                    i.pointer.button_released(egui::PointerButton::Middle)
-                        && i.pointer
-                            .hover_pos()
-                            .is_some_and(|p| frame_resp.response.rect.contains(p))
-                }) {
-                    to_close = Some(tab_id_copy);
-                }
-                ui.separator();
-            }
-        });
+                        if reveal == Some(*tab_id) {
+                            let rect = frame_resp.response.rect;
+                            if ui.clip_rect().contains_rect(rect) {
+                                revealed = true;
+                            } else {
+                                frame_resp.response.scroll_to_me(None);
+                                ui.ctx().request_repaint();
+                            }
+                        }
+                        ui.separator();
+                    }
+                })
+            });
+        if revealed {
+            self.reveal = None;
+        }
 
         if let Some(id) = activate_id {
             self.active_tab = Some(id);
@@ -454,6 +490,7 @@ mod tests {
     struct Harness {
         ctx: egui::Context,
         texts: Vec<(String, egui::Rect)>,
+        time: f64,
     }
 
     impl Harness {
@@ -461,12 +498,15 @@ mod tests {
             Self {
                 ctx: egui::Context::default(),
                 texts: vec![],
+                time: 0.0,
             }
         }
 
         /// Run one frame rendering the tab bar; returns `show()`'s result.
         fn frame(&mut self, tm: &mut TabManager, events: Vec<egui::Event>) -> Option<PathBuf> {
+            self.time += 1.0 / 60.0;
             let raw = egui::RawInput {
+                time: Some(self.time),
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(1600.0, 300.0),
@@ -532,6 +572,34 @@ mod tests {
             tm.open(PathBuf::from(p), String::new());
         }
         tm
+    }
+
+    #[test]
+    fn the_tab_bar_scrolls_to_the_active_tab() {
+        let names: Vec<String> = (0..60)
+            .map(|i| format!("a_long_file_name_{i}.rs"))
+            .collect();
+        let paths: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut tm = manager_with(&paths);
+        let mut h = Harness::new();
+        // Fully on screen (egui drops what is entirely clipped out).
+        let visible = |h: &Harness, text: &str| {
+            h.texts
+                .iter()
+                .any(|(t, r)| t == text && r.left() >= 0.0 && r.right() <= 1600.0)
+        };
+        // The last opened (active) tab is far past the right edge.
+        for _ in 0..30 {
+            h.frame(&mut tm, vec![]);
+        }
+        assert!(visible(&h, "a_long_file_name_59.rs"));
+        assert!(!visible(&h, "a_long_file_name_0.rs"));
+        // Activating the first one scrolls back.
+        tm.open(PathBuf::from("a_long_file_name_0.rs"), String::new());
+        for _ in 0..30 {
+            h.frame(&mut tm, vec![]);
+        }
+        assert!(visible(&h, "a_long_file_name_0.rs"));
     }
 
     // ── Pure state logic ───────────────────────────────────────────────────
