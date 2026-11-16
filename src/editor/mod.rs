@@ -1249,14 +1249,15 @@ impl Editor {
 
                 // Soft wrap: rows hold as many chars as fit between the gutter and
                 // the vertical scrollbar / minimap overlay.
+                let minimap_w = if config.editor.show_minimap && !self.large_file {
+                    crate::ui::minimap::MINIMAP_WIDTH
+                } else {
+                    0.0
+                };
+                // Width of the text not hidden by the vertical scrollbar / minimap.
+                let text_view_w = rect.width() - gutter_width - minimap_w - 12.0;
                 let wrap_cols = if config.editor.word_wrap {
-                    let minimap_w = if config.editor.show_minimap && !self.large_file {
-                        crate::ui::minimap::MINIMAP_WIDTH
-                    } else {
-                        0.0
-                    };
-                    let text_w = rect.width() - gutter_width - minimap_w - 12.0;
-                    ((text_w / char_width) as usize).max(1)
+                    ((text_view_w / char_width) as usize).max(1)
                 } else {
                     0
                 };
@@ -1515,6 +1516,8 @@ impl Editor {
                     });
                 }
 
+                // A key that moves the caret (End, arrows, typing…) brings it into view.
+                let caret_before = self.cursor.position();
                 if has_focus || response.has_focus() {
                     ui.input(|i| {
                         let mut text_typed = false;
@@ -2509,6 +2512,9 @@ impl Editor {
                         }
                     }
                 }
+                if self.cursor.position() != caret_before {
+                    self.scroll_to_cursor = true;
+                }
 
                 // Keyboard edits above may have changed line lengths: refresh the
                 // wrap layout before mapping pointer positions and painting.
@@ -2665,8 +2671,10 @@ impl Editor {
                     let max_x = if self.wrap.active() {
                         0.0
                     } else {
-                        let content_w =
-                            self.cached_max_line_chars() as f32 * char_width + gutter_width + 40.0;
+                        let content_w = self.cached_max_line_chars() as f32 * char_width
+                            + gutter_width
+                            + 40.0
+                            + minimap_w;
                         (content_w - rect.width()).max(0.0)
                     };
                     ui.input(|i| {
@@ -2759,6 +2767,19 @@ impl Editor {
                         self.scroll_offset.y = target_y;
                     } else if target_y + line_height > self.scroll_offset.y + rect.height() {
                         self.scroll_offset.y = (target_y + line_height - rect.height()).max(0.0);
+                    }
+                    // Horizontally too (wrapped text never overflows), keeping a
+                    // couple of columns of context around the caret.
+                    if !self.wrap.active() {
+                        let line = self.buffer.line(cur_row);
+                        let caret_x = prefix_width(ui, &line, cur_col, &font_id, char_width)
+                            + inlay_shift(&self.line_inlays(cur_row), cur_col, false, char_width);
+                        let margin = 2.0 * char_width;
+                        if caret_x - margin < self.scroll_offset.x {
+                            self.scroll_offset.x = (caret_x - margin).max(0.0);
+                        } else if caret_x + margin > self.scroll_offset.x + text_view_w {
+                            self.scroll_offset.x = caret_x + margin - text_view_w;
+                        }
                     }
                     self.scroll_to_cursor = false;
                 }
@@ -3588,7 +3609,8 @@ impl Editor {
                 {
                     let scrollbar_h = 8.0_f32;
                     let max_line_chars = self.cached_max_line_chars();
-                    let content_w = max_line_chars as f32 * char_width + gutter_width + 40.0;
+                    let content_w =
+                        max_line_chars as f32 * char_width + gutter_width + 40.0 + minimap_w;
                     let view_w = rect.width();
                     // Wrapped text never overflows horizontally.
                     if content_w > view_w && !self.wrap.active() {
@@ -6243,6 +6265,35 @@ bar",
         let y = ed.line_height * 0.5;
         h.click_at(&mut ed, egui::pos2(50.0 + painted + 1.0, y), NONE);
         assert_eq!(ed.cursor.position(), (0, 80));
+    }
+
+    #[test]
+    fn end_and_home_scroll_a_long_line_to_the_caret() {
+        let (mut h, mut ed) = setup(&"abcdefghij".repeat(100));
+        h.press(&mut ed, Key::End, NONE);
+        h.idle(&mut ed);
+        assert_eq!(ed.cursor.position(), (0, 1000));
+        // The caret is painted inside the text area, left of the minimap.
+        let caret_x = 1000.0 * ed.char_width - ed.scroll_offset.x;
+        assert!(caret_x > 0.0 && caret_x < 800.0 - 50.0 - 80.0 - 12.0);
+        h.press(&mut ed, Key::Home, NONE);
+        h.idle(&mut ed);
+        assert_eq!(ed.scroll_offset.x, 0.0);
+    }
+
+    #[test]
+    fn arrow_down_past_the_bottom_scrolls_the_view() {
+        let content = (0..200)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut h, mut ed) = setup(&content);
+        for _ in 0..60 {
+            h.press(&mut ed, Key::ArrowDown, NONE);
+        }
+        h.idle(&mut ed);
+        assert_eq!(ed.cursor.position().0, 60);
+        assert_eq!(ed.scroll_offset.y, 61.0 * ed.line_height - 600.0);
     }
 
     #[test]
