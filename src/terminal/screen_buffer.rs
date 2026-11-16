@@ -423,9 +423,9 @@ mod tests {
 
     fn filled(cols: usize, rows: usize) -> ScreenBuffer {
         let mut b = ScreenBuffer::new(cols, rows);
-        for r in 0..rows {
-            for c in 0..cols {
-                b.rows[r][c].ch = 'x';
+        for row in b.rows.iter_mut().take(rows) {
+            for cell in row.iter_mut().take(cols) {
+                cell.ch = 'x';
             }
         }
         b
