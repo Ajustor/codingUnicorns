@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.26.4] - 2026-11-16
+
+### Corrections
+
+- La barre d'onglets défile jusqu'à l'onglet actif quand il est hors de vue, la molette fait défiler les onglets, et le dernier onglet ne passe plus sous le bouton de split.
+
 ## [0.26.3] - 2026-11-16
 
 ### Corrections

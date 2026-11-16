@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.26.4] - 2026-11-16
+
+### Fixed
+
+- The tab bar scrolls to the active tab when it is out of view, the mouse wheel scrolls the tabs, and the last tab no longer slips under the split button.
+
 ## [0.26.3] - 2026-11-16
 
 ### Fixed
