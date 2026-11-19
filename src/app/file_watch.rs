@@ -353,6 +353,18 @@ impl CodingUnicorns {
         }
     }
 
+    /// `old` was renamed to `new` (a file, or a folder of open files): the
+    /// recorded stamps and a pending conflict move to the new paths, so a
+    /// change made on disk before the rename is still caught.
+    pub(super) fn follow_rename_on_disk(&mut self, old: &Path, new: &Path) {
+        super::file_ops::rekey_renamed(&mut self.file_watch.stamps, old, new);
+        if let Some(c) = self.file_watch.conflict.as_mut() {
+            if let Some(path) = super::file_ops::renamed_path(&c.path, old, new) {
+                c.path = path;
+            }
+        }
+    }
+
     /// Per-frame driver; call before the UI renders (it may swallow a Ctrl+S
     /// that would overwrite external changes).
     pub fn tick_file_watch(&mut self, ctx: &egui::Context) {

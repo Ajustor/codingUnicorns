@@ -35,12 +35,38 @@ fn invalid_file_name(name: &str) -> Option<&'static str> {
 
 /// Where `path` is after `old` was renamed to `new`: itself, or a file inside
 /// a renamed folder. `None` when the rename doesn't concern it.
-fn renamed_path(
+pub(super) fn renamed_path(
     path: &std::path::Path,
     old: &std::path::Path,
     new: &std::path::Path,
 ) -> Option<PathBuf> {
-    path.strip_prefix(old).ok().map(|rest| new.join(rest))
+    let rest = path.strip_prefix(old).ok()?;
+    // `new.join("")` would end in a separator (`b.txt\` on Windows), a path
+    // that is neither found on disk nor writable: the tab showed "(deleted)"
+    // and saving it failed.
+    Some(if rest.as_os_str().is_empty() {
+        new.to_path_buf()
+    } else {
+        new.join(rest)
+    })
+}
+
+/// Move the entries of `map` whose path `old` → `new` renamed to their new path.
+pub(super) fn rekey_renamed<V>(
+    map: &mut std::collections::HashMap<PathBuf, V>,
+    old: &std::path::Path,
+    new: &std::path::Path,
+) {
+    let moved: Vec<PathBuf> = map
+        .keys()
+        .filter(|p| renamed_path(p, old, new).is_some())
+        .cloned()
+        .collect();
+    for path in moved {
+        if let (Some(value), Some(to)) = (map.remove(&path), renamed_path(&path, old, new)) {
+            map.insert(to, value);
+        }
+    }
 }
 
 /// True when `to` is another entry than `from` (not merely `from` spelled with
@@ -97,8 +123,24 @@ impl CodingUnicorns {
                 editor.set_path(path);
             }
         }
+        // Everything else kept per path follows the file: the unsaved edits of
+        // inactive tabs (else pruned with their "closed" tab, and lost), the
+        // disk stamps and a pending conflict, the cursor/scroll positions.
+        // The language server knows the file by its old path: open the new one
+        // (as when switching files), so edits and diagnostics keep flowing.
         if let Some(path) = self.editor.current_path.clone() {
-            self.record_file_stamp(&path);
+            if path.starts_with(&new) {
+                self.notify_lsp_opened(&path);
+            }
+        }
+        rekey_renamed(&mut self.parked_docs, old, &new);
+        rekey_renamed(&mut self.session.view_states, old, &new);
+        self.follow_rename_on_disk(old, &new);
+        if let Some(last) = self.config.last_file.as_deref() {
+            if let Some(path) = renamed_path(std::path::Path::new(last), old, &new) {
+                self.config.last_file = Some(path.to_string_lossy().to_string());
+                self.config.save();
+            }
         }
     }
     /// Open paths handed over by another launch (see `single_instance`) and bring the
@@ -527,6 +569,47 @@ mod tests {
         );
         assert_eq!(renamed_path(Path::new("/w/srcx/b.rs"), old, new), None);
         assert_eq!(renamed_path(Path::new("/w/other.rs"), old, new), None);
+    }
+
+    /// `PathBuf ==` compares components and ignores a trailing separator: the
+    /// spelling itself is checked. `b.txt\` can't be found nor written on
+    /// Windows — the renamed tab showed "(deleted)" and its edits couldn't be saved.
+    #[test]
+    fn renamed_file_has_no_trailing_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "x").unwrap();
+        std::fs::rename(&a, &b).unwrap();
+        let got = renamed_path(&a, &a, &b).unwrap();
+        assert_eq!(got.as_os_str(), b.as_os_str());
+        assert!(std::fs::metadata(&got).unwrap().is_file());
+        let inner = renamed_path(&dir.path().join("src/m.rs"), &dir.path().join("src"), &b);
+        assert_eq!(inner.unwrap().as_os_str(), b.join("m.rs").as_os_str());
+    }
+
+    #[test]
+    fn rekey_renamed_moves_only_the_renamed_entries() {
+        let (old, new) = (Path::new("/w/src"), Path::new("/w/lib"));
+        let mut map = std::collections::HashMap::from([
+            (PathBuf::from("/w/src"), 1),
+            (PathBuf::from("/w/src/a.rs"), 2),
+            (PathBuf::from("/w/other.rs"), 3),
+        ]);
+        super::rekey_renamed(&mut map, old, new);
+        let mut keys: Vec<String> = map
+            .iter()
+            .map(|(k, v)| format!("{}={v}", k.display()))
+            .collect();
+        keys.sort();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            keys,
+            vec![
+                "/w/lib=1".to_string(),
+                format!("/w/lib{sep}a.rs=2"),
+                "/w/other.rs=3".to_string()
+            ]
+        );
     }
 
     #[test]
