@@ -8,6 +8,12 @@ de mise à jour de l'application : les deux fichiers évoluent ensemble.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les
 numéros de version suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.26.5] - 2026-11-19
+
+### Corrections
+
+- Renommer un fichier ouvert depuis l'explorateur ne marque plus son onglet « (deleted) » et ne fait plus échouer son enregistrement, et les modifications non enregistrées d'un fichier renommé dans un onglet inactif sont conservées.
+
 ## [0.26.4] - 2026-11-16
 
 ### Corrections

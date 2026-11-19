@@ -8,6 +8,12 @@ translation, [`CHANGELOG.fr.md`](CHANGELOG.fr.md), is kept in step with it.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.26.5] - 2026-11-19
+
+### Fixed
+
+- Renaming an open file in the explorer no longer marks its tab "(deleted)" nor makes saving it fail, and the unsaved changes of a renamed file in an inactive tab are kept.
+
 ## [0.26.4] - 2026-11-16
 
 ### Fixed
